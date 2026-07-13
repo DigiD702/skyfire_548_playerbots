@@ -559,6 +559,12 @@ namespace lfg
         for (LfgQueueDataContainer::iterator itQueue = QueueDataStore.begin(); itQueue != QueueDataStore.end(); ++itQueue)
         {
             LfgQueueData& queueinfo = itQueue->second;
+            if (queueinfo.dungeons.empty())
+            {
+                SF_LOG_DEBUG("lfg.queue.timers.update", "Skipping queue data for [%u] with no selected dungeons", GUID_LOPART(itQueue->first));
+                continue;
+            }
+
             uint32 dungeonId = (*queueinfo.dungeons.begin());
             uint32 queuedTime = uint32(currTime - queueinfo.joinTime);
             uint8 role = PLAYER_ROLE_NONE;
