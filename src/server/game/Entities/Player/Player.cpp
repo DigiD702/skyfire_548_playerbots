@@ -20002,7 +20002,13 @@ PartyResult Player::CanUninviteFromGroup() const
 
 bool Player::isUsingLfg()
 {
-    return sLFGMgr->GetState(GetGUID()) != lfg::LFG_STATE_NONE;
+    if (sLFGMgr->GetState(GetGUID()) != lfg::LFG_STATE_NONE)
+        return true;
+
+    if (uint64 gguid = sLFGMgr->GetGroup(GetGUID()))
+        return sLFGMgr->GetState(gguid) != lfg::LFG_STATE_NONE;
+
+    return false;
 }
 
 bool Player::inRandomLfgDungeon()
