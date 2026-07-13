@@ -1064,7 +1064,8 @@ namespace lfg
         {
             uint64 pguid = it->first;
             uint64 gguid = it->second.group;
-            uint32 dungeonId = (*GetSelectedDungeons(pguid).begin());
+            LfgDungeonSet const& selectedDungeons = GetSelectedDungeons(pguid);
+            uint32 dungeonId = selectedDungeons.empty() ? proposal.dungeonId : (*selectedDungeons.begin());
             int32 waitTime = -1;
             if (sendUpdate)
                 SendLfgUpdateProposal(pguid, proposal);
