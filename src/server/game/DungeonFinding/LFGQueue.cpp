@@ -22,6 +22,29 @@ namespace lfg
         {
             return std::find(queue.begin(), queue.end(), guid) != queue.end();
         }
+
+        bool CompatibleKeyContainsGuid(std::string const& key, uint64 guid)
+        {
+            std::ostringstream out;
+            out << guid;
+            std::string guidString = out.str();
+
+            std::string::size_type tokenStart = 0;
+            while (tokenStart <= key.length())
+            {
+                std::string::size_type tokenEnd = key.find('|', tokenStart);
+                std::string::size_type tokenLength = tokenEnd == std::string::npos ? std::string::npos : tokenEnd - tokenStart;
+                if (key.compare(tokenStart, tokenLength, guidString) == 0)
+                    return true;
+
+                if (tokenEnd == std::string::npos)
+                    break;
+
+                tokenStart = tokenEnd + 1;
+            }
+
+            return false;
+        }
     }
 
     /**
@@ -189,15 +212,11 @@ namespace lfg
     */
     void LFGQueue::RemoveFromCompatibles(uint64 guid)
     {
-        std::stringstream out;
-        out << guid;
-        std::string strGuid = out.str();
-
         SF_LOG_DEBUG("lfg.queue.data.compatibles.remove", "Removing [%u]", GUID_LOPART(guid));
         for (LfgCompatibleContainer::iterator itNext = CompatibleMapStore.begin(); itNext != CompatibleMapStore.end();)
         {
             LfgCompatibleContainer::iterator it = itNext++;
-            if (std::string::npos != it->first.find(strGuid))
+            if (CompatibleKeyContainsGuid(it->first, guid))
                 CompatibleMapStore.erase(it);
         }
     }
