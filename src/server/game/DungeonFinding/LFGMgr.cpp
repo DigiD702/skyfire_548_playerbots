@@ -2030,8 +2030,17 @@ namespace lfg
     {
         uint8 queueId = GetQueueId(guid);
         LfgQueueContainer::const_iterator itr = QueuesStore.find(queueId);
+        uint64 queueGuid = guid;
+        if (!IS_GROUP_GUID(guid))
+            if (uint64 gguid = GetGroup(guid))
+            {
+                LfgState groupState = GetState(gguid);
+                if (groupState == LFG_STATE_QUEUED || groupState == LFG_STATE_PROPOSAL)
+                    queueGuid = gguid;
+            }
+
         if (itr != QueuesStore.end())
-            return itr->second.GetJoinTime(guid);
+            return itr->second.GetJoinTime(queueGuid);
 
         return 0;
     }
