@@ -385,7 +385,7 @@ namespace lfg
         LfgJoinResultData joinData;
         LfgGuidSet players;
         uint32 rDungeonId = 0;
-        bool isContinue = grp && grp->isLFGGroup() && GetState(gguid) != LFG_STATE_FINISHED_DUNGEON;
+        bool isContinue = grp && grp->isLFGGroup() && GetState(gguid) == LFG_STATE_DUNGEON;
 
         // Do not allow to change dungeon in the middle of a current dungeon
         if (isContinue)
@@ -396,6 +396,8 @@ namespace lfg
 
         // Already in queue?
         LfgState state = GetState(gguid);
+        bool hasActiveQueueState = state == LFG_STATE_ROLECHECK || state == LFG_STATE_PROPOSAL ||
+            state == LFG_STATE_DUNGEON || state == LFG_STATE_BOOT;
         if (state == LFG_STATE_QUEUED)
         {
             LFGQueue& queue = GetQueue(gguid);
@@ -403,7 +405,9 @@ namespace lfg
         }
 
         // Check player or group member restrictions
-        if (!IsValidPlayerRoles(roles))
+        if (hasActiveQueueState && !isContinue)
+            joinData.result = LFG_JOIN_INTERNAL_ERROR;
+        else if (!IsValidPlayerRoles(roles))
         {
             joinData.result = LFG_JOIN_ROLE_CHECK_FAILED;
             joinData.state = LFG_ROLECHECK_NO_ROLE;
