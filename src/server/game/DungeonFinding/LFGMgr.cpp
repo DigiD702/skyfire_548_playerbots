@@ -1346,6 +1346,8 @@ namespace lfg
 
         if (!player->IsAlive())
             error = LFG_TELEPORTERROR_PLAYER_DEAD;
+        else if (player->IsInCombat())
+            error = LFG_TELEPORTERROR_IN_COMBAT;
         else if (player->IsFalling() || player->HasUnitState(UNIT_STATE_JUMPING))
             error = LFG_TELEPORTERROR_FALLING;
         else if (player->IsMirrorTimerActive(FATIGUE_TIMER))
@@ -1365,7 +1367,7 @@ namespace lfg
             if (!fromOpcode)
             {
                 // Select a player inside to be teleported to
-                for (GroupReference* itr = group->GetFirstMember(); itr != NULL && !mapid; itr = itr->next())
+                for (GroupReference* itr = group->GetFirstMember(); itr != NULL; itr = itr->next())
                 {
                     Player* plrg = itr->GetSource();
                     if (plrg && plrg != player && plrg->GetMapId() == uint32(dungeon->map))
