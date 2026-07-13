@@ -403,7 +403,14 @@ namespace lfg
         }
 
         // Check player or group member restrictions
-        if (!player->GetSession()->HasPermission(rbac::RBAC_PERM_JOIN_DUNGEON_FINDER))
+        if (!IsValidPlayerRoles(roles))
+        {
+            joinData.result = LFG_JOIN_ROLE_CHECK_FAILED;
+            joinData.state = LFG_ROLECHECK_NO_ROLE;
+        }
+        else if (grp && !grp->isLFGGroup() && !grp->IsLeader(guid))
+            joinData.result = LFG_JOIN_INTERNAL_ERROR;
+        else if (!player->GetSession()->HasPermission(rbac::RBAC_PERM_JOIN_DUNGEON_FINDER))
             joinData.result = LFG_JOIN_NOT_MEET_REQS;
         else if (player->InBattleground() || player->InArena() || player->InBattlegroundQueue())
             joinData.result = LFG_JOIN_USING_BG_SYSTEM;
@@ -600,11 +607,11 @@ namespace lfg
                 {
                     LFGQueue& queue = GetQueue(gguid);
                     queue.RemoveFromQueue(gguid);
-                    SetState(gguid, LFG_STATE_NONE);
+                    ClearQueueState(gguid, "Leave queued group");
                     const LfgGuidSet& players = GetPlayers(gguid);
                     for (LfgGuidSet::const_iterator it = players.begin(); it != players.end(); ++it)
                     {
-                        SetState(*it, LFG_STATE_NONE);
+                        ClearQueueState(*it, "Leave queued group member");
                         SendLfgUpdateStatus(*it, LfgUpdateData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE), true);
                     }
                 }
@@ -613,7 +620,7 @@ namespace lfg
                     LFGQueue& queue = GetQueue(guid);
                     queue.RemoveFromQueue(guid);
                     SendLfgUpdateStatus(guid, LfgUpdateData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE), false);
-                    SetState(guid, LFG_STATE_NONE);
+                    ClearQueueState(guid, "Leave queued player");
                 }
                 break;
             case LFG_STATE_ROLECHECK:
@@ -649,7 +656,7 @@ namespace lfg
             case LFG_STATE_FINISHED_DUNGEON:
                 //case LFG_STATE_BOOT:
                 if (guid != gguid && !disconnected) // Player
-                    SetState(guid, LFG_STATE_NONE);
+                    ClearQueueState(guid, "Leave dungeon member");
                 break;
         }
     }
@@ -666,7 +673,7 @@ namespace lfg
                 LFGQueue& queue = GetQueue(queueId);
                 queue.RemoveFromQueue(guid);
                 SendLfgUpdateStatus(guid, LfgUpdateData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE), false);
-                SetState(guid, LFG_STATE_NONE);
+                ClearQueueState(guid, "Leave queued solo player");
                 break;
             }
             case LFG_STATE_PROPOSAL:
@@ -697,7 +704,7 @@ namespace lfg
             case LFG_STATE_FINISHED_DUNGEON:
             case LFG_STATE_BOOT:
             {
-                SetState(guid, LFG_STATE_NONE);
+                ClearQueueState(guid, "Leave solo dungeon player");
                 break;
             }
         }
@@ -725,7 +732,7 @@ namespace lfg
 
         if (!guid)
             roleCheck.state = LFG_ROLECHECK_ABORTED;
-        else if (roles < PLAYER_ROLE_TANK)                            // Player selected no role.
+        else if (!IsValidPlayerRoles(roles))                          // Player selected no role or an invalid role mask.
             roleCheck.state = LFG_ROLECHECK_NO_ROLE;
         else
         {
@@ -1761,6 +1768,17 @@ namespace lfg
         }
     }
 
+    void LFGMgr::ClearState(uint64 guid, char const* debugMsg)
+    {
+        ClearQueueState(guid, debugMsg);
+    }
+
+    void LFGMgr::ClearQueueState(uint64 guid, char const* debugMsg)
+    {
+        SF_LOG_TRACE("lfg.data.queue.clear", "%s: %u", debugMsg ? debugMsg : "Clear queue state", GUID_LOPART(guid));
+        SetState(guid, LFG_STATE_NONE);
+    }
+
     void LFGMgr::SetActiveQueueId(uint64 guid, uint8 queueId)
     {
         if (IS_GROUP_GUID(guid))
@@ -1829,7 +1847,7 @@ namespace lfg
             SetGroup(*it, 0);
             if (state != LFG_STATE_PROPOSAL)
             {
-                SetState(*it, LFG_STATE_NONE);
+                ClearQueueState(*it, "Remove group data");
                 SendLfgUpdateStatus(guid, LfgUpdateData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE), true);
             }
         }

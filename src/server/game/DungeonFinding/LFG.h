@@ -105,6 +105,7 @@ namespace lfg
     typedef std::map<uint64, uint64> LfgGroupsMap;
 
     std::string ConcatenateDungeons(LfgDungeonSet const& dungeons);
+    bool IsValidPlayerRoles(uint8 roles);
     std::string GetRolesString(uint8 roles);
     std::string GetStateString(LfgState state);
 

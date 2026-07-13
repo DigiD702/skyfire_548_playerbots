@@ -77,9 +77,7 @@ void BuildQuestReward(WorldPacket& data, Quest const* quest, Player* player)
 
 void WorldSession::HandleLfgJoinOpcode(WorldPacket& recvData)
 {
-    if (!sLFGMgr->isOptionEnabled(lfg::LFG_OPTION_ENABLE_DUNGEON_FINDER | lfg::LFG_OPTION_ENABLE_RAID_BROWSER) ||
-        (GetPlayer()->GetGroup() && GetPlayer()->GetGroup()->GetLeaderGUID() != GetPlayer()->GetGUID() &&
-            (GetPlayer()->GetGroup()->GetMembersCount() == MAXGROUPSIZE || !GetPlayer()->GetGroup()->isLFGGroup())))
+    if (!sLFGMgr->isOptionEnabled(lfg::LFG_OPTION_ENABLE_DUNGEON_FINDER | lfg::LFG_OPTION_ENABLE_RAID_BROWSER))
     {
         recvData.rfinish();
         return;
@@ -116,7 +114,7 @@ void WorldSession::HandleLfgJoinOpcode(WorldPacket& recvData)
     SF_LOG_DEBUG("lfg", "CMSG_LFD_JOIN %s roles: %u, Dungeons: %u, Comment: %s",
         GetPlayerInfo().c_str(), roles, uint8(newDungeons.size()), comment.c_str());
 
-    if (GetPlayer()->GetGroup())
+    if (GetPlayer()->GetGroup() && GetPlayer()->GetGroup()->GetLeaderGUID() == GetPlayer()->GetGUID())
     {
         if (!GetPlayer()->GetGroup()->RoleCheckAllResponded())
         {
