@@ -684,10 +684,12 @@ void WorldSession::SendLfgPlayerReward(lfg::LfgPlayerRewardData const& rewardDat
 void WorldSession::SendLfgBootProposalUpdate(lfg::LfgPlayerBoot const& boot)
 {
     uint64 guid = GetPlayer()->GetGUID();
-    lfg::LfgAnswer playerVote = boot.votes.find(guid)->second;
+    lfg::LfgAnswerContainer::const_iterator itVote = boot.votes.find(guid);
+    lfg::LfgAnswer playerVote = itVote != boot.votes.end() ? itVote->second : lfg::LFG_ANSWER_PENDING;
     uint8 votesNum = 0;
     uint8 agreeNum = 0;
-    uint32 secsleft = uint8((boot.cancelTime - time(NULL)) / 1000);
+    time_t now = time(NULL);
+    uint32 secsleft = boot.cancelTime > now ? uint32(boot.cancelTime - now) : 0;
     for (lfg::LfgAnswerContainer::const_iterator it = boot.votes.begin(); it != boot.votes.end(); ++it)
     {
         if (it->second != lfg::LFG_ANSWER_PENDING)
