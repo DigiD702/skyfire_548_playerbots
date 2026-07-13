@@ -312,6 +312,7 @@ namespace lfg
                         SendLfgBootProposalUpdate(pguid, boot);
                     SetState(pguid, LFG_STATE_DUNGEON);
                 }
+                SetState(itBoot->first, LFG_STATE_DUNGEON);
                 SetVoteKick(itBoot->first, false);
                 BootsStore.erase(itBoot);
             }
@@ -1222,25 +1223,43 @@ namespace lfg
     */
     void LFGMgr::InitBoot(uint64 gguid, uint64 kicker, uint64 victim, std::string const& reason)
     {
+        LfgGroupDataContainer::const_iterator groupData = GroupsStore.find(gguid);
+        if (groupData == GroupsStore.end())
+            return;
+
+        LfgGuidSet const& players = groupData->second.GetPlayers();
+        if (players.find(kicker) == players.end() || players.find(victim) == players.end())
+        {
+            SF_LOG_DEBUG("lfg.boot", "Group %u rejected boot init for invalid kicker %u or victim %u",
+                GUID_LOPART(gguid), GUID_LOPART(kicker), GUID_LOPART(victim));
+            return;
+        }
+
         SetVoteKick(gguid, true);
+        SetState(gguid, LFG_STATE_BOOT);
 
         LfgPlayerBoot& boot = BootsStore[gguid];
         boot.inProgress = true;
         boot.cancelTime = time_t(time(NULL)) + LFG_TIME_BOOT;
         boot.reason = reason;
         boot.victim = victim;
-
-        LfgGuidSet const& players = GetPlayers(gguid);
+        boot.votes.clear();
 
         // Set votes
         for (LfgGuidSet::const_iterator itr = players.begin(); itr != players.end(); ++itr)
         {
             uint64 guid = (*itr);
             boot.votes[guid] = LFG_ANSWER_PENDING;
+            SetState(guid, LFG_STATE_BOOT);
         }
 
-        boot.votes[victim] = LFG_ANSWER_DENY;                  // Victim auto vote NO
-        boot.votes[kicker] = LFG_ANSWER_AGREE;                 // Kicker auto vote YES
+        LfgAnswerContainer::iterator victimVote = boot.votes.find(victim);
+        if (victimVote != boot.votes.end())
+            victimVote->second = LFG_ANSWER_DENY;              // Victim auto vote NO
+
+        LfgAnswerContainer::iterator kickerVote = boot.votes.find(kicker);
+        if (kickerVote != boot.votes.end())
+            kickerVote->second = LFG_ANSWER_AGREE;             // Kicker auto vote YES
 
         // Notify players
         for (LfgGuidSet::const_iterator it = players.begin(); it != players.end(); ++it)
@@ -1297,8 +1316,10 @@ namespace lfg
             uint64 pguid = itVotes->first;
             if (pguid != boot.victim)
                 SendLfgBootProposalUpdate(pguid, boot);
+            SetState(pguid, LFG_STATE_DUNGEON);
         }
 
+        SetState(gguid, LFG_STATE_DUNGEON);
         SetVoteKick(gguid, false);
         if (agreeNum == LFG_GROUP_KICK_VOTES_NEEDED)           // Vote passed - Kick player
         {
@@ -1858,14 +1879,14 @@ namespace lfg
 
         LfgState state = GetState(guid);
         // If group is being formed after proposal success do nothing more
-        LfgGuidSet const& players = it->second.GetPlayers();
-        for (LfgGuidSet::const_iterator it = players.begin(); it != players.end(); ++it)
+        LfgGuidSet players = it->second.GetPlayers();
+        for (LfgGuidSet::const_iterator itr = players.begin(); itr != players.end(); ++itr)
         {
-            uint64 guid = (*it);
-            SetGroup(*it, 0);
+            uint64 guid = (*itr);
+            SetGroup(guid, 0);
             if (state != LFG_STATE_PROPOSAL)
             {
-                ClearQueueState(*it, "Remove group data");
+                ClearQueueState(guid, "Remove group data");
                 SendLfgUpdateStatus(guid, LfgUpdateData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE), true);
             }
         }

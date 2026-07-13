@@ -182,8 +182,18 @@ namespace lfg
         }
 
         if (isLFG && state != LFG_STATE_FINISHED_DUNGEON) // Need more players to finish the dungeon
-            if (Player* leader = ObjectAccessor::FindPlayer(sLFGMgr->GetLeader(gguid)))
+        {
+            uint64 leaderGuid = sLFGMgr->GetLeader(gguid);
+            Player* leader = ObjectAccessor::FindPlayer(leaderGuid);
+            if (!leader)
+            {
+                leaderGuid = group->GetLeaderGUID();
+                leader = ObjectAccessor::FindPlayer(leaderGuid);
+            }
+
+            if (leader)
                 leader->GetSession()->SendLfgOfferContinue(sLFGMgr->GetDungeon(gguid, false));
+        }
     }
 
     void LFGGroupScript::OnDisband(Group* group)
