@@ -86,8 +86,18 @@ namespace lfg
         LFG_ANSWER_AGREE = 1
     };
 
+    struct LfgLockData
+    {
+        LfgLockData(uint32 lock = 0, uint32 currentItemLevel = 0, uint32 requiredItemLevel = 0) :
+            lockStatus(lock), currentItemLevel(currentItemLevel), requiredItemLevel(requiredItemLevel) { }
+
+        uint32 lockStatus;
+        uint32 currentItemLevel;
+        uint32 requiredItemLevel;
+    };
+
     typedef std::set<uint32> LfgDungeonSet;
-    typedef std::map<uint32, uint32> LfgLockMap;
+    typedef std::map<uint32, LfgLockData> LfgLockMap;
     typedef std::map<uint64, LfgLockMap> LfgLockPartyMap;
     typedef std::set<uint64> LfgGuidSet;
     typedef std::list<uint64> LfgGuidList;

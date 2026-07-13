@@ -15,10 +15,10 @@ void BuildPlayerLockDungeonBlock(WorldPacket& data, lfg::LfgLockMap const& lock)
 {
     for (lfg::LfgLockMap::const_iterator it = lock.begin(); it != lock.end(); ++it)
     {
-        data << uint32(0);                                 // Current itemLevel
+        data << uint32(it->second.currentItemLevel);       // Current itemLevel
         data << uint32(it->first);                         // Dungeon entry (id + type)
-        data << uint32(0);                                 // Required itemLevel
-        data << uint32(it->second);                        // Lock status
+        data << uint32(it->second.requiredItemLevel);      // Required itemLevel
+        data << uint32(it->second.lockStatus);             // Lock status
     }
 }
 
@@ -335,9 +335,9 @@ void WorldSession::SendLfgPlayerLockInfo()
     for (lfg::LfgLockMap::const_iterator it = lock.begin(); it != lock.end(); ++it)
     {
         data << uint32(it->first);                         // Dungeon entry (id + type)
-        data << uint32(it->second);                        // Lock status
-        data << uint32(0);                                 // Current itemLevel
-        data << uint32(0);                                 // Required itemLevel
+        data << uint32(it->second.lockStatus);             // Lock status
+        data << uint32(it->second.currentItemLevel);       // Current itemLevel
+        data << uint32(it->second.requiredItemLevel);      // Required itemLevel
     }
     SendPacket(&data);
 }
@@ -614,9 +614,9 @@ void WorldSession::SendLfgJoinResult(lfg::LfgJoinResultData const& joinData)
 
         for (lfg::LfgLockMap::const_iterator itr = it->second.begin(); itr != it->second.end(); ++itr)
         {
-            data << uint32(0);                                 // SubReason2
-            data << uint32(0);                                 // SubReason1
-            data << uint32(itr->second);                       // Reason
+            data << uint32(itr->second.requiredItemLevel);      // SubReason2
+            data << uint32(itr->second.currentItemLevel);       // SubReason1
+            data << uint32(itr->second.lockStatus);             // Reason
             data << uint32(itr->first);                        // Slot
         }
         data.WriteGuidBytes(playerGuid, 1, 0, 5, 7, 3, 6, 2);
