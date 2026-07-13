@@ -1068,12 +1068,12 @@ namespace lfg
 
             if (gguid)
             {
-                waitTime = int32((joinTime - queue.GetJoinTime(gguid)) / IN_MILLISECONDS);
+                waitTime = int32(joinTime - queue.GetJoinTime(gguid));
                 SendLfgUpdateStatus(pguid, updateData, false);
             }
             else
             {
-                waitTime = int32((joinTime - queue.GetJoinTime(pguid)) / IN_MILLISECONDS);
+                waitTime = int32(joinTime - queue.GetJoinTime(pguid));
                 SendLfgUpdateStatus(pguid, updateData, false);
             }
             updateData.updateType = LFG_UPDATETYPE_REMOVED_FROM_QUEUE;
@@ -1166,10 +1166,10 @@ namespace lfg
                     SF_LOG_DEBUG("lfg.proposal.remove", "%u in same group that someone that didn't accept. Removing from queue and compatible cache", GUID_LOPART(guid));
                 }
 
-                RestoreState(guid, "Proposal Fail (didn't accepted or in group with someone that didn't accept");
+                RestoreOrClearState(guid, "Proposal Fail (didn't accepted or in group with someone that didn't accept");
                 if (gguid != guid)
                 {
-                    RestoreState(it->second.group, "Proposal Fail (someone in group didn't accepted)");
+                    RestoreOrClearState(it->second.group, "Proposal Fail (someone in group didn't accepted)");
                     SendLfgUpdateStatus(guid, updateData, true);
                 }
                 else
