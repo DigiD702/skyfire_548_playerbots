@@ -274,6 +274,13 @@ namespace lfg
             LfgRoleCheck& roleCheck = itRoleCheck->second;
             if (currTime < roleCheck.cancelTime)
                 continue;
+
+            if (IS_GROUP_GUID(itRoleCheck->first) && GroupsStore.find(itRoleCheck->first) == GroupsStore.end())
+            {
+                RoleChecksStore.erase(itRoleCheck);
+                continue;
+            }
+
             roleCheck.state = LFG_ROLECHECK_MISSING_ROLE;
 
             for (LfgRolesMap::const_iterator itRoles = roleCheck.roles.begin(); itRoles != roleCheck.roles.end(); ++itRoles)
@@ -1894,6 +1901,29 @@ namespace lfg
             return;
 
         LfgState state = GetState(guid);
+
+        for (LfgProposalContainer::iterator itProposal = ProposalsStore.begin(); itProposal != ProposalsStore.end();)
+        {
+            LfgProposalContainer::iterator itProposalRemove = itProposal++;
+            bool removeProposal = false;
+
+            for (LfgProposalPlayerContainer::iterator itPlayer = itProposalRemove->second.players.begin();
+                itPlayer != itProposalRemove->second.players.end(); ++itPlayer)
+            {
+                if (itPlayer->second.group != guid)
+                    continue;
+
+                itPlayer->second.accept = LFG_ANSWER_DENY;
+                removeProposal = true;
+            }
+
+            if (removeProposal)
+                RemoveProposal(itProposalRemove, LFG_UPDATETYPE_PROPOSAL_DECLINED);
+        }
+
+        for (LfgQueueContainer::iterator itQueue = QueuesStore.begin(); itQueue != QueuesStore.end(); ++itQueue)
+            itQueue->second.RemoveFromQueue(guid);
+
         // If group is being formed after proposal success do nothing more
         LfgGuidSet players = it->second.GetPlayers();
         for (LfgGuidSet::const_iterator itr = players.begin(); itr != players.end(); ++itr)
