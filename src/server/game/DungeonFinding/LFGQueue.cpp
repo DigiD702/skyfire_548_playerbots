@@ -121,15 +121,11 @@ namespace lfg
         RemoveFromCurrentQueue(guid);
         RemoveFromCompatibles(guid);
 
-        std::ostringstream o;
-        o << guid;
-        std::string sguid = o.str();
-
         LfgQueueDataContainer::iterator itDelete = QueueDataStore.end();
         for (LfgQueueDataContainer::iterator itr = QueueDataStore.begin(); itr != QueueDataStore.end(); ++itr)
             if (itr->first != guid)
             {
-                if (std::string::npos != itr->second.bestCompatible.find(sguid))
+                if (CompatibleKeyContainsGuid(itr->second.bestCompatible, guid))
                 {
                     itr->second.bestCompatible.clear();
                     FindBestCompatibleInQueue(itr);
@@ -656,13 +652,10 @@ namespace lfg
     void LFGQueue::FindBestCompatibleInQueue(LfgQueueDataContainer::iterator itrQueue)
     {
         SF_LOG_DEBUG("lfg.queue.compatibles.find", "Guid: " UI64FMTD, itrQueue->first);
-        std::ostringstream o;
-        o << itrQueue->first;
-        std::string sguid = o.str();
 
         for (LfgCompatibleContainer::const_iterator itr = CompatibleMapStore.begin(); itr != CompatibleMapStore.end(); ++itr)
             if (itr->second.compatibility == LFG_COMPATIBLES_WITH_LESS_PLAYERS &&
-                std::string::npos != itr->first.find(sguid))
+                CompatibleKeyContainsGuid(itr->first, itrQueue->first))
             {
                 UpdateBestCompatibleInQueue(itrQueue, itr->first, itr->second.roles);
             }
