@@ -381,6 +381,7 @@ namespace lfg
         Group* grp = player->GetGroup();
         uint64 guid = player->GetGUID();
         uint64 gguid = grp ? grp->GetGUID() : guid;
+        uint8 queueId = GetTeam(guid);
         LfgJoinResultData joinData;
         LfgGuidSet players;
         uint32 rDungeonId = 0;
@@ -500,13 +501,17 @@ namespace lfg
             return;
         }
 
-        SetComment(guid, comment);
-
         if (isRaid)
         {
             SF_LOG_DEBUG("lfg.join", "%u trying to join raid browser and it's disabled.", GUID_LOPART(guid));
             return;
         }
+
+        if (grp)
+            SetActiveQueueId(gguid, queueId);
+
+        SetActiveQueueId(guid, queueId);
+        SetComment(guid, comment);
 
         std::string debugNames = "";
         if (grp)                                               // Begin rolecheck
@@ -534,6 +539,7 @@ namespace lfg
                 {
                     uint64 pguid = plrg->GetGUID();
                     plrg->GetSession()->SendLfgUpdateStatus(updateData, false);
+                    SetActiveQueueId(pguid, queueId);
                     SetState(pguid, LFG_STATE_ROLECHECK);
                     if (!isContinue)
                         SetSelectedDungeons(pguid, dungeons);
@@ -954,6 +960,7 @@ namespace lfg
                 grp->ConvertToLFG();
                 grp->Create(player);
                 uint64 gguid = grp->GetGUID();
+                SetActiveQueueId(gguid, GetActiveQueueId(proposal.leader));
                 SetState(gguid, LFG_STATE_PROPOSAL);
                 sGroupMgr->AddGroup(grp);
             }
@@ -970,6 +977,7 @@ namespace lfg
         ASSERT(grp);
         grp->SetDungeonDifficulty(DifficultyID(dungeon->difficulty));
         uint64 gguid = grp->GetGUID();
+        SetActiveQueueId(gguid, GetActiveQueueId(proposal.leader));
         SetDungeon(gguid, dungeon->Entry());
         SetState(gguid, LFG_STATE_DUNGEON);
 
@@ -1590,6 +1598,23 @@ namespace lfg
         return roles;
     }
 
+    uint8 LFGMgr::GetActiveQueueId(uint64 guid)
+    {
+        uint8 queueId = 0;
+        if (IS_GROUP_GUID(guid))
+        {
+            queueId = GroupsStore[guid].GetActiveQueueId();
+            SF_LOG_TRACE("lfg.data.group.queue.active.get", "Group: %u, QueueId: %u", GUID_LOPART(guid), queueId);
+        }
+        else
+        {
+            queueId = PlayersStore[guid].GetActiveQueueId();
+            SF_LOG_TRACE("lfg.data.player.queue.active.get", "Player: %u, QueueId: %u", GUID_LOPART(guid), queueId);
+        }
+
+        return queueId;
+    }
+
     bool LFGMgr::IsVoteKickActive(uint64 guid)
     {
         bool active = GroupsStore[guid].IsVoteKickActive();
@@ -1733,6 +1758,20 @@ namespace lfg
                 GUID_LOPART(guid), GetStateString(state).c_str(), GetStateString(data.GetState()).c_str(),
                 GetStateString(data.GetOldState()).c_str());
             data.SetState(state);
+        }
+    }
+
+    void LFGMgr::SetActiveQueueId(uint64 guid, uint8 queueId)
+    {
+        if (IS_GROUP_GUID(guid))
+        {
+            SF_LOG_TRACE("lfg.data.group.queue.active.set", "Group: %u, QueueId: %u", GUID_LOPART(guid), queueId);
+            GroupsStore[guid].SetActiveQueueId(queueId);
+        }
+        else
+        {
+            SF_LOG_TRACE("lfg.data.player.queue.active.set", "Player: %u, QueueId: %u", GUID_LOPART(guid), queueId);
+            PlayersStore[guid].SetActiveQueueId(queueId);
         }
     }
 
@@ -1912,11 +1951,19 @@ namespace lfg
     {
         if (IS_GROUP_GUID(guid))
         {
+            LfgGroupData const& groupData = GroupsStore[guid];
+            if (groupData.GetQueues().find(groupData.GetActiveQueueId()) != groupData.GetQueues().end())
+                return groupData.GetActiveQueueId();
+
             LfgGuidSet const& players = GetPlayers(guid);
             uint64 pguid = players.empty() ? 0 : (*players.begin());
             if (pguid)
-                return GetTeam(pguid);
+                return GetQueueId(pguid);
         }
+
+        LfgPlayerData const& playerData = PlayersStore[guid];
+        if (playerData.GetQueues().find(playerData.GetActiveQueueId()) != playerData.GetQueues().end())
+            return playerData.GetActiveQueueId();
 
         return GetTeam(guid);
     }
@@ -2018,6 +2065,7 @@ namespace lfg
     {
         LfgDungeonSet dungeons;
         dungeons.insert(GetDungeon(gguid));
+        SetActiveQueueId(guid, GetActiveQueueId(gguid));
         SetSelectedDungeons(guid, dungeons);
         SetState(guid, GetState(gguid));
         SetGroup(guid, gguid);

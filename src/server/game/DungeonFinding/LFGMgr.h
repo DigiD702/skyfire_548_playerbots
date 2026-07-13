@@ -337,6 +337,8 @@ namespace lfg
         // cs_lfg
         /// Get current player roles
         uint8 GetRoles(uint64 guid);
+        /// Get active LFG queue id
+        uint8 GetActiveQueueId(uint64 guid);
         /// Get current player comment (used for LFR)
         std::string const& GetComment(uint64 gguid);
         /// Gets current lfg options
@@ -426,6 +428,7 @@ namespace lfg
         uint8 GetTeam(uint64 guid);
         void RestoreState(uint64 guid, char const* debugMsg);
         void ClearState(uint64 guid, char const* debugMsg);
+        void SetActiveQueueId(uint64 guid, uint8 queueId);
         void SetDungeon(uint64 guid, uint32 dungeon);
         void SetSelectedDungeons(uint64 guid, LfgDungeonSet const& dungeons);
         void DecreaseKicksLeft(uint64 guid);

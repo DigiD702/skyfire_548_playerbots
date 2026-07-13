@@ -7,9 +7,22 @@
 #define SF_LFGPLAYERDATA_H
 
 #include "LFG.h"
+#include <map>
 
 namespace lfg
 {
+    struct LfgPlayerQueueData
+    {
+        LfgPlayerQueueData();
+
+        LfgState State;                                     ///< Current state in this queue
+        LfgState OldState;                                  ///< Old state for rolecheck/proposal restore
+        uint8 Roles;                                        ///< Roles the player selected when joined LFG
+        std::string Comment;                                ///< Player comment used when joined LFG
+        LfgDungeonSet SelectedDungeons;                     ///< Selected dungeons when joined LFG
+    };
+
+    typedef std::map<uint8, LfgPlayerQueueData> LfgPlayerQueueDataContainer;
 
     /**
         Stores all lfg data needed about the player.
@@ -25,6 +38,7 @@ namespace lfg
         void RestoreState();
         void SetTeam(uint8 team);
         void SetGroup(uint64 group);
+        void SetActiveQueueId(uint8 queueId);
 
         // Queue
         void SetRoles(uint8 roles);
@@ -36,6 +50,8 @@ namespace lfg
         LfgState GetOldState() const;
         uint8 GetTeam() const;
         uint64 GetGroup() const;
+        uint8 GetActiveQueueId() const;
+        LfgPlayerQueueDataContainer const& GetQueues() const;
 
         // Queue
         uint8 GetRoles() const;
@@ -43,17 +59,16 @@ namespace lfg
         LfgDungeonSet const& GetSelectedDungeons() const;
 
     private:
+        LfgPlayerQueueData& GetActiveQueueData();
+        LfgPlayerQueueData const& GetActiveQueueData() const;
+
         // General
-        LfgState m_State;                                  ///< State if group in LFG
-        LfgState m_OldState;                               ///< Old State - Used to restore state after failed Rolecheck/Proposal
-        // Player
         uint8 m_Team;                                      ///< Player team - determines the queue to join
         uint64 m_Group;                                    ///< Original group of player when joined LFG
 
         // Queue
-        uint8 m_Roles;                                     ///< Roles the player selected when joined LFG
-        std::string m_Comment;                             ///< Player comment used when joined LFG
-        LfgDungeonSet m_SelectedDungeons;                  ///< Selected Dungeons when joined LFG
+        uint8 m_ActiveQueueId;                             ///< Active queue data owner
+        LfgPlayerQueueDataContainer m_Queues;              ///< Queue-scoped player data
     };
 
 } // namespace lfg
