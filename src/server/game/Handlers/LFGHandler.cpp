@@ -739,8 +739,13 @@ void WorldSession::SendLfgBootProposalUpdate(lfg::LfgPlayerBoot const& boot)
 
 void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
 {
-    ObjectGuid guid = GetPlayer()->GetGUID();
-    ObjectGuid gguid = proposal.players.find(guid)->second.group;
+    uint64 playerGuid = GetPlayer()->GetGUID();
+    lfg::LfgProposalPlayerContainer::const_iterator itSelf = proposal.players.find(playerGuid);
+    if (itSelf == proposal.players.end())
+        return;
+
+    ObjectGuid guid = playerGuid;
+    ObjectGuid gguid = itSelf->second.group;
     bool silent = !proposal.isNew && gguid == proposal.group;
     uint32 dungeonEntry = proposal.dungeonId;
     uint32 queueId = sLFGMgr->GetQueueId(_player->GetGUID());
@@ -753,7 +758,7 @@ void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
     if (!silent)
     {
         lfg::LfgDungeonSet const& playerDungeons = sLFGMgr->GetSelectedDungeons(guid);
-        if (playerDungeons.find(proposal.dungeonId) == playerDungeons.end())
+        if (!playerDungeons.empty() && playerDungeons.find(proposal.dungeonId) == playerDungeons.end())
             dungeonEntry = (*playerDungeons.begin());
     }
 
