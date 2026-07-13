@@ -304,6 +304,13 @@ namespace lfg
             LfgPlayerBoot& boot = itBoot->second;
             if (boot.cancelTime < currTime)
             {
+                LfgGroupDataContainer::const_iterator groupData = GroupsStore.find(itBoot->first);
+                if (groupData == GroupsStore.end())
+                {
+                    BootsStore.erase(itBoot);
+                    continue;
+                }
+
                 boot.inProgress = false;
                 for (LfgAnswerContainer::const_iterator itVotes = boot.votes.begin(); itVotes != boot.votes.end(); ++itVotes)
                 {
@@ -1284,6 +1291,13 @@ namespace lfg
         if (itBoot == BootsStore.end())
             return;
 
+        LfgGroupDataContainer::const_iterator groupData = GroupsStore.find(gguid);
+        if (groupData == GroupsStore.end())
+        {
+            BootsStore.erase(itBoot);
+            return;
+        }
+
         LfgPlayerBoot& boot = itBoot->second;
 
         LfgAnswerContainer::iterator itVote = boot.votes.find(guid);
@@ -1892,6 +1906,9 @@ namespace lfg
                 SendLfgUpdateStatus(guid, LfgUpdateData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE), true);
             }
         }
+
+        RoleChecksStore.erase(guid);
+        BootsStore.erase(guid);
         GroupsStore.erase(it);
     }
 
