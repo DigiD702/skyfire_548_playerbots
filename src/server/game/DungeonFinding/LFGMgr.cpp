@@ -325,8 +325,7 @@ namespace lfg
 
         if (lastProposalId != m_lfgProposalId)
         {
-            // FIXME lastProposalId ? lastProposalId +1 ?
-            for (LfgProposalContainer::const_iterator itProposal = ProposalsStore.find(m_lfgProposalId); itProposal != ProposalsStore.end(); ++itProposal)
+            for (LfgProposalContainer::const_iterator itProposal = ProposalsStore.upper_bound(lastProposalId); itProposal != ProposalsStore.end(); ++itProposal)
             {
                 uint32 proposalId = itProposal->first;
                 LfgProposal& proposal = ProposalsStore[proposalId];
