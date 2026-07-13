@@ -508,11 +508,11 @@ namespace lfg
             // Assing new leader
             if (itRoles->second & PLAYER_ROLE_LEADER)
             {
-                if (!leader || !proposal.leader || std::rand() % 1)
+                if (!leader || !proposal.leader || std::rand() % 2)
                     proposal.leader = itRoles->first;
                 leader = true;
             }
-            else if (!leader && (!proposal.leader || std::rand() % 1))
+            else if (!leader && (!proposal.leader || std::rand() % 2))
                 proposal.leader = itRoles->first;
 
             // Assing player data and roles
