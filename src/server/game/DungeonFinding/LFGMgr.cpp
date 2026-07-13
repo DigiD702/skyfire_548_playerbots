@@ -1059,8 +1059,10 @@ namespace lfg
         proposal.state = LFG_PROPOSAL_SUCCESS;
         time_t joinTime = time(NULL);
 
-        LFGQueue& queue = GetQueue(guid);
-        LfgUpdateData updateData = LfgUpdateData(LFG_UPDATETYPE_GROUP_FOUND);
+        uint64 queueOwner = proposal.queues.empty() ? guid : proposal.queues.front();
+        LFGQueue& queue = GetQueue(queueOwner);
+        LfgUpdateData groupFoundData = LfgUpdateData(LFG_UPDATETYPE_GROUP_FOUND);
+        LfgUpdateData removedFromQueueData = LfgUpdateData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE);
         for (LfgProposalPlayerContainer::const_iterator it = proposal.players.begin(); it != proposal.players.end(); ++it)
         {
             uint64 pguid = it->first;
@@ -1074,16 +1076,15 @@ namespace lfg
             if (gguid)
             {
                 waitTime = int32(joinTime - queue.GetJoinTime(gguid));
-                SendLfgUpdateStatus(pguid, updateData, false);
+                SendLfgUpdateStatus(pguid, groupFoundData, false);
             }
             else
             {
                 waitTime = int32(joinTime - queue.GetJoinTime(pguid));
-                SendLfgUpdateStatus(pguid, updateData, false);
+                SendLfgUpdateStatus(pguid, groupFoundData, false);
             }
-            updateData.updateType = LFG_UPDATETYPE_REMOVED_FROM_QUEUE;
-            SendLfgUpdateStatus(pguid, updateData, true);
-            SendLfgUpdateStatus(pguid, updateData, false);
+            SendLfgUpdateStatus(pguid, removedFromQueueData, true);
+            SendLfgUpdateStatus(pguid, removedFromQueueData, false);
 
             // Update timers
             uint8 role = GetRoles(pguid);
@@ -1194,7 +1195,8 @@ namespace lfg
             }
         }
 
-        LFGQueue& queue = GetQueue(proposal.players.begin()->first);
+        uint64 queueOwner = proposal.queues.empty() ? proposal.players.begin()->first : proposal.queues.front();
+        LFGQueue& queue = GetQueue(queueOwner);
         // Remove players/groups from queue
         for (LfgGuidSet::const_iterator it = toRemove.begin(); it != toRemove.end(); ++it)
         {
