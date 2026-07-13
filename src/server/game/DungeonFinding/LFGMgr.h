@@ -29,7 +29,7 @@ namespace lfg
 
     enum LFGMgrEnum
     {
-        LFG_TIME_ROLECHECK = 45 * IN_MILLISECONDS,
+        LFG_TIME_ROLECHECK = 45,
         LFG_TIME_BOOT = 120,
         LFG_TIME_PROPOSAL = 45,
         LFG_QUEUEUPDATE_INTERVAL = 15 * IN_MILLISECONDS,
@@ -427,6 +427,7 @@ namespace lfg
     private:
         uint8 GetTeam(uint64 guid);
         void RestoreState(uint64 guid, char const* debugMsg);
+        void RestoreOrClearState(uint64 guid, char const* debugMsg);
         void ClearState(uint64 guid, char const* debugMsg);
         void ClearQueueState(uint64 guid, char const* debugMsg);
         void SetActiveQueueId(uint64 guid, uint8 queueId);

@@ -279,13 +279,13 @@ namespace lfg
             for (LfgRolesMap::const_iterator itRoles = roleCheck.roles.begin(); itRoles != roleCheck.roles.end(); ++itRoles)
             {
                 uint64 guid = itRoles->first;
-                RestoreState(guid, "Remove Obsolete RoleCheck");
+                RestoreOrClearState(guid, "Remove Obsolete RoleCheck");
                 SendLfgRoleCheckUpdate(guid, roleCheck);
                 if (guid == roleCheck.leader)
                     SendLfgJoinResult(guid, LfgJoinResultData(LFG_JOIN_ROLE_CHECK_FAILED, LFG_ROLECHECK_MISSING_ROLE));
             }
 
-            RestoreState(itRoleCheck->first, "Remove Obsolete RoleCheck");
+            RestoreOrClearState(itRoleCheck->first, "Remove Obsolete RoleCheck");
             RoleChecksStore.erase(itRoleCheck);
         }
 
@@ -783,7 +783,7 @@ namespace lfg
                     if (roleCheck.leader == pguid)
                         SendLfgJoinResult(pguid, joinData);
                     SendLfgUpdateStatus(pguid, LfgUpdateData(LFG_UPDATETYPE_ROLECHECK_FAILED), true);
-                    RestoreState(pguid, "Rolecheck Failed");
+                    RestoreOrClearState(pguid, "Rolecheck Failed");
                     break;
             }
         }
@@ -797,7 +797,7 @@ namespace lfg
         }
         else if (roleCheck.state != LFG_ROLECHECK_INITIALITING)
         {
-            RestoreState(gguid, "Rolecheck Failed");
+            RestoreOrClearState(gguid, "Rolecheck Failed");
             RoleChecksStore.erase(itRoleCheck);
         }
     }
@@ -1746,6 +1746,14 @@ namespace lfg
                 GetStateString(data.GetOldState()).c_str());
             data.RestoreState();
         }
+    }
+
+    void LFGMgr::RestoreOrClearState(uint64 guid, char const* debugMsg)
+    {
+        if (GetOldState(guid) == LFG_STATE_NONE)
+            ClearQueueState(guid, debugMsg);
+        else
+            RestoreState(guid, debugMsg);
     }
 
     void LFGMgr::SetState(uint64 guid, LfgState state)
