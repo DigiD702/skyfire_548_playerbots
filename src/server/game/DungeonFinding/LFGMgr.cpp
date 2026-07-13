@@ -180,37 +180,54 @@ namespace lfg
             }
         }
 
-        // Fill teleport locations from DB
-        QueryResult result = WorldDatabase.Query("SELECT dungeonId, position_x, position_y, position_z, orientation FROM lfg_entrances");
-        if (!result)
+        // Fill teleport locations and lock metadata from DB.
+        QueryResult result;
+        bool usingDungeonTemplate = false;
+        QueryResult dungeonTemplateTable = WorldDatabase.Query("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'lfg_dungeon_template' LIMIT 1");
+        if (dungeonTemplateTable)
         {
-            SF_LOG_ERROR("server.loading", ">> Loaded 0 lfg entrance positions. DB table `lfg_entrances` is empty!");
-            return;
+            result = WorldDatabase.Query("SELECT dungeonId, position_x, position_y, position_z, orientation, requiredItemLevel FROM lfg_dungeon_template");
+            if (result)
+                usingDungeonTemplate = true;
         }
+
+        if (!result)
+            result = WorldDatabase.Query("SELECT dungeonId, position_x, position_y, position_z, orientation FROM lfg_entrances");
 
         uint32 count = 0;
 
-        do
+        if (result)
         {
-            Field* fields = result->Fetch();
-            uint32 dungeonId = fields[0].GetUInt32();
-            LFGDungeonContainer::iterator dungeonItr = LfgDungeonStore.find(dungeonId);
-            if (dungeonItr == LfgDungeonStore.end())
+            do
             {
-                SF_LOG_ERROR("sql.sql", "table `lfg_entrances` contains coordinates for wrong dungeon %u", dungeonId);
-                continue;
-            }
+                Field* fields = result->Fetch();
+                uint32 dungeonId = fields[0].GetUInt32();
+                LFGDungeonContainer::iterator dungeonItr = LfgDungeonStore.find(dungeonId);
+                if (dungeonItr == LfgDungeonStore.end())
+                {
+                    SF_LOG_ERROR("sql.sql", "table `%s` contains data for wrong dungeon %u", usingDungeonTemplate ? "lfg_dungeon_template" : "lfg_entrances", dungeonId);
+                    continue;
+                }
 
-            LFGDungeonData& data = dungeonItr->second;
-            data.x = fields[1].GetFloat();
-            data.y = fields[2].GetFloat();
-            data.z = fields[3].GetFloat();
-            data.o = fields[4].GetFloat();
+                LFGDungeonData& data = dungeonItr->second;
+                data.x = fields[1].GetFloat();
+                data.y = fields[2].GetFloat();
+                data.z = fields[3].GetFloat();
+                data.o = fields[4].GetFloat();
 
-            ++count;
-        } while (result->NextRow());
+                if (usingDungeonTemplate)
+                    data.requiredItemLevel = fields[5].GetUInt32();
 
-        SF_LOG_INFO("server.loading", ">> Loaded %u lfg entrance positions in %u ms", count, GetMSTimeDiffToNow(oldMSTime));
+                ++count;
+            } while (result->NextRow());
+        }
+
+        if (usingDungeonTemplate)
+            SF_LOG_INFO("server.loading", ">> Loaded %u lfg dungeon templates in %u ms", count, GetMSTimeDiffToNow(oldMSTime));
+        else if (result)
+            SF_LOG_INFO("server.loading", ">> Loaded %u lfg entrance positions in %u ms", count, GetMSTimeDiffToNow(oldMSTime));
+        else
+            SF_LOG_ERROR("server.loading", ">> Loaded 0 lfg entrance positions. DB tables `lfg_dungeon_template` and `lfg_entrances` are empty or missing!");
 
         // Fill all other teleport coords from areatriggers
         for (LFGDungeonContainer::iterator itr = LfgDungeonStore.begin(); itr != LfgDungeonStore.end(); ++itr)
@@ -1621,7 +1638,7 @@ namespace lfg
             if (!dungeon) // should never happen - We provide a list from sLFGDungeonStore
                 continue;
             uint32 lockStatus = 0;
-            uint32 requiredItemLevel = 0;
+            uint32 requiredItemLevel = dungeon->requiredItemLevel;
             if (denyJoin)
                 lockStatus = LFG_LOCKSTATUS_RAID_LOCKED;
             else if (dungeon->expansion > expansion)
@@ -1638,8 +1655,10 @@ namespace lfg
                 lockStatus = LFG_LOCKSTATUS_NOT_IN_SEASON;
             else if (AccessRequirement const* ar = sObjectMgr->GetAccessRequirement(dungeon->map, DifficultyID(dungeon->difficulty)))
             {
-                requiredItemLevel = ar->iLvl;
-                if (ar->iLvl && playerItemLevel < ar->iLvl)
+                if (!requiredItemLevel)
+                    requiredItemLevel = ar->iLvl;
+
+                if (requiredItemLevel && playerItemLevel < requiredItemLevel)
                     lockStatus = LFG_LOCKSTATUS_TOO_LOW_GEAR_SCORE;
                 else if (ar->achievement && !player->HasAchieved(ar->achievement))
                     lockStatus = LFG_LOCKSTATUS_MISSING_ACHIEVEMENT;
@@ -1656,6 +1675,8 @@ namespace lfg
                     else if (ar->item2 && !player->HasItemCount(ar->item2))
                         lockStatus = LFG_LOCKSTATUS_MISSING_ITEM;
             }
+            else if (requiredItemLevel && playerItemLevel < requiredItemLevel)
+                lockStatus = LFG_LOCKSTATUS_TOO_LOW_GEAR_SCORE;
             /* @todo VoA closed if WG is not under team control (LFG_LOCKSTATUS_RAID_LOCKED)
             lockStatus = LFG_LOCKSTATUS_TOO_HIGH_GEAR_SCORE;
             lockStatus = LFG_LOCKSTATUS_ATTUNEMENT_TOO_LOW_LEVEL;
