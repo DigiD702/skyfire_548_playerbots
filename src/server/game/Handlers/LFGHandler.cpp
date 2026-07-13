@@ -516,7 +516,8 @@ void WorldSession::SendLfgRoleCheckUpdate(lfg::LfgRoleCheck const& roleCheck)
         dungeons = roleCheck.dungeons;
 
     ObjectGuid guid = roleCheck.leader;
-    uint8 roles = roleCheck.roles.find(guid)->second;
+    lfg::LfgRolesMap::const_iterator itLeaderRoles = roleCheck.roles.find(guid);
+    uint8 roles = itLeaderRoles != roleCheck.roles.end() ? itLeaderRoles->second : 0;
     Player* player = ObjectAccessor::FindPlayer(guid);
 
     SF_LOG_DEBUG("lfg", "SMSG_LFD_ROLE_CHECK_UPDATE %s", GetPlayerInfo().c_str());
@@ -563,9 +564,10 @@ void WorldSession::SendLfgRoleCheckUpdate(lfg::LfgRoleCheck const& roleCheck)
                 continue;
 
             guid = it->first;
-            data << uint8(player ? player->getLevel() : 0); // Level
+            Player* member = ObjectAccessor::FindPlayer(guid);
+            data << uint8(member ? member->getLevel() : 0); // Level
             data.WriteGuidBytes(guid, 3, 6);
-            data << uint32(roles);                          // RolesDesired
+            data << uint32(it->second);                     // RolesDesired
             data.WriteGuidBytes(guid, 2, 4, 0, 1, 5, 7);
         }
     }
