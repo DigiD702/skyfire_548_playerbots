@@ -2052,6 +2052,20 @@ namespace lfg
     LfgUpdateData LFGMgr::GetLfgStatus(uint64 guid)
     {
         LfgPlayerData& playerData = PlayersStore[guid];
+        if (uint64 gguid = GetGroup(guid))
+        {
+            LfgState groupState = GetState(gguid);
+            if (groupState != LFG_STATE_NONE)
+            {
+                LfgDungeonSet statusDungeons = playerData.GetSelectedDungeons();
+                if (statusDungeons.empty())
+                    if (uint32 dungeon = GetDungeon(gguid, false))
+                        statusDungeons.insert(dungeon);
+
+                return LfgUpdateData(LFG_UPDATETYPE_UPDATE_STATUS, groupState, statusDungeons);
+            }
+        }
+
         return LfgUpdateData(LFG_UPDATETYPE_UPDATE_STATUS, playerData.GetState(), playerData.GetSelectedDungeons());
     }
 
