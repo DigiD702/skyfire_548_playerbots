@@ -1265,10 +1265,14 @@ namespace lfg
 
         LfgPlayerBoot& boot = itBoot->second;
 
-        if (boot.votes[guid] != LFG_ANSWER_PENDING)    // Cheat check: Player can't vote twice
+        LfgAnswerContainer::iterator itVote = boot.votes.find(guid);
+        if (itVote == boot.votes.end())
             return;
 
-        boot.votes[guid] = LfgAnswer(accept);
+        if (itVote->second != LFG_ANSWER_PENDING)    // Cheat check: Player can't vote twice
+            return;
+
+        itVote->second = LfgAnswer(accept);
 
         uint8 votesNum = 0;
         uint8 agreeNum = 0;
