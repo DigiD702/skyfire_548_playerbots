@@ -12,8 +12,17 @@
 #include "Log.h"
 #include "ObjectDefines.h"
 
+#include <algorithm>
+
 namespace lfg
 {
+    namespace
+    {
+        bool QueueContainsGuid(LfgGuidList const& queue, uint64 guid)
+        {
+            return std::find(queue.begin(), queue.end(), guid) != queue.end();
+        }
+    }
 
     /**
        Given a list of guids returns the concatenation using | as delimiter
@@ -112,7 +121,8 @@ namespace lfg
 
     void LFGQueue::AddToNewQueue(uint64 guid)
     {
-        newToQueueStore.push_back(guid);
+        if (!QueueContainsGuid(newToQueueStore, guid))
+            newToQueueStore.push_back(guid);
     }
 
     void LFGQueue::RemoveFromNewQueue(uint64 guid)
@@ -122,7 +132,8 @@ namespace lfg
 
     void LFGQueue::AddToCurrentQueue(uint64 guid)
     {
-        currentQueueStore.push_back(guid);
+        if (!QueueContainsGuid(currentQueueStore, guid))
+            currentQueueStore.push_back(guid);
     }
 
     void LFGQueue::RemoveFromCurrentQueue(uint64 guid)
