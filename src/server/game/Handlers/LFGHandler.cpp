@@ -257,7 +257,12 @@ void WorldSession::HandleLFDGetLockInfoOpcode(WorldPacket& recvData)
 
 void WorldSession::SendLfgPlayerLockInfo()
 {
+    if (!GetPlayer())
+        return;
+
     uint64 guid = GetPlayer()->GetGUID();
+    ObjectGuid playerGuid = guid;
+    bool const hasPlayerGuid = true;
 
     // Get Random dungeons that can be done at a certain level and expansion
     uint8 level = GetPlayer()->getLevel();
@@ -271,31 +276,18 @@ void WorldSession::SendLfgPlayerLockInfo()
 
     SF_LOG_DEBUG("lfg", "SMSG_LFD_PLAYER_INFO %s", GetPlayerInfo().c_str());
     WorldPacket data(SMSG_LFD_PLAYER_INFO, 1 + rsize * (4 + 1 + 4 + 4 + 4 + 4 + 1 + 4 + 4 + 4) + 4 + lsize * (1 + 4 + 4 + 4 + 4 + 1 + 4 + 4 + 4));
+    ByteBuffer rewardData;
 
     data.WriteBits(lock.size(), 20); // locksize count
-    data.WriteBit(0);                // hasPlayerGuid
+    data.WriteBit(hasPlayerGuid);
     data.WriteBits(randomDungeons.size(), 17);
-
-
-    for (lfg::LfgDungeonSet::const_iterator it = randomDungeons.begin(); it != randomDungeons.end(); ++it)
-    {
-        data.WriteBit(0); // ShortageEligible
-        data.WriteBit(0); // FirstReward
-        data.WriteBits(0, 21);
-        data.WriteBits(0, 19);
-        data.WriteBits(0, 20);
-        //forloop {} // 64
-
-        data.WriteBits(0, 21);
-    }
-    // if (hasPlayerGuid) {}
-    data.FlushBits();
-    // if (hasPlayerGuid) {}
 
     for (lfg::LfgDungeonSet::const_iterator it = randomDungeons.begin(); it != randomDungeons.end(); ++it)
     {
         lfg::LfgReward const* reward = sLFGMgr->GetRandomDungeonReward(*it, level);
         Quest const* quest = NULL;
+        bool firstReward = false;
+
         if (reward)
         {
             quest = sObjectMgr->GetQuestTemplate(reward->firstQuest);
@@ -304,31 +296,93 @@ void WorldSession::SendLfgPlayerLockInfo()
                 bool done = !GetPlayer()->CanRewardQuest(quest, false);
                 if (done)
                     quest = sObjectMgr->GetQuestTemplate(reward->otherQuest);
+
+                firstReward = !done;
             }
         }
 
-        data << uint32(0); // RewardXP
-        //forloop {} // ShortageReward
-        data << uint32(0); // SpecificQuantity
-        //forloop {} // BonusCurrency
-        data << uint32(0); // PurseLimit
-        data << uint32(0); // RewardMoney
-        //forloop {} // Item
-        data << uint32(0); // OverallQuantity
-        data << uint32(0); // PurseWeeklyQuantity
-        data << uint32(0); // OverallLimit
-        data << uint32(0); // Quantity
-        data << uint32(0); // CompletionCurrencyID
-        data << uint32(*it); // Dungeon Entry (id + type)
-        //forloop {} // Currency
-        data << uint32(0); // PurseWeeklyLimit
-        data << uint32(0); // Mask
-        data << uint32(0); // PurseQuantity
-        data << uint32(0); // CompletionLimit
-        data << uint32(0); // SpecificLimit
-        data << uint32(0); // CompletedMask
-        data << uint32(0); // CompletionQuantity
+        bool const shortageEligible = !GetPlayer()->GetGroup();
+        uint8 const shortageCount = shortageEligible ? lfg::LFG_ROLE_SHORTAGE_MAX : 0;
+
+        data.WriteBit(firstReward);
+        data.WriteBit(shortageEligible);
+        data.WriteBits(0, 21); // Additional currency count
+        data.WriteBits(shortageCount, 19);
+        data.WriteBits(quest ? quest->GetRewItemsCount() : 0, 20);
+
+        for (uint8 i = 0; i < shortageCount; ++i)
+        {
+            data.WriteBits(0, 21); // Shortage currency count
+            data.WriteBits(0, 20); // Shortage item count
+            data.WriteBits(0, 21); // Extra shortage currency count
+        }
+
+        data.WriteBits(quest ? quest->GetRewCurrencyCount() : 0, 21);
+
+        rewardData << uint32(quest ? quest->XPValue(GetPlayer()) : 0);
+
+        for (uint8 i = 0; i < shortageCount; ++i)
+        {
+            rewardData << uint32(0); // Shortage reward money
+            rewardData << uint32(lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE);
+            rewardData << uint32(0);
+        }
+
+        rewardData << uint32(0); // SpecificQuantity
+        rewardData << uint32(0); // PurseLimit
+        rewardData << uint32(quest ? quest->GetRewMoney() : 0);
+
+        if (quest && quest->GetRewItemsCount())
+        {
+            for (uint8 i = 0; i < QUEST_REWARDS_COUNT; ++i)
+            {
+                if (!quest->RewardItemId[i])
+                    continue;
+
+                ItemTemplate const* item = sObjectMgr->GetItemTemplate(quest->RewardItemId[i]);
+                rewardData << uint32(quest->RewardItemIdCount[i]);
+                rewardData << uint32(quest->RewardItemId[i]);
+                rewardData << uint32(item ? item->DisplayInfoID : 0);
+            }
+        }
+
+        rewardData << uint32(0); // OverallQuantity
+        rewardData << uint32(0); // PurseWeeklyQuantity
+        rewardData << uint32(1); // OverallLimit
+        rewardData << uint32(1); // Quantity
+        rewardData << uint32(0); // CompletionCurrencyID
+        rewardData << uint32(*it); // Dungeon Entry (id + type)
+
+        if (quest && quest->GetRewCurrencyCount())
+        {
+            for (uint8 i = 0; i < QUEST_REWARD_CURRENCY_COUNT; ++i)
+            {
+                if (!quest->RewardCurrencyId[i])
+                    continue;
+
+                rewardData << uint32(quest->RewardCurrencyId[i]);
+                rewardData << uint32(quest->RewardCurrencyCount[i] * 100);
+            }
+        }
+
+        rewardData << uint32(0); // PurseWeeklyLimit
+        rewardData << uint32(0); // Mask
+        rewardData << uint32(0); // PurseQuantity
+        rewardData << uint32(1); // CompletionLimit
+        rewardData << uint32(1); // SpecificLimit
+        rewardData << uint32(0); // CompletedMask
+        rewardData << uint32(1); // CompletionQuantity
     }
+
+    if (hasPlayerGuid)
+        data.WriteGuidMask(playerGuid, 5, 1, 2, 7, 3, 0, 6, 4);
+
+    data.FlushBits();
+
+    if (hasPlayerGuid)
+        data.WriteGuidBytes(playerGuid, 7, 2, 3, 0, 4, 5, 6, 1);
+
+    data.append(rewardData);
 
     for (lfg::LfgLockMap::const_iterator it = lock.begin(); it != lock.end(); ++it)
     {

@@ -27,6 +27,14 @@ namespace lfg
         PLAYER_ROLE_DAMAGE = 0x08
     };
 
+    enum LfgShortageIndex
+    {
+        LFG_ROLE_SHORTAGE_RARE = 0,
+        LFG_ROLE_SHORTAGE_UNCOMMON = 1,
+        LFG_ROLE_SHORTAGE_PLENTIFUL = 2,
+        LFG_ROLE_SHORTAGE_MAX
+    };
+
     enum LfgUpdateType
     {
         LFG_UPDATETYPE_DEFAULT = 0,      // Internal Use
