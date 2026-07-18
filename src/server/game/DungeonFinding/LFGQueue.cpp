@@ -619,6 +619,9 @@ namespace lfg
         SF_LOG_TRACE("lfg.queue.timers.update", "Updating queue timers...");
         for (LfgQueueDataContainer::iterator itQueue = QueueDataStore.begin(); itQueue != QueueDataStore.end(); ++itQueue)
         {
+            if (!QueueContainsGuid(newToQueueStore, itQueue->first) && !QueueContainsGuid(currentQueueStore, itQueue->first))
+                continue;
+
             LfgQueueData& queueinfo = itQueue->second;
             if (queueinfo.dungeons.empty())
             {
