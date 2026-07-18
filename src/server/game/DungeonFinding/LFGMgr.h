@@ -334,6 +334,8 @@ namespace lfg
         void SetupGroupMember(uint64 guid, uint64 gguid);
         /// Restores the active queue id from saved queue data
         bool RestoreActiveQueue(uint64 guid);
+        /// Resends an active dungeon proposal to a player if one exists
+        bool SendActiveProposal(uint64 guid);
         /// Return Lfg dungeon entry for given dungeon id
         uint32 GetLFGDungeonEntry(uint32 id);
 

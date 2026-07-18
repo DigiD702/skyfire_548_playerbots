@@ -1046,6 +1046,13 @@ namespace lfg
             return;
 
         LfgProposalPlayer& player = itProposalPlayer->second;
+        if (proposal.state != LFG_PROPOSAL_INITIATING || player.accept != LFG_ANSWER_PENDING)
+        {
+            SF_LOG_DEBUG("lfg.proposal.update", "Ignoring stale proposal response. Player %u, Proposal %u, Selection: %u, State: %u, Previous: %d",
+                GUID_LOPART(guid), proposalId, accept, proposal.state, player.accept);
+            return;
+        }
+
         player.accept = LfgAnswer(accept);
 
         SF_LOG_DEBUG("lfg.proposal.update", "Player %u, Proposal %u, Selection: %u", GUID_LOPART(guid), proposalId, accept);
@@ -2159,6 +2166,24 @@ namespace lfg
         }
 
         return LfgUpdateData(LFG_UPDATETYPE_UPDATE_STATUS, playerData.GetState(), playerData.GetSelectedDungeons());
+    }
+
+    bool LFGMgr::SendActiveProposal(uint64 guid)
+    {
+        if (!guid)
+            return false;
+
+        for (LfgProposalContainer::const_iterator itr = ProposalsStore.begin(); itr != ProposalsStore.end(); ++itr)
+        {
+            LfgProposalPlayerContainer::const_iterator itPlayer = itr->second.players.find(guid);
+            if (itPlayer == itr->second.players.end())
+                continue;
+
+            SendLfgUpdateProposal(guid, itr->second);
+            return true;
+        }
+
+        return false;
     }
 
     bool LFGMgr::RestoreActiveQueue(uint64 guid)

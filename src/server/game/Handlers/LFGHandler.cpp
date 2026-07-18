@@ -453,6 +453,7 @@ void WorldSession::HandleLfgGetStatus(WorldPacket& /*recvData*/)
 
     uint64 guid = GetPlayer()->GetGUID();
     lfg::LfgUpdateData updateData = sLFGMgr->GetLfgStatus(guid);
+    bool hasActiveProposal = updateData.state == lfg::LFG_STATE_PROPOSAL;
 
     if (GetPlayer()->GetGroup())
     {
@@ -466,6 +467,9 @@ void WorldSession::HandleLfgGetStatus(WorldPacket& /*recvData*/)
         updateData.dungeons.clear();
         SendLfgUpdateStatus(updateData, true);
     }
+
+    if (hasActiveProposal)
+        sLFGMgr->SendActiveProposal(guid);
 }
 
 void WorldSession::SendLfgUpdateStatus(lfg::LfgUpdateData const& updateData, bool party)

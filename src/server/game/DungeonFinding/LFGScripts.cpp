@@ -61,6 +61,8 @@ namespace lfg
         {
             LfgUpdateData updateData = sLFGMgr->GetLfgStatus(guid);
             player->GetSession()->SendLfgUpdateStatus(updateData, player->GetGroup() != NULL);
+            if (updateData.state == LFG_STATE_PROPOSAL)
+                sLFGMgr->SendActiveProposal(guid);
         }
     }
 
