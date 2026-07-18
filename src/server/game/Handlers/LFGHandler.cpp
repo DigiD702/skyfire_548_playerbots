@@ -156,12 +156,27 @@ void WorldSession::HandleLfgLeaveOpcode(WorldPacket& recvData)
         return;
     }
 
+    uint64 guid = GetPlayer()->GetGUID();
+    uint64 leaderGuid = group->GetLeaderGUID();
+    uint64 groupGuid = group->GetGUID();
+
+    if (uint64(RequesterGUID) && uint64(RequesterGUID) != guid && uint64(RequesterGUID) != leaderGuid)
+        SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE %s ignored requester guid %lu for group queue leave.",
+            GetPlayerInfo().c_str(), uint64(RequesterGUID));
+    if (queueID != sLFGMgr->GetQueueId(groupGuid))
+        SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE %s requested queue %u but active group queue is %u.",
+            GetPlayerInfo().c_str(), queueID, sLFGMgr->GetQueueId(groupGuid));
+
     // Check cheating - only leader can leave the queue
-    if (group && group->GetLeaderGUID() == uint64(RequesterGUID))
+    if (leaderGuid != guid)
     {
-        SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE GroupLeader: %lu left group queue.", uint64(RequesterGUID));
-        sLFGMgr->LeaveLfg(uint64(RequesterGUID));
+        SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE %s ignored non-leader group queue leave.",
+            GetPlayerInfo().c_str());
+        return;
     }
+
+    SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE GroupLeader: %lu left group queue.", guid);
+    sLFGMgr->LeaveLfg(groupGuid);
 }
 
 void WorldSession::HandleLfgProposalResultOpcode(WorldPacket& recvData)
