@@ -286,10 +286,11 @@ namespace lfg
             for (LfgRolesMap::const_iterator itRoles = roleCheck.roles.begin(); itRoles != roleCheck.roles.end(); ++itRoles)
             {
                 uint64 guid = itRoles->first;
-                RestoreOrClearState(guid, "Remove Obsolete RoleCheck");
                 SendLfgRoleCheckUpdate(guid, roleCheck);
                 if (guid == roleCheck.leader)
                     SendLfgJoinResult(guid, LfgJoinResultData(LFG_JOIN_ROLE_CHECK_FAILED, LFG_ROLECHECK_MISSING_ROLE));
+                SendLfgUpdateStatus(guid, LfgUpdateData(LFG_UPDATETYPE_ROLECHECK_FAILED), true);
+                RestoreOrClearState(guid, "Remove Obsolete RoleCheck");
             }
 
             RestoreOrClearState(itRoleCheck->first, "Remove Obsolete RoleCheck");
@@ -776,8 +777,17 @@ namespace lfg
             dungeons = roleCheck.dungeons;
 
         LfgJoinResult joinResult = LFG_JOIN_FAILED;
-        if (roleCheck.state == LFG_ROLECHECK_MISSING_ROLE || roleCheck.state == LFG_ROLECHECK_WRONG_ROLES)
-            joinResult = LFG_JOIN_ROLE_CHECK_FAILED;
+        switch (roleCheck.state)
+        {
+            case LFG_ROLECHECK_MISSING_ROLE:
+            case LFG_ROLECHECK_WRONG_ROLES:
+            case LFG_ROLECHECK_ABORTED:
+            case LFG_ROLECHECK_NO_ROLE:
+                joinResult = LFG_JOIN_ROLE_CHECK_FAILED;
+                break;
+            default:
+                break;
+        }
 
         LfgJoinResultData joinData = LfgJoinResultData(joinResult, roleCheck.state);
         for (LfgRolesMap::const_iterator it = roleCheck.roles.begin(); it != roleCheck.roles.end(); ++it)
