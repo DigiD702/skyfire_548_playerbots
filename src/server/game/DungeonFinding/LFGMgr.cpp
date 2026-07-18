@@ -1016,6 +1016,16 @@ namespace lfg
         SetDungeon(gguid, dungeon->Entry());
         SetState(gguid, LFG_STATE_DUNGEON);
 
+        uint64 leader = proposal.leader && grp->IsMember(proposal.leader) ? proposal.leader : grp->GetLeaderGUID();
+        if (leader && grp->GetLeaderGUID() != leader)
+            grp->ChangeLeader(leader);
+
+        SetLeader(gguid, leader);
+
+        for (LfgGuidList::const_iterator it = players.begin(); it != players.end(); ++it)
+            if (grp->IsMember(*it))
+                SetupGroupMember(*it, gguid);
+
         _SaveToDB(gguid, grp->GetDbStoreId());
 
         // Teleport Player

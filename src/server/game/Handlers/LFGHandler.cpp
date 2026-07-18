@@ -503,8 +503,13 @@ void WorldSession::SendLfgUpdateStatus(lfg::LfgUpdateData const& updateData, boo
     bool queued = false;
     uint8 size = uint8(updateData.dungeons.size());
     ObjectGuid guid = _player->GetGUID();
-    time_t joinTime = sLFGMgr->GetQueueJoinTime(_player->GetGUID());
-    uint32 queueId = sLFGMgr->GetQueueId(_player->GetGUID());
+    uint64 queueGuid = _player->GetGUID();
+    if (party)
+        if (Group* group = _player->GetGroup())
+            queueGuid = group->GetGUID();
+
+    time_t joinTime = sLFGMgr->GetQueueJoinTime(queueGuid);
+    uint32 queueId = sLFGMgr->GetQueueId(queueGuid);
     bool lfgjoined = updateData.updateType != lfg::LFG_UPDATETYPE_REMOVED_FROM_QUEUE;
 
     switch (updateData.updateType)
