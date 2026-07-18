@@ -1101,39 +1101,52 @@ namespace lfg
             LfgDungeonSet const& selectedDungeons = GetSelectedDungeons(pguid);
             uint32 dungeonId = selectedDungeons.empty() ? proposal.dungeonId : (*selectedDungeons.begin());
             int32 waitTime = -1;
+            uint64 queuedGuid = gguid ? gguid : pguid;
+            time_t queueJoinTime = queue.GetJoinTime(queuedGuid);
+            if (!queueJoinTime && queuedGuid != pguid)
+                queueJoinTime = queue.GetJoinTime(pguid);
+
             if (sendUpdate)
                 SendLfgUpdateProposal(pguid, proposal);
 
             if (gguid)
             {
-                waitTime = int32(joinTime - queue.GetJoinTime(gguid));
                 SendLfgUpdateStatus(pguid, groupFoundData, false);
             }
             else
             {
-                waitTime = int32(joinTime - queue.GetJoinTime(pguid));
                 SendLfgUpdateStatus(pguid, groupFoundData, false);
             }
+
+            if (queueJoinTime)
+                waitTime = int32(joinTime - queueJoinTime);
+            else
+                SF_LOG_DEBUG("lfg.proposal.update", "Proposal %u missing queue join time for player %u queue owner %u",
+                    proposalId, GUID_LOPART(pguid), GUID_LOPART(queuedGuid));
+
             SendLfgUpdateStatus(pguid, removedFromQueueData, true);
             SendLfgUpdateStatus(pguid, removedFromQueueData, false);
 
-            // Update timers
-            uint8 role = GetRoles(pguid);
-            role &= ~PLAYER_ROLE_LEADER;
-            switch (role)
+            if (waitTime >= 0 && dungeonId)
             {
-                case PLAYER_ROLE_DAMAGE:
-                    queue.UpdateWaitTimeDps(waitTime, dungeonId);
-                    break;
-                case PLAYER_ROLE_HEALER:
-                    queue.UpdateWaitTimeHealer(waitTime, dungeonId);
-                    break;
-                case PLAYER_ROLE_TANK:
-                    queue.UpdateWaitTimeTank(waitTime, dungeonId);
-                    break;
-                default:
-                    queue.UpdateWaitTimeAvg(waitTime, dungeonId);
-                    break;
+                // Update timers
+                uint8 role = GetRoles(pguid);
+                role &= ~PLAYER_ROLE_LEADER;
+                switch (role)
+                {
+                    case PLAYER_ROLE_DAMAGE:
+                        queue.UpdateWaitTimeDps(waitTime, dungeonId);
+                        break;
+                    case PLAYER_ROLE_HEALER:
+                        queue.UpdateWaitTimeHealer(waitTime, dungeonId);
+                        break;
+                    case PLAYER_ROLE_TANK:
+                        queue.UpdateWaitTimeTank(waitTime, dungeonId);
+                        break;
+                    default:
+                        queue.UpdateWaitTimeAvg(waitTime, dungeonId);
+                        break;
+                }
             }
 
             SetState(pguid, LFG_STATE_DUNGEON);
@@ -1181,6 +1194,20 @@ namespace lfg
             }
         }
 
+        uint64 queueOwner = proposal.queues.empty() ? proposal.players.begin()->first : proposal.queues.front();
+        LFGQueue& queue = GetQueue(queueOwner);
+        LfgGuidSet missingQueueData;
+        for (LfgGuidList::const_iterator it = proposal.queues.begin(); it != proposal.queues.end(); ++it)
+        {
+            if (!queue.HasQueueData(*it))
+            {
+                missingQueueData.insert(*it);
+                toRemove.insert(*it);
+                SF_LOG_DEBUG("lfg.proposal.remove", "Proposal %u missing queue data for %u while removing proposal",
+                    proposal.id, GUID_LOPART(*it));
+            }
+        }
+
         // Notify players
         for (LfgProposalPlayerContainer::const_iterator it = proposal.players.begin(); it != proposal.players.end(); ++it)
         {
@@ -1196,6 +1223,11 @@ namespace lfg
                 {
                     updateData.updateType = type;
                     SF_LOG_DEBUG("lfg.proposal.remove", "%u didn't accept. Removing from queue and compatible cache", GUID_LOPART(guid));
+                }
+                else if (missingQueueData.find(gguid) != missingQueueData.end())
+                {
+                    updateData.updateType = LFG_UPDATETYPE_REMOVED_FROM_QUEUE;
+                    SF_LOG_DEBUG("lfg.proposal.remove", "%u no longer has queue data. Removing stale proposal state", GUID_LOPART(guid));
                 }
                 else
                 {
@@ -1226,8 +1258,6 @@ namespace lfg
             }
         }
 
-        uint64 queueOwner = proposal.queues.empty() ? proposal.players.begin()->first : proposal.queues.front();
-        LFGQueue& queue = GetQueue(queueOwner);
         // Remove players/groups from queue
         for (LfgGuidSet::const_iterator it = toRemove.begin(); it != toRemove.end(); ++it)
         {
@@ -1240,7 +1270,8 @@ namespace lfg
         for (LfgGuidList::const_iterator it = proposal.queues.begin(); it != proposal.queues.end(); ++it)
         {
             uint64 guid = *it;
-            queue.AddToQueue(guid, true);
+            if (queue.HasQueueData(guid))
+                queue.AddToQueue(guid, true);
         }
 
         ProposalsStore.erase(itProposal);

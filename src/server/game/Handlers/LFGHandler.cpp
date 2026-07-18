@@ -833,8 +833,11 @@ void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
     ObjectGuid gguid = itSelf->second.group;
     bool silent = !proposal.isNew && gguid == proposal.group;
     uint32 dungeonEntry = proposal.dungeonId;
-    uint32 queueId = sLFGMgr->GetQueueId(_player->GetGUID());
-    time_t joinTime = sLFGMgr->GetQueueJoinTime(_player->GetGUID());
+    uint64 queueGuid = uint64(gguid) ? uint64(gguid) : playerGuid;
+    uint32 queueId = sLFGMgr->GetQueueId(queueGuid);
+    time_t joinTime = sLFGMgr->GetQueueJoinTime(queueGuid);
+    if (!joinTime && queueGuid != playerGuid)
+        joinTime = sLFGMgr->GetQueueJoinTime(playerGuid);
 
     SF_LOG_DEBUG("lfg", "SMSG_LFD_PROPOSAL_UPDATE %s state: %u",
         GetPlayerInfo().c_str(), proposal.state);

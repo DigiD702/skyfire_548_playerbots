@@ -173,6 +173,11 @@ namespace lfg
             QueueDataStore.erase(it);
     }
 
+    bool LFGQueue::HasQueueData(uint64 guid) const
+    {
+        return QueueDataStore.find(guid) != QueueDataStore.end();
+    }
+
     void LFGQueue::UpdateWaitTimeAvg(int32 waitTime, uint32 dungeonId)
     {
         LfgWaitTime& wt = waitTimesAvgStore[dungeonId];
