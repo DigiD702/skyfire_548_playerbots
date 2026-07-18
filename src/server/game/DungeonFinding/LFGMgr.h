@@ -448,7 +448,7 @@ namespace lfg
 
         // Proposals
         void RemoveProposal(LfgProposalContainer::iterator itProposal, LfgUpdateType type);
-        void MakeNewGroup(LfgProposal const& proposal);
+        bool MakeNewGroup(LfgProposal const& proposal);
 
         // Generic
         LFGQueue& GetQueue(uint64 guid);

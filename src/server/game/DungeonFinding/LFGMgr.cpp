@@ -994,14 +994,16 @@ namespace lfg
        Makes a new group given a proposal
        @param[in]     proposal Proposal to get info from
     */
-    void LFGMgr::MakeNewGroup(LfgProposal const& proposal)
+    bool LFGMgr::MakeNewGroup(LfgProposal const& proposal)
     {
         LfgGuidList players;
         LfgGuidList playersToTeleport;
+        LfgGuidSet expectedPlayers;
 
         for (LfgProposalPlayerContainer::const_iterator it = proposal.players.begin(); it != proposal.players.end(); ++it)
         {
             uint64 guid = it->first;
+            expectedPlayers.insert(guid);
             if (guid == proposal.leader)
                 players.push_front(guid);
             else
@@ -1013,7 +1015,12 @@ namespace lfg
 
         // Set the dungeon difficulty
         LFGDungeonData const* dungeon = GetLFGDungeon(proposal.dungeonId);
-        ASSERT(dungeon);
+        if (!dungeon)
+        {
+            SF_LOG_ERROR("lfg.proposal.group.make", "Proposal %u cannot create group for missing dungeon %u.",
+                proposal.id, proposal.dungeonId);
+            return false;
+        }
 
         Group* grp = proposal.group ? sGroupMgr->GetGroupByGUID(GUID_LOPART(proposal.group)) : NULL;
         for (LfgGuidList::const_iterator it = players.begin(); it != players.end(); ++it)
@@ -1021,7 +1028,11 @@ namespace lfg
             uint64 pguid = (*it);
             Player* player = ObjectAccessor::FindPlayer(pguid);
             if (!player)
-                continue;
+            {
+                SF_LOG_DEBUG("lfg.proposal.group.make", "Proposal %u cannot create group, player %u is offline.",
+                    proposal.id, GUID_LOPART(pguid));
+                return false;
+            }
 
             Group* group = player->GetGroup();
             if (group && group != grp)
@@ -1031,14 +1042,28 @@ namespace lfg
             {
                 grp = new Group();
                 grp->ConvertToLFG();
-                grp->Create(player);
+                if (!grp->Create(player))
+                {
+                    delete grp;
+                    SF_LOG_ERROR("lfg.proposal.group.make", "Proposal %u failed to create LFG group with leader %u.",
+                        proposal.id, GUID_LOPART(pguid));
+                    return false;
+                }
+
                 uint64 gguid = grp->GetGUID();
                 SetActiveQueueId(gguid, GetActiveQueueId(proposal.leader));
                 SetState(gguid, LFG_STATE_PROPOSAL);
                 sGroupMgr->AddGroup(grp);
             }
             else if (group != grp)
-                grp->AddMember(player);
+            {
+                if (!grp->AddMember(player))
+                {
+                    SF_LOG_ERROR("lfg.proposal.group.make", "Proposal %u failed to add player %u to group %u.",
+                        proposal.id, GUID_LOPART(pguid), GUID_LOPART(grp->GetGUID()));
+                    return false;
+                }
+            }
 
             grp->SetLfgRoles(pguid, proposal.players.find(pguid)->second.role);
 
@@ -1047,7 +1072,22 @@ namespace lfg
                 player->CastSpell(player, LFG_SPELL_DUNGEON_COOLDOWN, false);
         }
 
-        ASSERT(grp);
+        if (!grp)
+        {
+            SF_LOG_ERROR("lfg.proposal.group.make", "Proposal %u did not create or find a group.", proposal.id);
+            return false;
+        }
+
+        for (LfgGuidSet::const_iterator it = expectedPlayers.begin(); it != expectedPlayers.end(); ++it)
+        {
+            if (!grp->IsMember(*it))
+            {
+                SF_LOG_ERROR("lfg.proposal.group.make", "Proposal %u created incomplete group %u, missing player %u.",
+                    proposal.id, GUID_LOPART(grp->GetGUID()), GUID_LOPART(*it));
+                return false;
+            }
+        }
+
         grp->SetDungeonDifficulty(DifficultyID(dungeon->difficulty));
         uint64 gguid = grp->GetGUID();
         SetActiveQueueId(gguid, GetActiveQueueId(proposal.leader));
@@ -1073,6 +1113,7 @@ namespace lfg
 
         // Update group info
         grp->SendUpdate();
+        return true;
     }
 
     uint32 LFGMgr::AddProposal(LfgProposal& proposal)
@@ -1155,6 +1196,36 @@ namespace lfg
             return;
         }
 
+        if (!GetLFGDungeon(proposal.dungeonId))
+        {
+            SF_LOG_ERROR("lfg.proposal.update", "Proposal %u accepted but dungeon %u no longer exists.",
+                proposalId, proposal.dungeonId);
+            RemoveProposal(itProposal, LFG_UPDATETYPE_PROPOSAL_FAILED);
+            return;
+        }
+
+        for (LfgProposalPlayerContainer::iterator it = proposal.players.begin(); it != proposal.players.end(); ++it)
+        {
+            uint64 pguid = it->first;
+            if (!ObjectAccessor::FindPlayer(pguid))
+            {
+                SF_LOG_DEBUG("lfg.proposal.update", "Proposal %u accepted but player %u is offline.",
+                    proposalId, GUID_LOPART(pguid));
+                it->second.accept = LFG_ANSWER_DENY;
+                RemoveProposal(itProposal, LFG_UPDATETYPE_GROUP_MEMBER_OFFLINE);
+                return;
+            }
+
+            if (it->second.group && GetGroup(pguid) != it->second.group)
+            {
+                SF_LOG_DEBUG("lfg.proposal.update", "Proposal %u accepted but player %u left proposal group %u.",
+                    proposalId, GUID_LOPART(pguid), GUID_LOPART(it->second.group));
+                it->second.accept = LFG_ANSWER_DENY;
+                RemoveProposal(itProposal, LFG_UPDATETYPE_PROPOSAL_DECLINED);
+                return;
+            }
+        }
+
         bool sendUpdate = proposal.state != LFG_PROPOSAL_SUCCESS;
         proposal.state = LFG_PROPOSAL_SUCCESS;
         time_t joinTime = time(NULL);
@@ -1175,19 +1246,11 @@ namespace lfg
             if (!queueJoinTime && queuedGuid != pguid)
                 queueJoinTime = queue.GetJoinTime(pguid);
 
-            if (sendUpdate)
-                SendLfgUpdateProposal(pguid, proposal);
-
-            SendLfgUpdateStatus(pguid, groupFoundData, gguid != 0);
-
             if (queueJoinTime)
                 waitTime = int32(joinTime - queueJoinTime);
             else
                 SF_LOG_DEBUG("lfg.proposal.update", "Proposal %u missing queue join time for player %u queue owner %u",
                     proposalId, GUID_LOPART(pguid), GUID_LOPART(queuedGuid));
-
-            SendLfgUpdateStatus(pguid, removedFromQueueData, true);
-            SendLfgUpdateStatus(pguid, removedFromQueueData, false);
 
             if (waitTime >= 0 && dungeonId)
             {
@@ -1210,15 +1273,36 @@ namespace lfg
                         break;
                 }
             }
+        }
 
+        if (sendUpdate)
+            for (LfgProposalPlayerContainer::const_iterator it = proposal.players.begin(); it != proposal.players.end(); ++it)
+                SendLfgUpdateProposal(it->first, proposal);
+
+        if (!MakeNewGroup(proposal))
+        {
+            for (LfgProposalPlayerContainer::iterator it = proposal.players.begin(); it != proposal.players.end(); ++it)
+                it->second.accept = LFG_ANSWER_DENY;
+
+            RemoveProposal(itProposal, LFG_UPDATETYPE_PROPOSAL_FAILED);
+            return;
+        }
+
+        for (LfgProposalPlayerContainer::const_iterator it = proposal.players.begin(); it != proposal.players.end(); ++it)
+        {
+            uint64 pguid = it->first;
+            uint64 gguid = it->second.group;
+
+            SendLfgUpdateStatus(pguid, groupFoundData, gguid != 0);
+            SendLfgUpdateStatus(pguid, removedFromQueueData, true);
+            SendLfgUpdateStatus(pguid, removedFromQueueData, false);
             SetState(pguid, LFG_STATE_DUNGEON);
         }
 
         // Remove players/groups from Queue
         for (LfgGuidList::const_iterator it = proposal.queues.begin(); it != proposal.queues.end(); ++it)
-            queue.RemoveFromQueue(*it);
+            GetQueue(*it).RemoveFromQueue(*it);
 
-        MakeNewGroup(proposal);
         ProposalsStore.erase(itProposal);
     }
 
