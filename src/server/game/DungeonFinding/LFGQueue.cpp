@@ -45,6 +45,47 @@ namespace lfg
 
             return false;
         }
+
+        void ConsumeRoleSlot(uint8 role, uint8& tanks, uint8& healers, uint8& dps)
+        {
+            role &= ~PLAYER_ROLE_LEADER;
+
+            if ((role & PLAYER_ROLE_TANK) && tanks)
+                --tanks;
+            else if ((role & PLAYER_ROLE_HEALER) && healers)
+                --healers;
+            else if ((role & PLAYER_ROLE_DAMAGE) && dps)
+                --dps;
+        }
+
+        void CalculateRoleShortage(LfgRolesMap const& roles, uint8& tanks, uint8& healers, uint8& dps)
+        {
+            tanks = LFG_TANKS_NEEDED;
+            healers = LFG_HEALERS_NEEDED;
+            dps = LFG_DPS_NEEDED;
+
+            LfgRolesMap assignedRoles = roles;
+            if (LFGMgr::CheckGroupRoles(assignedRoles))
+                for (LfgRolesMap::const_iterator it = assignedRoles.begin(); it != assignedRoles.end(); ++it)
+                    ConsumeRoleSlot(it->second, tanks, healers, dps);
+            else
+                for (LfgRolesMap::const_iterator it = roles.begin(); it != roles.end(); ++it)
+                    ConsumeRoleSlot(it->second, tanks, healers, dps);
+        }
+
+        int32 SelectWaitTime(uint8 tanks, uint8 healers, uint8 dps, int32 wtTank, int32 wtHealer, int32 wtDps, int32 wtAvg)
+        {
+            if (tanks)
+                return wtTank;
+
+            if (healers)
+                return wtHealer;
+
+            if (dps)
+                return wtDps;
+
+            return wtAvg;
+        }
     }
 
     /**
@@ -304,9 +345,9 @@ namespace lfg
 
         if (compatibles == LFG_COMPATIBLES_BAD_STATES && sLFGMgr->AllQueued(check))
         {
-            SF_LOG_DEBUG("lfg.queue.match.check", "Guids: (%s) compatibles (cached) changed from bad states to match", strGuids.c_str());
-            SetCompatibles(strGuids, LFG_COMPATIBLES_MATCH);
-            return LFG_COMPATIBLES_MATCH;
+            SF_LOG_DEBUG("lfg.queue.match.check", "Guids: (%s) cached bad states are now valid, rebuilding compatibility", strGuids.c_str());
+            SetCompatibles(strGuids, LFG_COMPATIBILITY_PENDING);
+            return CheckCompatibility(check);
         }
 
         if (compatibles != LFG_COMPATIBLES_WITH_LESS_PLAYERS)
@@ -587,40 +628,27 @@ namespace lfg
 
             uint32 dungeonId = (*queueinfo.dungeons.begin());
             uint32 queuedTime = uint32(currTime - queueinfo.joinTime);
-            uint8 role = PLAYER_ROLE_NONE;
             int32 waitTime = -1;
             int32 wtTank = waitTimesTankStore[dungeonId].time;
             int32 wtHealer = waitTimesHealerStore[dungeonId].time;
             int32 wtDps = waitTimesDpsStore[dungeonId].time;
             int32 wtAvg = waitTimesAvgStore[dungeonId].time;
 
-            for (LfgRolesMap::const_iterator itPlayer = queueinfo.roles.begin(); itPlayer != queueinfo.roles.end(); ++itPlayer)
-                role |= itPlayer->second;
-            role &= ~PLAYER_ROLE_LEADER;
-
-            switch (role)
-            {
-                case PLAYER_ROLE_NONE:                                // Should not happen - just in case
-                    waitTime = -1;
-                    break;
-                case PLAYER_ROLE_TANK:
-                    waitTime = wtTank;
-                    break;
-                case PLAYER_ROLE_HEALER:
-                    waitTime = wtHealer;
-                    break;
-                case PLAYER_ROLE_DAMAGE:
-                    waitTime = wtDps;
-                    break;
-                default:
-                    waitTime = wtAvg;
-                    break;
-            }
-
             if (queueinfo.bestCompatible.empty())
                 FindBestCompatibleInQueue(itQueue);
 
-            LfgQueueStatusData queueData(queueId, dungeonId, queueinfo.joinTime, waitTime, wtAvg, wtTank, wtHealer, wtDps, queuedTime, queueinfo.tanks, queueinfo.healers, queueinfo.dps);
+            uint8 tanks = queueinfo.tanks;
+            uint8 healers = queueinfo.healers;
+            uint8 dps = queueinfo.dps;
+            if (!queueinfo.bestCompatible.empty())
+                waitTime = SelectWaitTime(tanks, healers, dps, wtTank, wtHealer, wtDps, wtAvg);
+            else
+            {
+                CalculateRoleShortage(queueinfo.roles, tanks, healers, dps);
+                waitTime = SelectWaitTime(tanks, healers, dps, wtTank, wtHealer, wtDps, wtAvg);
+            }
+
+            LfgQueueStatusData queueData(queueId, dungeonId, queueinfo.joinTime, waitTime, wtAvg, wtTank, wtHealer, wtDps, queuedTime, tanks, healers, dps);
             for (LfgRolesMap::const_iterator itPlayer = queueinfo.roles.begin(); itPlayer != queueinfo.roles.end(); ++itPlayer)
             {
                 uint64 pguid = itPlayer->first;
@@ -703,19 +731,7 @@ namespace lfg
             queueData.bestCompatible.c_str(), key.c_str(), itrQueue->first);
 
         queueData.bestCompatible = key;
-        queueData.tanks = LFG_TANKS_NEEDED;
-        queueData.healers = LFG_HEALERS_NEEDED;
-        queueData.dps = LFG_DPS_NEEDED;
-        for (LfgRolesMap::const_iterator it = roles.begin(); it != roles.end(); ++it)
-        {
-            uint8 role = it->second;
-            if (role & PLAYER_ROLE_TANK)
-                --queueData.tanks;
-            else if (role & PLAYER_ROLE_HEALER)
-                --queueData.healers;
-            else
-                --queueData.dps;
-        }
+        CalculateRoleShortage(roles, queueData.tanks, queueData.healers, queueData.dps);
     }
 
 } // namespace lfg
