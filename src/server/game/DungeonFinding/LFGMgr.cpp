@@ -2140,9 +2140,12 @@ namespace lfg
 
     LfgUpdateData LFGMgr::GetLfgStatus(uint64 guid)
     {
+        RestoreActiveQueue(guid);
+
         LfgPlayerData& playerData = PlayersStore[guid];
         if (uint64 gguid = GetGroup(guid))
         {
+            RestoreActiveQueue(gguid);
             LfgState groupState = GetState(gguid);
             if (groupState != LFG_STATE_NONE)
             {
@@ -2156,6 +2159,49 @@ namespace lfg
         }
 
         return LfgUpdateData(LFG_UPDATETYPE_UPDATE_STATUS, playerData.GetState(), playerData.GetSelectedDungeons());
+    }
+
+    bool LFGMgr::RestoreActiveQueue(uint64 guid)
+    {
+        if (!guid)
+            return false;
+
+        if (IS_GROUP_GUID(guid))
+        {
+            LfgGroupData& groupData = GroupsStore[guid];
+            uint8 activeQueueId = groupData.GetActiveQueueId();
+            LfgGroupQueueDataContainer const& queues = groupData.GetQueues();
+            if (queues.find(activeQueueId) != queues.end())
+                return true;
+
+            for (LfgGroupQueueDataContainer::const_iterator itr = queues.begin(); itr != queues.end(); ++itr)
+            {
+                if (itr->second.State == LFG_STATE_NONE && itr->second.OldState == LFG_STATE_NONE)
+                    continue;
+
+                groupData.SetActiveQueueId(itr->first);
+                return true;
+            }
+
+            return false;
+        }
+
+        LfgPlayerData& playerData = PlayersStore[guid];
+        uint8 activeQueueId = playerData.GetActiveQueueId();
+        LfgPlayerQueueDataContainer const& queues = playerData.GetQueues();
+        if (queues.find(activeQueueId) != queues.end())
+            return true;
+
+        for (LfgPlayerQueueDataContainer::const_iterator itr = queues.begin(); itr != queues.end(); ++itr)
+        {
+            if (itr->second.State == LFG_STATE_NONE && itr->second.OldState == LFG_STATE_NONE)
+                continue;
+
+            playerData.SetActiveQueueId(itr->first);
+            return true;
+        }
+
+        return false;
     }
 
     bool LFGMgr::IsSeasonActive(uint32 dungeonId)

@@ -56,7 +56,12 @@ namespace lfg
             }
         }
         sLFGMgr->SetTeam(player->GetGUID(), player->GetTeam());
-        /// @todo - Restore LfgPlayerData and send proper status to player if it was in a group
+
+        if (sLFGMgr->RestoreActiveQueue(guid))
+        {
+            LfgUpdateData updateData = sLFGMgr->GetLfgStatus(guid);
+            player->GetSession()->SendLfgUpdateStatus(updateData, player->GetGroup() != NULL);
+        }
     }
 
     void LFGPlayerScript::OnMapChanged(Player* player)

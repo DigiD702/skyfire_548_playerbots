@@ -332,6 +332,8 @@ namespace lfg
         void _LoadFromDB(Field* fields, uint64 guid);
         /// Initializes player data after loading group data from DB
         void SetupGroupMember(uint64 guid, uint64 gguid);
+        /// Restores the active queue id from saved queue data
+        bool RestoreActiveQueue(uint64 guid);
         /// Return Lfg dungeon entry for given dungeon id
         uint32 GetLFGDungeonEntry(uint32 id);
 
