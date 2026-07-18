@@ -1290,7 +1290,8 @@ public:
             case GOSSIP_OPTION_LEARNDUALSPEC:
                 if (player->GetSpecsCount() == 1 && !(player->getLevel() < sWorld->getIntConfig(WorldIntConfigs::CONFIG_MIN_DUALSPEC_LEVEL)))
                 {
-                    if (!player->HasEnoughMoney(uint64(10000000)))
+                    // 10 gold — matches gossip_menu_option BoxMoney for dual-spec purchase
+                    if (!player->HasEnoughMoney(uint64(100000)))
                     {
                         player->SendBuyFailed(BuyResult::BUY_ERR_NOT_ENOUGHT_MONEY, 0, 0);
                         player->PlayerTalkClass->SendCloseGossip();
@@ -1298,15 +1299,16 @@ public:
                     }
                     else
                     {
-                        player->ModifyMoney(int64(-10000000));
+                        player->ModifyMoney(int64(-100000));
 
                         // Cast spells that teach dual spec
                         // Both are also ImplicitTarget self and must be cast by player
                         player->CastSpell(player, 63680, true, NULL, NULL, player->GetGUID());
                         player->CastSpell(player, 63624, true, NULL, NULL, player->GetGUID());
 
-                        // Should show another Gossip text with "Congratulations..."
-                        player->PlayerTalkClass->SendCloseGossip();
+                        // Congratulations gossip (npc_text 14393)
+                        player->PrepareGossipMenu(creature, 10373);
+                        player->SendPreparedGossip(creature);
                     }
                 }
                 break;

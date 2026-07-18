@@ -15,6 +15,7 @@
 #include "BattlefieldMgr.h"
 #include "BattlegroundMgr.h"
 #include "BattlePetMgr.h"
+#include "BattlePetSpawnMgr.h"
 #include "BlackMarketMgr.h"
 #include "CalendarMgr.h"
 #include "CellImpl.h"
@@ -759,7 +760,7 @@ void World::LoadConfigSettings(bool reload)
         setIntConfig(WorldIntConfigs::CONFIG_MAX_PLAYER_LEVEL, MAX_LEVEL);
     }
 
-    setIntConfig(WorldIntConfigs::CONFIG_MIN_DUALSPEC_LEVEL, sConfigMgr->GetIntDefault("MinDualSpecLevel", 40));
+    setIntConfig(WorldIntConfigs::CONFIG_MIN_DUALSPEC_LEVEL, sConfigMgr->GetIntDefault("MinDualSpecLevel", 30));
 
     setIntConfig(WorldIntConfigs::CONFIG_START_PLAYER_LEVEL, sConfigMgr->GetIntDefault("StartPlayerLevel", 1));
     if (getIntConfig(WorldIntConfigs::CONFIG_START_PLAYER_LEVEL) < 1)
@@ -1112,6 +1113,13 @@ void World::LoadConfigSettings(bool reload)
     {
         SF_LOG_ERROR("server.loading", "BattlePet.InitialLevel (%i) can't be loaded. Set to 1.", getIntConfig(WorldIntConfigs::CONFIG_BATTLE_PET_INITIAL_LEVEL));
         setIntConfig(WorldIntConfigs::CONFIG_BATTLE_PET_INITIAL_LEVEL, 1);
+    }
+
+    setIntConfig(WorldIntConfigs::CONFIG_BATTLE_PET_WILD_SPAWN_MIN_COUNT, sConfigMgr->GetIntDefault("BattlePet.WildSpawnMinCount", 5));
+    if (getIntConfig(WorldIntConfigs::CONFIG_BATTLE_PET_WILD_SPAWN_MIN_COUNT) > 255)
+    {
+        SF_LOG_ERROR("server.loading", "BattlePet.WildSpawnMinCount (%i) can't be loaded. Set to 5.", getIntConfig(WorldIntConfigs::CONFIG_BATTLE_PET_WILD_SPAWN_MIN_COUNT));
+        setIntConfig(WorldIntConfigs::CONFIG_BATTLE_PET_WILD_SPAWN_MIN_COUNT, 5);
     }
 
     // blackmarket
@@ -1878,6 +1886,11 @@ void World::SetInitialWorldSettings()
     SF_LOG_INFO("server.loading", "Loading Battle Pet quality data...");
     sObjectMgr->LoadBattlePetQualityData();
 
+    SF_LOG_INFO("server.loading", "Loading Battle Pet item to species data...");
+    sObjectMgr->LoadBattlePetItemToSpeciesData();
+
+    SF_LOG_INFO("server.loading", "Loading Battle Pet wild pools...");
+    sBattlePetSpawnMgr->LoadFromDB();
 
     SF_LOG_INFO("server.loading", "Loading Cinematic path ...");
     sCinematicSequenceMgr->Load();
@@ -2127,6 +2140,8 @@ void World::Update(uint32 diff)
 
     if (m_gameTime > m_NextCurrencyReset)
         ResetCurrencyWeekCap();
+
+    sBattlePetSpawnMgr->Update(diff);
 
     /// <ul><li> Handle auctions when the timer has passed
     if (m_timers[WUPDATE_BLACK_MARKET].Passed())

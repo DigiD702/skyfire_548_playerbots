@@ -4,6 +4,7 @@
 */
 
 #include "Battleground.h"
+#include "BattlePetSpawnMgr.h"
 #include "CellImpl.h"
 #include "DynamicTree.h"
 #include "GridNotifiers.h"
@@ -537,6 +538,9 @@ bool Map::AddToMap(T* obj)
 
     InitializeObject(obj);
 
+    if (Creature* creature = obj->ToCreature())
+        sBattlePetSpawnMgr->OnCreatureAdded(creature);
+
     if (obj->isActiveObject())
         AddToActive(obj);
 
@@ -821,6 +825,9 @@ void Map::RemovePlayerFromMap(Player* player, bool remove)
 template<class T>
 void Map::RemoveFromMap(T* obj, bool remove)
 {
+    if (Creature* creature = obj->ToCreature())
+        sBattlePetSpawnMgr->OnCreatureRemoved(creature);
+
     obj->RemoveFromWorld();
     if (obj->isActiveObject())
         RemoveFromActive(obj);

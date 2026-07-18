@@ -72,6 +72,12 @@ struct ActivePetBattlePetState
     uint32 Health = 0;
 };
 
+struct ActivePetBattleAuraState
+{
+    uint32 IncomingDamageReduction = 0;
+    uint8 Rounds = 0;
+};
+
 struct ActivePetBattle
 {
     static constexpr uint8 BATTLE_PET_MAX_ACTIVE_TEAM_PETS = 3;
@@ -148,6 +154,8 @@ struct ActivePetBattle
         if (!IsAllyPetAlive(AllyFrontPet))
             return AllyHealth;
 
+        damage = ApplyIncomingDamageReduction(AllyAura, damage);
+
         if (damage >= AllyTeam[AllyFrontPet].Health)
             AllyTeam[AllyFrontPet].Health = 0;
         else
@@ -168,7 +176,18 @@ struct ActivePetBattle
 
     uint32 ApplyEnemyDamage(uint32 damage)
     {
+        damage = ApplyIncomingDamageReduction(EnemyAura, damage);
         return ApplyDamage(EnemyHealth, damage, PET_BATTLE_WINNER_ALLY);
+    }
+
+    void ActivateAllyIncomingDamageReduction(uint32 amount, uint8 rounds)
+    {
+        ActivateIncomingDamageReduction(AllyAura, amount, rounds);
+    }
+
+    void ActivateEnemyIncomingDamageReduction(uint32 amount, uint8 rounds)
+    {
+        ActivateIncomingDamageReduction(EnemyAura, amount, rounds);
     }
 
     ActivePetBattleTurn ApplyAbilityRound(uint32 roundId, uint32 damage)
@@ -505,6 +524,8 @@ struct ActivePetBattle
 
 private:
     ActivePetBattleCooldown AllyCooldowns[BATTLE_PET_MAX_ACTIVE_TEAM_PETS][BATTLE_PET_ABILITY_SLOT_COUNT];
+    ActivePetBattleAuraState AllyAura;
+    ActivePetBattleAuraState EnemyAura;
 
     bool CanAcceptRound(uint32 roundId) const
     {
@@ -602,11 +623,45 @@ private:
         }
     }
 
+    static void ActivateIncomingDamageReduction(ActivePetBattleAuraState& aura, uint32 amount, uint8 rounds)
+    {
+        if (!amount || !rounds)
+            return;
+
+        aura.IncomingDamageReduction = amount;
+        aura.Rounds = rounds;
+    }
+
+    static uint32 ApplyIncomingDamageReduction(ActivePetBattleAuraState const& aura, uint32 damage)
+    {
+        if (!damage || !aura.Rounds || !aura.IncomingDamageReduction)
+            return damage;
+
+        return damage > aura.IncomingDamageReduction ? damage - aura.IncomingDamageReduction : 0;
+    }
+
+    static void DecrementAura(ActivePetBattleAuraState& aura)
+    {
+        if (!aura.Rounds)
+            return;
+
+        --aura.Rounds;
+        if (!aura.Rounds)
+            aura = ActivePetBattleAuraState();
+    }
+
+    void DecrementAuras()
+    {
+        DecrementAura(AllyAura);
+        DecrementAura(EnemyAura);
+    }
+
     void FinishAcceptedRound(ActivePetBattleTurn& turn)
     {
         SnapshotAllyCooldowns(turn.Cooldowns);
         ClearExpiredAllyCooldowns();
         DecrementAllyCooldowns();
+        DecrementAuras();
         AdvanceRound();
     }
 

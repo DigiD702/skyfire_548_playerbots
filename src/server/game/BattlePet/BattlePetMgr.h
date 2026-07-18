@@ -190,6 +190,8 @@ public:
         uint32 allyDamage, uint32 allyAbilityEffectId,
         uint8 allyAbilitySlot, uint32 allyAbilityId, uint16 allyAbilityCooldown,
         uint32 enemyDamage, uint32 enemyAbilityEffectId,
+        uint32 allyIncomingDamageReduction, uint8 allyIncomingDamageReductionRounds,
+        uint32 enemyIncomingDamageReduction, uint8 enemyIncomingDamageReductionRounds,
         Skyfire::BattlePetPackets::BattlePetRoundResult& round,
         Skyfire::BattlePetPackets::BattlePetFinalRound* finalRound = NULL);
     bool ApplyBattlePetSwapInput(uint32 roundId, uint8 newFrontPet,

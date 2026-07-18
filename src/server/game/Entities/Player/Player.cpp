@@ -11859,9 +11859,17 @@ void Player::OnGossipSelect(WorldObject* source, uint32 gossipListId, uint32 men
                 CastSpell(this, 63680, true, NULL, NULL, GetGUID());
                 CastSpell(this, 63624, true, NULL, NULL, GetGUID());
 
-                // Should show another Gossip text with "Congratulations..."
-                PlayerTalkClass->SendCloseGossip();
+                // Show congratulations gossip when ActionMenuID is set (menu 10373)
+                if (menuItemData->GossipActionMenuId)
+                {
+                    PrepareGossipMenu(source, menuItemData->GossipActionMenuId);
+                    SendPreparedGossip(source);
+                }
+                else
+                    PlayerTalkClass->SendCloseGossip();
             }
+            else
+                cost = 0;
             break;
         case GOSSIP_OPTION_UNLEARNTALENTS:
             PlayerTalkClass->SendCloseGossip();

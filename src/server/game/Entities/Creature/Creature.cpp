@@ -5,6 +5,7 @@
 
 #include "BattlegroundMgr.h"
 #include "BattlePet.h"
+#include "BattlePetSpawnMgr.h"
 #include "CellImpl.h"
 #include "Common.h"
 #include "Creature.h"
@@ -1566,6 +1567,9 @@ void Creature::Respawn(bool force)
     }
 
     UpdateObjectVisibility();
+
+    if (IsAlive())
+        sBattlePetSpawnMgr->OnCreatureAdded(this);
 }
 
 void Creature::ForcedDespawn(uint32 timeMSToDespawn)

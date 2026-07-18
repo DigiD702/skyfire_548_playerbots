@@ -5,6 +5,7 @@
 
 #include "BattlePetMgr.h"
 #include "BattlePetPackets.h"
+#include "BattlePetSpawnMgr.h"
 #include "ByteBuffer.h"
 #include "Common.h"
 #include "Creature.h"
@@ -43,21 +44,6 @@ namespace
     bool BattlePetNameMatches(std::string const& left, std::string const& right)
     {
         return !left.empty() && !right.empty() && !stricmp(left.c_str(), right.c_str());
-    }
-
-    uint32 BattlePetSpeciesNpcId(uint16 speciesId)
-    {
-        BattlePetSpeciesEntry const* speciesEntry = sBattlePetSpeciesStore.LookupEntry(speciesId);
-        return speciesEntry ? speciesEntry->NpcId : 0;
-    }
-
-    uint32 BattlePetSpeciesFamilyMask(uint16 speciesId)
-    {
-        BattlePetSpeciesEntry const* speciesEntry = sBattlePetSpeciesStore.LookupEntry(speciesId);
-        if (!speciesEntry || speciesEntry->FamilyId >= 32)
-            return 0;
-
-        return uint32(1) << speciesEntry->FamilyId;
     }
 
     uint8 BattlePetHealthPercent(uint32 health, uint32 maxHealth)
@@ -755,7 +741,15 @@ void BattlePetMgr::DespawnResolvedWildPetBattleWorldObject()
     uint64 const worldObjectGuid = m_activePetBattle.EnemyGUID;
     if (Creature* creature = ObjectAccessor::GetCreature(*m_owner, worldObjectGuid))
     {
-        if (creature->ToTempSummon())
+        if (sBattlePetSpawnMgr->ResolveWildBattle(creature))
+        {
+            if (m_activePetBattleWorldObjectGuid == worldObjectGuid)
+            {
+                m_activePetBattleWorldObjectGuid = 0;
+                m_activePetBattleWorldObjectHidden = false;
+            }
+        }
+        else if (creature->ToTempSummon())
             creature->DespawnOrUnsummon();
         else
         {
@@ -868,9 +862,16 @@ bool BattlePetMgr::ApplyBattlePetAbilityExchangeInput(uint32 roundId,
     uint32 allyDamage, uint32 allyAbilityEffectId,
     uint8 allyAbilitySlot, uint32 allyAbilityId, uint16 allyAbilityCooldown,
     uint32 enemyDamage, uint32 enemyAbilityEffectId,
+    uint32 allyIncomingDamageReduction, uint8 allyIncomingDamageReductionRounds,
+    uint32 enemyIncomingDamageReduction, uint8 enemyIncomingDamageReductionRounds,
     Skyfire::BattlePetPackets::BattlePetRoundResult& round,
     Skyfire::BattlePetPackets::BattlePetFinalRound* finalRound)
 {
+    m_activePetBattle.ActivateAllyIncomingDamageReduction(
+        allyIncomingDamageReduction, allyIncomingDamageReductionRounds);
+    m_activePetBattle.ActivateEnemyIncomingDamageReduction(
+        enemyIncomingDamageReduction, enemyIncomingDamageReductionRounds);
+
     ActivePetBattleTurn allyTurn;
     ActivePetBattleTurn enemyTurn;
     if (!m_activePetBattle.ApplyAbilityExchange(roundId, allyDamage, enemyDamage,

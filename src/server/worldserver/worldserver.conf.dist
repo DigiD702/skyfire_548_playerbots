@@ -2,7 +2,7 @@
 #   SkyFire World Server configuration file    #
 ################################################
 [worldserver]
-ConfVersion=2026270602
+ConfVersion=2026271401
 
 ###################################################################################################
 # SECTION INDEX
@@ -3140,6 +3140,16 @@ BattlePet.LoadoutUnlockCount = 1
 #
 
 BattlePet.InitialLevel = 1
+
+#
+#    BattlePet.WildSpawnMinCount
+#        Description: Minimum active wild battle pet replacements per pool row.
+#                     Existing database max values higher than this are kept.
+#                     Set to 0 to use database max values exactly.
+#        Default:     5
+#
+
+BattlePet.WildSpawnMinCount = 5
 
 #
 ###################################################################################################

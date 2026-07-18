@@ -9358,6 +9358,48 @@ void ObjectMgr::LoadBattlePetQualityData()
     SF_LOG_INFO("server.loading", ">> Loaded %u Battle Pet quality definitions in %u ms.", count, GetMSTimeDiffToNow(oldMSTime));
 }
 
+void ObjectMgr::LoadBattlePetItemToSpeciesData()
+{
+    uint32 oldMSTime = getMSTime();
+
+    QueryResult result = WorldDatabase.Query("SELECT itemId, species FROM `battle_pet_item_to_species` ORDER BY itemId, species");
+    if (!result)
+    {
+        SF_LOG_ERROR("server.loading", ">> Loaded 0 Battle Pet item to species definitions. DB table `battle_pet_item_to_species` is empty.");
+        return;
+    }
+
+    uint32 count = 0;
+    do
+    {
+        Field* fields = result->Fetch();
+
+        uint32 itemId = fields[0].GetUInt32();
+        uint16 speciesId = fields[1].GetUInt16();
+
+        if (!GetItemTemplate(itemId))
+        {
+            SF_LOG_ERROR("sql.sql", "Item id %u defined in `battle_pet_item_to_species` does not exist, skipped.", itemId);
+            continue;
+        }
+
+        if (!sBattlePetSpeciesStore.HasRecord(speciesId))
+        {
+            SF_LOG_ERROR("sql.sql", "Battle Pet species %u defined in `battle_pet_item_to_species` does not exist, skipped.", speciesId);
+            continue;
+        }
+
+        if (sBattlePetItemXSpeciesStore.find(itemId) != sBattlePetItemXSpeciesStore.end())
+            SF_LOG_DEBUG("sql.sql", "Battle Pet item %u already mapped to species %u, replacing with species %u.",
+                itemId, sBattlePetItemXSpeciesStore[itemId], speciesId);
+
+        sBattlePetItemXSpeciesStore[itemId] = speciesId;
+        ++count;
+    } while (result->NextRow());
+
+    SF_LOG_INFO("server.loading", ">> Loaded %u Battle Pet item to species definitions in %u ms.", count, GetMSTimeDiffToNow(oldMSTime));
+}
+
 uint64 ObjectMgr::BattlePetGetNewId()
 {
     ASSERT(m_battlePetId < 0xFFFFFFFE && "Battle Pet id overflow!");

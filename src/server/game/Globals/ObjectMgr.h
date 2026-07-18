@@ -1093,6 +1093,7 @@ public:
 
     void LoadBattlePetBreedData();
     void LoadBattlePetQualityData();
+    void LoadBattlePetItemToSpeciesData();
 
     uint64 BattlePetGetNewId();
     uint8 BattlePetGetRandomBreed(uint32 speciesId) const;
