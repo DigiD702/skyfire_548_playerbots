@@ -22,8 +22,68 @@
 #include "SocialMgr.h"
 #include "WorldSession.h"
 
+#include <algorithm>
+#include <vector>
+
 namespace lfg
 {
+    namespace
+    {
+        uint8 const LFG_COMBAT_ROLE_MASK = PLAYER_ROLE_TANK | PLAYER_ROLE_HEALER | PLAYER_ROLE_DAMAGE;
+
+        struct LfgRoleAssignment
+        {
+            uint64 guid;
+            uint8 leader;
+            uint8 availableRoles;
+            uint8 assignedRole;
+        };
+
+        uint8 CountAvailableRoles(uint8 roles)
+        {
+            uint8 count = 0;
+            if (roles & PLAYER_ROLE_TANK)
+                ++count;
+            if (roles & PLAYER_ROLE_HEALER)
+                ++count;
+            if (roles & PLAYER_ROLE_DAMAGE)
+                ++count;
+            return count;
+        }
+
+        bool TryAssignLfgRoles(std::vector<LfgRoleAssignment>& assignments, size_t index, uint8 tanks, uint8 healers, uint8 damage)
+        {
+            if (index == assignments.size())
+                return true;
+
+            LfgRoleAssignment& assignment = assignments[index];
+            uint8 const rolePreference[] = { PLAYER_ROLE_TANK, PLAYER_ROLE_HEALER, PLAYER_ROLE_DAMAGE };
+
+            for (uint8 role : rolePreference)
+            {
+                if (!(assignment.availableRoles & role))
+                    continue;
+
+                if (role == PLAYER_ROLE_TANK && tanks >= LFG_TANKS_NEEDED)
+                    continue;
+                if (role == PLAYER_ROLE_HEALER && healers >= LFG_HEALERS_NEEDED)
+                    continue;
+                if (role == PLAYER_ROLE_DAMAGE && damage >= LFG_DPS_NEEDED)
+                    continue;
+
+                assignment.assignedRole = role | assignment.leader;
+
+                if (TryAssignLfgRoles(assignments, index + 1,
+                    tanks + (role == PLAYER_ROLE_TANK),
+                    healers + (role == PLAYER_ROLE_HEALER),
+                    damage + (role == PLAYER_ROLE_DAMAGE)))
+                    return true;
+            }
+
+            assignment.assignedRole = PLAYER_ROLE_NONE;
+            return false;
+        }
+    }
 
     LFGMgr::LFGMgr() : m_QueueTimer(0), m_lfgProposalId(1),
         m_options(sWorld->getIntConfig(WorldIntConfigs::CONFIG_LFG_OPTIONSMASK))
@@ -891,65 +951,43 @@ namespace lfg
     */
     bool LFGMgr::CheckGroupRoles(LfgRolesMap& groles)
     {
-        if (groles.empty())
+        if (groles.empty() || groles.size() > MAXGROUPSIZE)
             return false;
 
-        uint8 damage = 0;
-        uint8 tank = 0;
-        uint8 healer = 0;
+        std::vector<LfgRoleAssignment> assignments;
+        assignments.reserve(groles.size());
 
         for (LfgRolesMap::iterator it = groles.begin(); it != groles.end(); ++it)
         {
-            uint8 role = it->second & ~PLAYER_ROLE_LEADER;
-            if (role == PLAYER_ROLE_NONE)
+            uint8 roles = it->second & LFG_COMBAT_ROLE_MASK;
+            if (!roles)
                 return false;
 
-            if (role & PLAYER_ROLE_DAMAGE)
-            {
-                if (role != PLAYER_ROLE_DAMAGE)
-                {
-                    it->second -= PLAYER_ROLE_DAMAGE;
-                    if (CheckGroupRoles(groles))
-                        return true;
-                    it->second += PLAYER_ROLE_DAMAGE;
-                }
-                else if (damage == LFG_DPS_NEEDED)
-                    return false;
-                else
-                    damage++;
-            }
-
-            if (role & PLAYER_ROLE_HEALER)
-            {
-                if (role != PLAYER_ROLE_HEALER)
-                {
-                    it->second -= PLAYER_ROLE_HEALER;
-                    if (CheckGroupRoles(groles))
-                        return true;
-                    it->second += PLAYER_ROLE_HEALER;
-                }
-                else if (healer == LFG_HEALERS_NEEDED)
-                    return false;
-                else
-                    healer++;
-            }
-
-            if (role & PLAYER_ROLE_TANK)
-            {
-                if (role != PLAYER_ROLE_TANK)
-                {
-                    it->second -= PLAYER_ROLE_TANK;
-                    if (CheckGroupRoles(groles))
-                        return true;
-                    it->second += PLAYER_ROLE_TANK;
-                }
-                else if (tank == LFG_TANKS_NEEDED)
-                    return false;
-                else
-                    tank++;
-            }
+            LfgRoleAssignment assignment;
+            assignment.guid = it->first;
+            assignment.leader = it->second & PLAYER_ROLE_LEADER;
+            assignment.availableRoles = roles;
+            assignment.assignedRole = PLAYER_ROLE_NONE;
+            assignments.push_back(assignment);
         }
-        return (tank + healer + damage) == uint8(groles.size());
+
+        std::sort(assignments.begin(), assignments.end(), [](LfgRoleAssignment const& left, LfgRoleAssignment const& right)
+        {
+            uint8 leftCount = CountAvailableRoles(left.availableRoles);
+            uint8 rightCount = CountAvailableRoles(right.availableRoles);
+            if (leftCount != rightCount)
+                return leftCount < rightCount;
+
+            return left.guid < right.guid;
+        });
+
+        if (!TryAssignLfgRoles(assignments, 0, 0, 0, 0))
+            return false;
+
+        for (LfgRoleAssignment const& assignment : assignments)
+            groles[assignment.guid] = assignment.assignedRole;
+
+        return true;
     }
 
     /**

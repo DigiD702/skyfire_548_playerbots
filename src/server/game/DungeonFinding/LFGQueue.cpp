@@ -394,12 +394,17 @@ namespace lfg
         // Group with less that MAXGROUPSIZE members always compatible
         if (check.size() == 1 && numPlayers != MAXGROUPSIZE)
         {
-            SF_LOG_DEBUG("lfg.queue.match.compatibility.check", "Guids: (%s) sigle group. Compatibles", strGuids.c_str());
+            SF_LOG_DEBUG("lfg.queue.match.compatibility.check", "Guids: (%s) single group. Compatibles", strGuids.c_str());
             LfgQueueDataContainer::iterator itQueue = QueueDataStore.find(check.front());
 
             LfgCompatibilityData data(LFG_COMPATIBLES_WITH_LESS_PLAYERS);
             data.roles = itQueue->second.roles;
-            LFGMgr::CheckGroupRoles(data.roles);
+            if (!LFGMgr::CheckGroupRoles(data.roles))
+            {
+                SF_LOG_DEBUG("lfg.queue.match.compatibility.check", "Guids: (%s) single group has invalid roles", strGuids.c_str());
+                SetCompatibles(strGuids, LFG_INCOMPATIBLES_NO_ROLES);
+                return LFG_INCOMPATIBLES_NO_ROLES;
+            }
 
             UpdateBestCompatibleInQueue(itQueue, strGuids, data.roles);
             SetCompatibilityData(strGuids, data);
@@ -488,7 +493,17 @@ namespace lfg
             const LfgQueueData& queue = QueueDataStore[gguid];
             proposalDungeons = queue.dungeons;
             proposalRoles = queue.roles;
-            LFGMgr::CheckGroupRoles(proposalRoles);          // assing new roles
+            LfgRolesMap debugRoles = proposalRoles;
+            if (!LFGMgr::CheckGroupRoles(proposalRoles))     // assign new roles
+            {
+                std::ostringstream o;
+                for (LfgRolesMap::const_iterator it = debugRoles.begin(); it != debugRoles.end(); ++it)
+                    o << ", " << it->first << ": " << GetRolesString(it->second);
+
+                SF_LOG_DEBUG("lfg.queue.match.compatibility.check", "Guids: (%s) single group roles not compatible%s", strGuids.c_str(), o.str().c_str());
+                SetCompatibles(strGuids, LFG_INCOMPATIBLES_NO_ROLES);
+                return LFG_INCOMPATIBLES_NO_ROLES;
+            }
         }
 
         // Enough players?
