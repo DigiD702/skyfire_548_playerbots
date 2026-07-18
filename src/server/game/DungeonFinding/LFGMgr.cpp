@@ -1111,6 +1111,27 @@ namespace lfg
             return;
         }
 
+        if (player.group && GetGroup(guid) != player.group)
+        {
+            SF_LOG_DEBUG("lfg.proposal.update", "Player %u is no longer in proposal group %u. Removing stale proposal %u.",
+                GUID_LOPART(guid), GUID_LOPART(player.group), proposalId);
+            player.accept = LFG_ANSWER_DENY;
+            RemoveProposal(itProposal, LFG_UPDATETYPE_PROPOSAL_DECLINED);
+            return;
+        }
+
+        for (LfgGuidList::const_iterator itQueue = proposal.queues.begin(); itQueue != proposal.queues.end(); ++itQueue)
+        {
+            if (GetQueue(*itQueue).HasQueueData(*itQueue))
+                continue;
+
+            SF_LOG_DEBUG("lfg.proposal.update", "Proposal %u has stale queue owner %u. Removing proposal.",
+                proposalId, GUID_LOPART(*itQueue));
+            player.accept = LFG_ANSWER_DENY;
+            RemoveProposal(itProposal, LFG_UPDATETYPE_PROPOSAL_DECLINED);
+            return;
+        }
+
         player.accept = LfgAnswer(accept);
 
         SF_LOG_DEBUG("lfg.proposal.update", "Player %u, Proposal %u, Selection: %u", GUID_LOPART(guid), proposalId, accept);
@@ -1157,14 +1178,7 @@ namespace lfg
             if (sendUpdate)
                 SendLfgUpdateProposal(pguid, proposal);
 
-            if (gguid)
-            {
-                SendLfgUpdateStatus(pguid, groupFoundData, false);
-            }
-            else
-            {
-                SendLfgUpdateStatus(pguid, groupFoundData, false);
-            }
+            SendLfgUpdateStatus(pguid, groupFoundData, gguid != 0);
 
             if (queueJoinTime)
                 waitTime = int32(joinTime - queueJoinTime);
@@ -1220,6 +1234,12 @@ namespace lfg
         proposal.state = LFG_PROPOSAL_FAILED;
 
         SF_LOG_DEBUG("lfg.proposal.remove", "Proposal %u, state FAILED, UpdateType %u", itProposal->first, type);
+        if (proposal.players.empty())
+        {
+            ProposalsStore.erase(itProposal);
+            return;
+        }
+
         // Mark all people that didn't answered as no accept
         if (type == LFG_UPDATETYPE_PROPOSAL_FAILED)
             for (LfgProposalPlayerContainer::iterator it = proposal.players.begin(); it != proposal.players.end(); ++it)
@@ -1242,12 +1262,10 @@ namespace lfg
             }
         }
 
-        uint64 queueOwner = proposal.queues.empty() ? proposal.players.begin()->first : proposal.queues.front();
-        LFGQueue& queue = GetQueue(queueOwner);
         LfgGuidSet missingQueueData;
         for (LfgGuidList::const_iterator it = proposal.queues.begin(); it != proposal.queues.end(); ++it)
         {
-            if (!queue.HasQueueData(*it))
+            if (!GetQueue(*it).HasQueueData(*it))
             {
                 missingQueueData.insert(*it);
                 toRemove.insert(*it);
@@ -1261,10 +1279,11 @@ namespace lfg
         {
             uint64 guid = it->first;
             uint64 gguid = it->second.group ? it->second.group : guid;
+            bool canRequeue = toRemove.find(gguid) == toRemove.end() && GetQueue(gguid).HasQueueData(gguid);
 
             SendLfgUpdateProposal(guid, proposal);
 
-            if (toRemove.find(gguid) != toRemove.end())         // Didn't accept or in same group that someone that didn't accept
+            if (!canRequeue)                                    // Didn't accept, stale queue data, or same group as someone that didn't accept
             {
                 LfgUpdateData updateData;
                 if (it->second.accept == LFG_ANSWER_DENY)
@@ -1280,13 +1299,13 @@ namespace lfg
                 else
                 {
                     updateData.updateType = LFG_UPDATETYPE_REMOVED_FROM_QUEUE;
-                    SF_LOG_DEBUG("lfg.proposal.remove", "%u in same group that someone that didn't accept. Removing from queue and compatible cache", GUID_LOPART(guid));
+                    SF_LOG_DEBUG("lfg.proposal.remove", "%u cannot be requeued. Removing from queue and compatible cache", GUID_LOPART(guid));
                 }
 
-                RestoreOrClearState(guid, "Proposal Fail (didn't accepted or in group with someone that didn't accept");
+                RestoreOrClearState(guid, "Proposal Fail (didn't accept or in group with someone that didn't accept)");
                 if (gguid != guid)
                 {
-                    RestoreOrClearState(it->second.group, "Proposal Fail (someone in group didn't accepted)");
+                    RestoreOrClearState(it->second.group, "Proposal Fail (someone in group didn't accept)");
                     SendLfgUpdateStatus(guid, updateData, true);
                 }
                 else
@@ -1310,7 +1329,7 @@ namespace lfg
         for (LfgGuidSet::const_iterator it = toRemove.begin(); it != toRemove.end(); ++it)
         {
             uint64 guid = *it;
-            queue.RemoveFromQueue(guid);
+            GetQueue(guid).RemoveFromQueue(guid);
             proposal.queues.remove(guid);
         }
 
@@ -1318,6 +1337,7 @@ namespace lfg
         for (LfgGuidList::const_iterator it = proposal.queues.begin(); it != proposal.queues.end(); ++it)
         {
             uint64 guid = *it;
+            LFGQueue& queue = GetQueue(guid);
             if (queue.HasQueueData(guid))
                 queue.AddToQueue(guid, true);
         }
