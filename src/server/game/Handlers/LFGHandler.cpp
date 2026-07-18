@@ -142,8 +142,18 @@ void WorldSession::HandleLfgLeaveOpcode(WorldPacket& recvData)
 
     if (!group)
     {
-        SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE Player: %lu left solo queue.", uint64(RequesterGUID));
-        sLFGMgr->LeaveSoloLfg(uint64(RequesterGUID), queueID);
+        uint64 guid = GetPlayer()->GetGUID();
+        uint8 activeQueueId = sLFGMgr->GetQueueId(guid);
+        if (uint64(RequesterGUID) && uint64(RequesterGUID) != guid)
+            SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE %s ignored requester guid %lu for solo queue leave.",
+                GetPlayerInfo().c_str(), uint64(RequesterGUID));
+        if (queueID != activeQueueId)
+            SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE %s requested queue %u but active queue is %u.",
+                GetPlayerInfo().c_str(), queueID, activeQueueId);
+
+        SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE Player: %lu left solo queue.", guid);
+        sLFGMgr->LeaveSoloLfg(guid, activeQueueId);
+        return;
     }
 
     // Check cheating - only leader can leave the queue
