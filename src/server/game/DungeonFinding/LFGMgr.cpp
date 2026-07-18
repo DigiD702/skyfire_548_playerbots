@@ -2038,6 +2038,13 @@ namespace lfg
     void LFGMgr::ClearQueueState(uint64 guid, char const* debugMsg)
     {
         SF_LOG_TRACE("lfg.data.queue.clear", "%s: %u", debugMsg ? debugMsg : "Clear queue state", GUID_LOPART(guid));
+
+        for (LfgQueueContainer::iterator itr = QueuesStore.begin(); itr != QueuesStore.end(); ++itr)
+            itr->second.RemoveFromQueue(guid);
+
+        while (RestoreActiveQueue(guid))
+            SetState(guid, LFG_STATE_NONE);
+
         SetState(guid, LFG_STATE_NONE);
     }
 
@@ -2389,7 +2396,8 @@ namespace lfg
             LfgGroupData& groupData = GroupsStore[guid];
             uint8 activeQueueId = groupData.GetActiveQueueId();
             LfgGroupQueueDataContainer const& queues = groupData.GetQueues();
-            if (queues.find(activeQueueId) != queues.end())
+            LfgGroupQueueDataContainer::const_iterator activeItr = queues.find(activeQueueId);
+            if (activeItr != queues.end() && (activeItr->second.State != LFG_STATE_NONE || activeItr->second.OldState != LFG_STATE_NONE))
                 return true;
 
             for (LfgGroupQueueDataContainer::const_iterator itr = queues.begin(); itr != queues.end(); ++itr)
@@ -2407,7 +2415,8 @@ namespace lfg
         LfgPlayerData& playerData = PlayersStore[guid];
         uint8 activeQueueId = playerData.GetActiveQueueId();
         LfgPlayerQueueDataContainer const& queues = playerData.GetQueues();
-        if (queues.find(activeQueueId) != queues.end())
+        LfgPlayerQueueDataContainer::const_iterator activeItr = queues.find(activeQueueId);
+        if (activeItr != queues.end() && (activeItr->second.State != LFG_STATE_NONE || activeItr->second.OldState != LFG_STATE_NONE))
             return true;
 
         for (LfgPlayerQueueDataContainer::const_iterator itr = queues.begin(); itr != queues.end(); ++itr)
