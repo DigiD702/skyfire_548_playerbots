@@ -27,7 +27,7 @@ namespace lfg
     LfgGroupData::~LfgGroupData()
     { }
 
-    bool LfgGroupData::IsLfgGroup()
+    bool LfgGroupData::IsLfgGroup() const
     {
         return GetOldState() != LFG_STATE_NONE;
     }

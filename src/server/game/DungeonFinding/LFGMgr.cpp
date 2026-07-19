@@ -2455,10 +2455,111 @@ namespace lfg
         o << "Number of Queues: " << size << "\n";
         for (LfgQueueContainer::const_iterator itr = QueuesStore.begin(); itr != QueuesStore.end(); ++itr)
         {
-            std::string const& queued = itr->second.DumpQueueInfo();
+            o << "Queue Id: " << uint32(itr->first) << "\n";
+            std::string const& queued = itr->second.DumpQueueInfo(full);
             std::string const& compatibles = itr->second.DumpCompatibleInfo(full);
             o << queued << compatibles;
         }
+
+        return o.str();
+    }
+
+    std::string LFGMgr::DumpPlayerInfo(uint64 guid)
+    {
+        std::ostringstream o;
+        LfgPlayerDataContainer::const_iterator itr = PlayersStore.find(guid);
+        if (itr == PlayersStore.end())
+        {
+            o << "LFG player data missing for guid " << guid << "\n";
+            return o.str();
+        }
+
+        LfgPlayerData const& playerData = itr->second;
+        time_t const currTime = time(NULL);
+        uint64 const group = playerData.GetGroup();
+
+        o << "LFG Player: " << guid << "\n";
+        o << "  Active Queue: " << uint32(playerData.GetActiveQueueId()) << "\n";
+        o << "  Original Group: " << group << "\n";
+        o << "  State: " << GetStateString(playerData.GetState()) << " old: " << GetStateString(playerData.GetOldState()) << "\n";
+        o << "  Roles: " << GetRolesString(playerData.GetRoles()) << "\n";
+        o << "  Dungeons: " << ConcatenateDungeons(playerData.GetSelectedDungeons()) << "\n";
+        o << "  Locked Dungeons: " << GetLockedDungeons(guid).size() << "\n";
+        if (!playerData.GetComment().empty())
+            o << "  Comment: " << playerData.GetComment() << "\n";
+
+        LfgPlayerQueueDataContainer const& queues = playerData.GetQueues();
+        o << "  Saved Queues: " << queues.size() << "\n";
+        for (LfgPlayerQueueDataContainer::const_iterator itQueue = queues.begin(); itQueue != queues.end(); ++itQueue)
+        {
+            time_t joinTime = 0;
+            LfgQueueContainer::const_iterator itLfgQueue = QueuesStore.find(itQueue->first);
+            if (itLfgQueue != QueuesStore.end())
+                joinTime = itLfgQueue->second.GetJoinTime(guid);
+
+            o << "    Queue " << uint32(itQueue->first)
+                << " state: " << GetStateString(itQueue->second.State)
+                << " old: " << GetStateString(itQueue->second.OldState)
+                << " roles: " << GetRolesString(itQueue->second.Roles)
+                << " dungeons: " << ConcatenateDungeons(itQueue->second.SelectedDungeons);
+
+            if (joinTime)
+                o << " queued: " << uint32(currTime > joinTime ? currTime - joinTime : 0) << "s";
+
+            if (!itQueue->second.Comment.empty())
+                o << " comment: " << itQueue->second.Comment;
+
+            o << "\n";
+        }
+
+        return o.str();
+    }
+
+    std::string LFGMgr::DumpGroupInfo(uint64 guid)
+    {
+        std::ostringstream o;
+        LfgGroupDataContainer::const_iterator itr = GroupsStore.find(guid);
+        if (itr == GroupsStore.end())
+        {
+            o << "LFG group data missing for guid " << guid << "\n";
+            return o.str();
+        }
+
+        LfgGroupData const& groupData = itr->second;
+        time_t const currTime = time(NULL);
+
+        o << "LFG Group: " << guid << "\n";
+        o << "  Is LFG Group: " << (groupData.IsLfgGroup() ? "yes" : "no") << "\n";
+        o << "  Active Queue: " << uint32(groupData.GetActiveQueueId()) << "\n";
+        o << "  State: " << GetStateString(groupData.GetState()) << " old: " << GetStateString(groupData.GetOldState()) << "\n";
+        o << "  Dungeon: " << groupData.GetDungeon(true) << "\n";
+        o << "  Leader: " << groupData.GetLeader() << "\n";
+        o << "  Players: " << groupData.GetPlayers().size() << "\n";
+        o << "  Kicks Left: " << uint32(groupData.GetKicksLeft()) << "\n";
+        o << "  Vote Kick: " << (groupData.IsVoteKickActive() ? "active" : "inactive") << "\n";
+
+        LfgGroupQueueDataContainer const& queues = groupData.GetQueues();
+        o << "  Saved Queues: " << queues.size() << "\n";
+        for (LfgGroupQueueDataContainer::const_iterator itQueue = queues.begin(); itQueue != queues.end(); ++itQueue)
+        {
+            time_t joinTime = 0;
+            LfgQueueContainer::const_iterator itLfgQueue = QueuesStore.find(itQueue->first);
+            if (itLfgQueue != QueuesStore.end())
+                joinTime = itLfgQueue->second.GetJoinTime(guid);
+
+            o << "    Queue " << uint32(itQueue->first)
+                << " state: " << GetStateString(itQueue->second.State)
+                << " old: " << GetStateString(itQueue->second.OldState)
+                << " dungeon: " << itQueue->second.Dungeon;
+
+            if (joinTime)
+                o << " queued: " << uint32(currTime > joinTime ? currTime - joinTime : 0) << "s";
+
+            o << "\n";
+        }
+
+        for (LfgGuidSet::const_iterator itPlayer = groupData.GetPlayers().begin(); itPlayer != groupData.GetPlayers().end(); ++itPlayer)
+            o << "    Member: " << *itPlayer << "\n";
 
         return o.str();
     }

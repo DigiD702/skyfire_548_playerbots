@@ -669,11 +669,12 @@ namespace lfg
         return 0;
     }
 
-    std::string LFGQueue::DumpQueueInfo() const
+    std::string LFGQueue::DumpQueueInfo(bool full /* = false */) const
     {
         uint32 players = 0;
         uint32 groups = 0;
         uint32 playersInGroup = 0;
+        time_t const currTime = time(NULL);
 
         for (uint8 i = 0; i < 2; ++i)
         {
@@ -692,6 +693,38 @@ namespace lfg
         }
         std::ostringstream o;
         o << "Queued Players: " << players << " (in group: " << playersInGroup << ") Groups: " << groups << "\n";
+        if (!full)
+            return o.str();
+
+        o << "Current Queue: " << ConcatenateGuids(currentQueueStore) << "\n";
+        o << "New Queue: " << ConcatenateGuids(newToQueueStore) << "\n";
+
+        for (LfgQueueDataContainer::const_iterator itr = QueueDataStore.begin(); itr != QueueDataStore.end(); ++itr)
+        {
+            LfgQueueData const& queueInfo = itr->second;
+            o << "  " << (IS_GROUP_GUID(itr->first) ? "Group" : "Player")
+                << " " << itr->first
+                << " queued " << uint32(currTime > queueInfo.joinTime ? currTime - queueInfo.joinTime : 0) << "s"
+                << " roles: " << queueInfo.roles.size()
+                << " dungeons: " << ConcatenateDungeons(queueInfo.dungeons)
+                << " need T/H/D: " << uint32(queueInfo.tanks) << "/" << uint32(queueInfo.healers) << "/" << uint32(queueInfo.dps);
+
+            if (!queueInfo.bestCompatible.empty())
+                o << " best: " << queueInfo.bestCompatible;
+
+            if (QueueContainsGuid(currentQueueStore, itr->first))
+                o << " phase: current";
+            else if (QueueContainsGuid(newToQueueStore, itr->first))
+                o << " phase: new";
+            else
+                o << " phase: stored-only";
+
+            o << "\n";
+
+            for (LfgRolesMap::const_iterator itRoles = queueInfo.roles.begin(); itRoles != queueInfo.roles.end(); ++itRoles)
+                o << "    role " << itRoles->first << ": " << GetRolesString(itRoles->second) << "\n";
+        }
+
         return o.str();
     }
 

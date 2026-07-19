@@ -37,7 +37,7 @@ namespace lfg
         LfgGroupData();
         ~LfgGroupData();
 
-        bool IsLfgGroup();
+        bool IsLfgGroup() const;
 
         // General
         void SetState(LfgState state);

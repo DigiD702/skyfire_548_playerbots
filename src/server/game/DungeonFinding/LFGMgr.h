@@ -356,6 +356,10 @@ namespace lfg
         void Clean();
         /// Dumps the state of the queue - Only for internal testing
         std::string DumpQueueInfo(bool full = false);
+        /// Dumps queue-scoped player state - Only for internal testing
+        std::string DumpPlayerInfo(uint64 guid);
+        /// Dumps queue-scoped group state - Only for internal testing
+        std::string DumpGroupInfo(uint64 guid);
 
         // LFGScripts
         /// Get leader of the group (using internal data)

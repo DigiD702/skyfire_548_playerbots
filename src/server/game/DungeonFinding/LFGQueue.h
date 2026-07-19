@@ -95,7 +95,7 @@ namespace lfg
         uint8 FindGroups();
 
         // Just for debugging purposes
-        std::string DumpQueueInfo() const;
+        std::string DumpQueueInfo(bool full = false) const;
         std::string DumpCompatibleInfo(bool full = false) const;
 
     private:
