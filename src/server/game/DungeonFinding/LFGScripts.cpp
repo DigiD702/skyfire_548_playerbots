@@ -19,6 +19,13 @@
 
 namespace lfg
 {
+    namespace
+    {
+        bool IsLfgDungeonState(LfgState state)
+        {
+            return state == LFG_STATE_DUNGEON || state == LFG_STATE_FINISHED_DUNGEON;
+        }
+    }
 
     LFGPlayerScript::LFGPlayerScript() : PlayerScript("LFGPlayerScript") { }
 
@@ -97,7 +104,17 @@ namespace lfg
         else
         {
             Group* group = player->GetGroup();
-            if (group && group->GetMembersCount() == 1)
+            if (group && group->isLFGGroup() && IsLfgDungeonState(sLFGMgr->GetState(group->GetGUID())))
+            {
+                uint64 const groupGuid = group->GetGUID();
+                uint64 const playerGuid = player->GetGUID();
+
+                sLFGMgr->ClearDungeonGroupState(groupGuid, group->GetDbStoreId(), "Left LFG dungeon map", true);
+
+                SF_LOG_DEBUG("lfg", "LFGPlayerScript::OnMapChanged, Player %s(%u) left LFG dungeon map; detached from LFG group %u.",
+                    player->GetName().c_str(), GUID_LOPART(playerGuid), GUID_LOPART(groupGuid));
+            }
+            else if (group && group->GetMembersCount() == 1)
             {
                 sLFGMgr->LeaveLfg(group->GetGUID());
                 group->Disband();

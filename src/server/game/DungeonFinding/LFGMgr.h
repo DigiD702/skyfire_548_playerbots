@@ -374,6 +374,8 @@ namespace lfg
         void SetLeader(uint64 gguid, uint64 leader);
         /// Removes saved group data
         void RemoveGroupData(uint64 guid);
+        /// Clears active dungeon finder state for an LFG dungeon group
+        void ClearDungeonGroupState(uint64 guid, uint32 dbGuid, char const* debugMsg, bool sendUpdate);
         /// Removes a player from a group
         uint8 RemovePlayerFromGroup(uint64 gguid, uint64 guid);
         /// Adds player to group

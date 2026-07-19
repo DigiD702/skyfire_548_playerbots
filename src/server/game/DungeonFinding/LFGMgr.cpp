@@ -2067,6 +2067,18 @@ namespace lfg
         }
     }
 
+    void LFGMgr::ClearDungeonGroupState(uint64 guid, uint32 dbGuid, char const* debugMsg, bool sendUpdate)
+    {
+        ClearGroupQueueState(guid, debugMsg, sendUpdate);
+
+        if (!dbGuid)
+            return;
+
+        PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_LFG_DATA);
+        stmt->setUInt32(0, dbGuid);
+        CharacterDatabase.Execute(stmt);
+    }
+
     void LFGMgr::SetActiveQueueId(uint64 guid, uint8 queueId)
     {
         if (IS_GROUP_GUID(guid))
