@@ -483,6 +483,18 @@ void WorldSession::HandleLfgGetStatus(WorldPacket& /*recvData*/)
     lfg::LfgUpdateData updateData = sLFGMgr->GetLfgStatus(guid);
     bool hasActiveProposal = updateData.state == lfg::LFG_STATE_PROPOSAL;
 
+    if (Group* group = GetPlayer()->GetGroup())
+    {
+        if (group->isLFGGroup() && sLFGMgr->GetState(group->GetGUID()) == lfg::LFG_STATE_NONE)
+        {
+            uint64 const groupGuid = group->GetGUID();
+            SF_LOG_DEBUG("lfg.status", "CMSG_LFG_GET_STATUS %s found stale LFG group %u with no finder state; disbanding group.",
+                GetPlayerInfo().c_str(), GUID_LOPART(groupGuid));
+            group->Disband();
+            updateData = lfg::LfgUpdateData(lfg::LFG_UPDATETYPE_REMOVED_FROM_QUEUE);
+        }
+    }
+
     if (GetPlayer()->GetGroup())
     {
         SendLfgUpdateStatus(updateData, true);

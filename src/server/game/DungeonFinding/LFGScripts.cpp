@@ -104,23 +104,23 @@ namespace lfg
         else
         {
             Group* group = player->GetGroup();
-            if (group && group->isLFGGroup() && IsLfgDungeonState(sLFGMgr->GetState(group->GetGUID())))
+            if (group && group->isLFGGroup())
             {
                 uint64 const groupGuid = group->GetGUID();
                 uint64 const playerGuid = player->GetGUID();
+                LfgState const groupState = sLFGMgr->GetState(groupGuid);
+
+                if (!IsLfgDungeonState(groupState) && groupState != LFG_STATE_NONE)
+                {
+                    player->RemoveAurasDueToSpell(LFG_SPELL_LUCK_OF_THE_DRAW);
+                    return;
+                }
 
                 sLFGMgr->ClearDungeonGroupState(groupGuid, group->GetDbStoreId(), "Left LFG dungeon map", true);
                 group->Disband();
 
-                SF_LOG_DEBUG("lfg", "LFGPlayerScript::OnMapChanged, Player %s(%u) left LFG dungeon map; disbanded LFG group %u.",
-                    player->GetName().c_str(), GUID_LOPART(playerGuid), GUID_LOPART(groupGuid));
-            }
-            else if (group && group->isLFGGroup() && group->GetMembersCount() == 1)
-            {
-                sLFGMgr->LeaveLfg(group->GetGUID());
-                group->Disband();
-                SF_LOG_DEBUG("lfg", "LFGPlayerScript::OnMapChanged, Player %s(%u) is last in the lfggroup so we disband the group.",
-                    player->GetName().c_str(), GUID_LOPART(player->GetGUID()));
+                SF_LOG_DEBUG("lfg", "LFGPlayerScript::OnMapChanged, Player %s(%u) left LFG dungeon flow; disbanded LFG group %u with state %u.",
+                    player->GetName().c_str(), GUID_LOPART(playerGuid), GUID_LOPART(groupGuid), uint32(groupState));
             }
             player->RemoveAurasDueToSpell(LFG_SPELL_LUCK_OF_THE_DRAW);
         }
@@ -167,8 +167,9 @@ namespace lfg
         SF_LOG_DEBUG("lfg", "LFGScripts::OnRemoveMember [" UI64FMTD "]: remove [" UI64FMTD "] Method: %d Kicker: [" UI64FMTD "] Reason: %s", gguid, guid, method, kicker, (reason ? reason : ""));
 
         bool isLFG = group->isLFGGroup();
+        LfgState state = sLFGMgr->GetState(gguid);
 
-        if (isLFG && method == GROUP_REMOVEMETHOD_KICK)        // Player have been kicked
+        if (isLFG && method == GROUP_REMOVEMETHOD_KICK && IsLfgDungeonState(state))        // Player have been kicked
         {
             /// @todo - Update internal kick cooldown of kicker
             std::string str_reason = "";
@@ -177,8 +178,6 @@ namespace lfg
             sLFGMgr->InitBoot(gguid, kicker, guid, str_reason);
             return;
         }
-
-        LfgState state = sLFGMgr->GetState(gguid);
 
         // If group is being formed after proposal success do nothing more
         if (state == LFG_STATE_PROPOSAL && method == GROUP_REMOVEMETHOD_DEFAULT)
