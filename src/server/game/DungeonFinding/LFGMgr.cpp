@@ -683,17 +683,7 @@ namespace lfg
         {
             case LFG_STATE_QUEUED:
                 if (gguid)
-                {
-                    LFGQueue& queue = GetQueue(gguid);
-                    queue.RemoveFromQueue(gguid);
-                    ClearQueueState(gguid, "Leave queued group");
-                    const LfgGuidSet& players = GetPlayers(gguid);
-                    for (LfgGuidSet::const_iterator it = players.begin(); it != players.end(); ++it)
-                    {
-                        ClearQueueState(*it, "Leave queued group member");
-                        SendLfgUpdateStatus(*it, LfgUpdateData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE), true);
-                    }
-                }
+                    ClearGroupQueueState(gguid, "Leave queued group", true);
                 else
                 {
                     LFGQueue& queue = GetQueue(guid);
@@ -734,7 +724,9 @@ namespace lfg
             case LFG_STATE_DUNGEON:
             case LFG_STATE_FINISHED_DUNGEON:
                 //case LFG_STATE_BOOT:
-                if (guid != gguid && !disconnected) // Player
+                if (guid == gguid && gguid && !disconnected)
+                    ClearGroupQueueState(gguid, "Leave dungeon group", true);
+                else if (guid != gguid && !disconnected) // Player
                     ClearQueueState(guid, "Leave dungeon member");
                 break;
         }
@@ -2048,6 +2040,33 @@ namespace lfg
         SetState(guid, LFG_STATE_NONE);
     }
 
+    void LFGMgr::ClearGroupQueueState(uint64 guid, char const* debugMsg, bool sendUpdate)
+    {
+        if (!guid || !IS_GROUP_GUID(guid))
+            return;
+
+        LfgGroupDataContainer::const_iterator itr = GroupsStore.find(guid);
+        if (itr == GroupsStore.end())
+        {
+            ClearQueueState(guid, debugMsg);
+            return;
+        }
+
+        LfgGuidSet const players = itr->second.GetPlayers();
+        LfgUpdateData removedFromQueueData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE);
+
+        RoleChecksStore.erase(guid);
+        BootsStore.erase(guid);
+
+        ClearQueueState(guid, debugMsg);
+        for (LfgGuidSet::const_iterator it = players.begin(); it != players.end(); ++it)
+        {
+            ClearQueueState(*it, debugMsg);
+            if (sendUpdate)
+                SendLfgUpdateStatus(*it, removedFromQueueData, true);
+        }
+    }
+
     void LFGMgr::SetActiveQueueId(uint64 guid, uint8 queueId)
     {
         if (IS_GROUP_GUID(guid))
@@ -2459,6 +2478,50 @@ namespace lfg
             std::string const& queued = itr->second.DumpQueueInfo(full);
             std::string const& compatibles = itr->second.DumpCompatibleInfo(full);
             o << queued << compatibles;
+        }
+
+        if (full)
+        {
+            time_t const currTime = time(NULL);
+
+            o << "Role Checks: " << RoleChecksStore.size() << "\n";
+            for (LfgRoleCheckContainer::const_iterator itr = RoleChecksStore.begin(); itr != RoleChecksStore.end(); ++itr)
+            {
+                LfgRoleCheck const& roleCheck = itr->second;
+                o << "  Group " << itr->first
+                    << " state: " << uint32(roleCheck.state)
+                    << " leader: " << roleCheck.leader
+                    << " expires: " << uint32(roleCheck.cancelTime > currTime ? roleCheck.cancelTime - currTime : 0) << "s"
+                    << " random: " << roleCheck.rDungeonId
+                    << " dungeons: " << ConcatenateDungeons(roleCheck.dungeons) << "\n";
+
+                for (LfgRolesMap::const_iterator itRoles = roleCheck.roles.begin(); itRoles != roleCheck.roles.end(); ++itRoles)
+                    o << "    role " << itRoles->first << ": " << GetRolesString(itRoles->second) << "\n";
+            }
+
+            o << "Proposals: " << ProposalsStore.size() << "\n";
+            for (LfgProposalContainer::const_iterator itr = ProposalsStore.begin(); itr != ProposalsStore.end(); ++itr)
+            {
+                LfgProposal const& proposal = itr->second;
+                o << "  Proposal " << itr->first
+                    << " state: " << uint32(proposal.state)
+                    << " dungeon: " << proposal.dungeonId
+                    << " group: " << proposal.group
+                    << " leader: " << proposal.leader
+                    << " expires: " << uint32(proposal.cancelTime > currTime ? proposal.cancelTime - currTime : 0) << "s"
+                    << " queues: " << ConcatenateGuids(proposal.queues) << "\n";
+
+                for (LfgProposalPlayerContainer::const_iterator itPlayer = proposal.players.begin(); itPlayer != proposal.players.end(); ++itPlayer)
+                {
+                    LfgProposalPlayer const& player = itPlayer->second;
+                    o << "    player " << itPlayer->first
+                        << " role: " << GetRolesString(player.role)
+                        << " accept: " << int32(player.accept)
+                        << " group: " << player.group << "\n";
+                }
+            }
+
+            o << "Boot Votes: " << BootsStore.size() << "\n";
         }
 
         return o.str();

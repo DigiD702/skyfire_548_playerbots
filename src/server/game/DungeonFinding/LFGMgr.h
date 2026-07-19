@@ -439,6 +439,7 @@ namespace lfg
         void RestoreOrClearState(uint64 guid, char const* debugMsg);
         void ClearState(uint64 guid, char const* debugMsg);
         void ClearQueueState(uint64 guid, char const* debugMsg);
+        void ClearGroupQueueState(uint64 guid, char const* debugMsg, bool sendUpdate);
         void SetActiveQueueId(uint64 guid, uint8 queueId);
         void SetDungeon(uint64 guid, uint32 dungeon);
         void SetSelectedDungeons(uint64 guid, LfgDungeonSet const& dungeons);
