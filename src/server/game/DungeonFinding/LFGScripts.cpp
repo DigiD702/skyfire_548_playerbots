@@ -110,9 +110,9 @@ namespace lfg
                 uint64 const playerGuid = player->GetGUID();
 
                 sLFGMgr->ClearDungeonGroupState(groupGuid, group->GetDbStoreId(), "Left LFG dungeon map", true);
-                group->ConvertToGroup();
+                group->Disband();
 
-                SF_LOG_DEBUG("lfg", "LFGPlayerScript::OnMapChanged, Player %s(%u) left LFG dungeon map; detached from LFG group %u.",
+                SF_LOG_DEBUG("lfg", "LFGPlayerScript::OnMapChanged, Player %s(%u) left LFG dungeon map; disbanded LFG group %u.",
                     player->GetName().c_str(), GUID_LOPART(playerGuid), GUID_LOPART(groupGuid));
             }
             else if (group && group->isLFGGroup() && group->GetMembersCount() == 1)
