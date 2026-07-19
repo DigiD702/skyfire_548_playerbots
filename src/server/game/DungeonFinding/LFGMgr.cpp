@@ -2361,7 +2361,16 @@ namespace lfg
     // Only for debugging purposes
     void LFGMgr::Clean()
     {
+        SF_LOG_INFO("lfg", "Clearing all Dungeon Finder runtime state: queues=%u players=%u groups=%u roleChecks=%u proposals=%u boots=%u",
+            uint32(QueuesStore.size()), uint32(PlayersStore.size()), uint32(GroupsStore.size()),
+            uint32(RoleChecksStore.size()), uint32(ProposalsStore.size()), uint32(BootsStore.size()));
+
         QueuesStore.clear();
+        PlayersStore.clear();
+        GroupsStore.clear();
+        RoleChecksStore.clear();
+        ProposalsStore.clear();
+        BootsStore.clear();
     }
 
     bool LFGMgr::isOptionEnabled(uint32 option)
@@ -2568,6 +2577,8 @@ namespace lfg
         o << "LFG Player: " << guid << "\n";
         o << "  Active Queue: " << uint32(playerData.GetActiveQueueId()) << "\n";
         o << "  Original Group: " << group << "\n";
+        if (group)
+            o << "  Original Group Exists: " << (sGroupMgr->GetGroupByGUID(GUID_LOPART(group)) ? "yes" : "no") << "\n";
         o << "  State: " << GetStateString(playerData.GetState()) << " old: " << GetStateString(playerData.GetOldState()) << "\n";
         o << "  Roles: " << GetRolesString(playerData.GetRoles()) << "\n";
         o << "  Dungeons: " << ConcatenateDungeons(playerData.GetSelectedDungeons()) << "\n";

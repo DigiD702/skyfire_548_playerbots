@@ -18,6 +18,8 @@ namespace lfg
 {
     namespace
     {
+        uint8 const LFG_COMBAT_ROLE_MASK = PLAYER_ROLE_TANK | PLAYER_ROLE_HEALER | PLAYER_ROLE_DAMAGE;
+
         bool QueueContainsGuid(LfgGuidList const& queue, uint64 guid)
         {
             return std::find(queue.begin(), queue.end(), guid) != queue.end();
@@ -674,11 +676,24 @@ namespace lfg
         uint32 players = 0;
         uint32 groups = 0;
         uint32 playersInGroup = 0;
+        uint32 currentEntries = 0;
+        uint32 newEntries = 0;
+        uint32 storedOnlyEntries = 0;
+        uint32 tankRoles = 0;
+        uint32 healerRoles = 0;
+        uint32 damageRoles = 0;
+        uint32 leaderRoles = 0;
+        uint32 noRoles = 0;
         time_t const currTime = time(NULL);
 
         for (uint8 i = 0; i < 2; ++i)
         {
             LfgGuidList const& queue = i ? newToQueueStore : currentQueueStore;
+            if (i)
+                newEntries = uint32(queue.size());
+            else
+                currentEntries = uint32(queue.size());
+
             for (LfgGuidList::const_iterator it = queue.begin(); it != queue.end(); ++it)
             {
                 uint64 guid = *it;
@@ -691,8 +706,33 @@ namespace lfg
                     players++;
             }
         }
+
+        for (LfgQueueDataContainer::const_iterator itr = QueueDataStore.begin(); itr != QueueDataStore.end(); ++itr)
+        {
+            if (!QueueContainsGuid(currentQueueStore, itr->first) && !QueueContainsGuid(newToQueueStore, itr->first))
+                ++storedOnlyEntries;
+
+            for (LfgRolesMap::const_iterator itRoles = itr->second.roles.begin(); itRoles != itr->second.roles.end(); ++itRoles)
+            {
+                uint8 roles = itRoles->second;
+                if (roles & PLAYER_ROLE_TANK)
+                    ++tankRoles;
+                if (roles & PLAYER_ROLE_HEALER)
+                    ++healerRoles;
+                if (roles & PLAYER_ROLE_DAMAGE)
+                    ++damageRoles;
+                if (roles & PLAYER_ROLE_LEADER)
+                    ++leaderRoles;
+                if (!(roles & LFG_COMBAT_ROLE_MASK))
+                    ++noRoles;
+            }
+        }
+
         std::ostringstream o;
         o << "Queued Players: " << players << " (in group: " << playersInGroup << ") Groups: " << groups << "\n";
+        o << "Entries current/new/stored-only: " << currentEntries << "/" << newEntries << "/" << storedOnlyEntries << "\n";
+        o << "Role buckets tank/healer/damage/leader/none: " << tankRoles << "/" << healerRoles << "/" << damageRoles
+            << "/" << leaderRoles << "/" << noRoles << "\n";
         if (!full)
             return o.str();
 
