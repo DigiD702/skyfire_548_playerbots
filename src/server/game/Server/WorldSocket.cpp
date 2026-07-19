@@ -163,7 +163,7 @@ int WorldSocket::SendPacket(WorldPacket const& pct)
 
     // Dump outgoing packet
     if (sPacketLog->CanLogPacket())
-        sPacketLog->LogPacket(this, m_Address, pct, SERVER_TO_CLIENT);
+        sPacketLog->LogPacket(this, BuildPacketLogSessionInfo(), pct, SERVER_TO_CLIENT);
 
     WorldPacket const* pkt = &pct;
 
@@ -203,6 +203,17 @@ int WorldSocket::SendPacket(WorldPacket const& pct)
         QueueSerializedPacket(std::move(serialized));
 
     return 0;
+}
+
+void WorldSocket::LogPacketMarker(std::string const& marker)
+{
+    if (sPacketLog->CanLogPacket())
+        sPacketLog->LogMarker(this, BuildPacketLogSessionInfo(), marker);
+}
+
+void WorldSocket::RefreshPacketLogSessionInfo()
+{
+    sPacketLog->RefreshSessionInfo(this, BuildPacketLogSessionInfo());
 }
 
 long WorldSocket::AddReference(void)
@@ -356,6 +367,29 @@ void WorldSocket::NotifyClosed()
 
     if (m_CloseHandler)
         m_CloseHandler(this);
+}
+
+PacketLogSessionInfo WorldSocket::BuildPacketLogSessionInfo() const
+{
+    PacketLogSessionInfo info;
+    info.RemoteAddress = m_Address;
+    info.AccountId = 0;
+    info.RealmId = 0;
+    info.CharacterName = "none";
+
+    m_SessionState.WithSession([&info](WorldSession* session)
+    {
+        if (!session)
+            return;
+
+        info.AccountId = session->GetAccountId();
+        info.RealmId = session->GetVirtualRealmID();
+
+        if (Player* player = session->GetPlayer())
+            info.CharacterName = player->GetName();
+    });
+
+    return info;
 }
 
 int WorldSocket::handle_input_header(void)
@@ -606,7 +640,7 @@ int WorldSocket::ProcessIncoming(WorldPacket* new_pct)
 
     // Dump received packet.
     if (sPacketLog->CanLogPacket())
-        sPacketLog->LogPacket(this, m_Address, *new_pct, CLIENT_TO_SERVER);
+        sPacketLog->LogPacket(this, BuildPacketLogSessionInfo(), *new_pct, CLIENT_TO_SERVER);
 
     std::string opcodeName = GetOpcodeNameForLogging(opcode, false);
     m_SessionState.WithSession([&opcodeName](WorldSession* session)

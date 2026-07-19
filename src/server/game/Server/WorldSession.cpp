@@ -264,6 +264,12 @@ void WorldSession::SendPacket(WorldPacket const* packet, bool forced /*= false*/
         m_Socket->CloseSocket();
 }
 
+void WorldSession::LogPacketMarker(std::string const& marker)
+{
+    if (m_Socket)
+        m_Socket->LogPacketMarker(marker);
+}
+
 /// Add an incoming packet to the queue
 void WorldSession::QueuePacket(WorldPacket* new_packet)
 {
@@ -1097,7 +1103,11 @@ void WorldSession::SetPlayer(Player* player)
 
     // set m_GUID that can be used while player loggined and later until m_playerRecentlyLogout not reset
     if (_player)
+    {
         m_GUIDLow = _player->GetGUIDLow();
+        if (m_Socket)
+            m_Socket->RefreshPacketLogSessionInfo();
+    }
 }
 
 void WorldSession::InitializeQueryCallbackParameters()

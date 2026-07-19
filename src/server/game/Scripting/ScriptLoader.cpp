@@ -54,6 +54,7 @@ void AddSC_misc_commandscript();
 void AddSC_mmaps_commandscript();
 void AddSC_modify_commandscript();
 void AddSC_npc_commandscript();
+void AddSC_packet_commandscript();
 void AddSC_pet_commandscript();
 void AddSC_quest_commandscript();
 void AddSC_rbac_commandscript();
@@ -616,6 +617,8 @@ void AddSC_boss_hoptallus();
 void AddSC_boss_ook_ook();
 void AddSC_instance_stormstout_brewery();
 void AddSC_stormstout_brewery();
+// Valley of the four Winds
+void AddSC_valley_of_the_four_winds();
 
 // Pets
 void AddSC_deathknight_pet_scripts();
@@ -710,6 +713,7 @@ void AddCommandScripts()
     AddSC_mmaps_commandscript();
     AddSC_modify_commandscript();
     AddSC_npc_commandscript();
+    AddSC_packet_commandscript();
     AddSC_quest_commandscript();
     AddSC_pet_commandscript();
     AddSC_rbac_commandscript();
@@ -1305,6 +1309,8 @@ void AddPandariaScripts()
     AddSC_boss_ook_ook();
     AddSC_instance_stormstout_brewery();
     AddSC_stormstout_brewery();
+    // Valley of the four Winds
+    AddSC_valley_of_the_four_winds();
 #endif
 }
 

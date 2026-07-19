@@ -14,10 +14,15 @@
 #include "Log.h"
 #include "MySQLConnection.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <memory>
 #include <sstream>
+#include <system_error>
+#include <vector>
 
 namespace Skyfire
 {
@@ -25,16 +30,218 @@ namespace Database
 {
     namespace
     {
-        bool ReadTextFile(std::filesystem::path const& path, std::string& contents)
+        bool StartsWithCaseInsensitive(std::string const& text, char const* prefix)
         {
-            std::ifstream file(path, std::ios::in | std::ios::binary);
-            if (!file)
+            std::size_t prefixLength = std::strlen(prefix);
+            if (text.length() < prefixLength)
                 return false;
 
-            std::ostringstream stream;
-            stream << file.rdbuf();
-            contents = stream.str();
+            for (std::size_t i = 0; i < prefixLength; ++i)
+            {
+                if (std::tolower(static_cast<unsigned char>(text[i])) !=
+                    std::tolower(static_cast<unsigned char>(prefix[i])))
+                    return false;
+            }
+
             return true;
+        }
+
+        std::string ExtractSqlTableName(std::string const& statement)
+        {
+            std::string::size_type begin = 0;
+            while (begin < statement.length() && std::isspace(static_cast<unsigned char>(statement[begin])))
+                ++begin;
+
+            std::string trimmed = statement.substr(begin);
+            if (!StartsWithCaseInsensitive(trimmed, "DROP TABLE") &&
+                !StartsWithCaseInsensitive(trimmed, "CREATE TABLE") &&
+                !StartsWithCaseInsensitive(trimmed, "INSERT INTO") &&
+                !StartsWithCaseInsensitive(trimmed, "DELETE FROM") &&
+                !StartsWithCaseInsensitive(trimmed, "ALTER TABLE"))
+                return "";
+
+            std::string::size_type tableBegin = trimmed.find('`');
+            if (tableBegin == std::string::npos)
+                return "";
+
+            std::string::size_type tableEnd = trimmed.find('`', tableBegin + 1);
+            if (tableEnd == std::string::npos)
+                return "";
+
+            return trimmed.substr(tableBegin + 1, tableEnd - tableBegin - 1);
+        }
+
+        uint32 CalculateSqlProgressPercent(SqlStatementContext const& sqlContext)
+        {
+            if (!sqlContext.TotalBytes)
+                return 0;
+
+            std::uintmax_t percent = sqlContext.BytesRead * 100 / sqlContext.TotalBytes;
+            return uint32(percent > 100 ? 100 : percent);
+        }
+
+        std::string TrimCopy(std::string const& text)
+        {
+            std::string::size_type begin = 0;
+            while (begin < text.length() && std::isspace(static_cast<unsigned char>(text[begin])))
+                ++begin;
+
+            std::string::size_type end = text.length();
+            while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1])))
+                --end;
+
+            return text.substr(begin, end - begin);
+        }
+
+        std::string::size_type FindKeywordOutsideQuotedText(std::string const& sql, char const* keyword)
+        {
+            bool inSingleQuote = false;
+            bool inDoubleQuote = false;
+            bool inBacktick = false;
+            bool escaped = false;
+            std::size_t keywordLength = std::strlen(keyword);
+
+            for (std::string::size_type i = 0; i < sql.length(); ++i)
+            {
+                char c = sql[i];
+
+                if (inSingleQuote)
+                {
+                    if (escaped)
+                        escaped = false;
+                    else if (c == '\\')
+                        escaped = true;
+                    else if (c == '\'')
+                        inSingleQuote = false;
+
+                    continue;
+                }
+
+                if (inDoubleQuote)
+                {
+                    if (escaped)
+                        escaped = false;
+                    else if (c == '\\')
+                        escaped = true;
+                    else if (c == '"')
+                        inDoubleQuote = false;
+
+                    continue;
+                }
+
+                if (inBacktick)
+                {
+                    if (c == '`')
+                        inBacktick = false;
+
+                    continue;
+                }
+
+                if (c == '\'')
+                {
+                    inSingleQuote = true;
+                    continue;
+                }
+
+                if (c == '"')
+                {
+                    inDoubleQuote = true;
+                    continue;
+                }
+
+                if (c == '`')
+                {
+                    inBacktick = true;
+                    continue;
+                }
+
+                if (i + keywordLength <= sql.length() &&
+                    StartsWithCaseInsensitive(sql.substr(i, keywordLength), keyword))
+                {
+                    bool beforeBoundary = i == 0 ||
+                        !std::isalnum(static_cast<unsigned char>(sql[i - 1]));
+                    bool afterBoundary = i + keywordLength == sql.length() ||
+                        !std::isalnum(static_cast<unsigned char>(sql[i + keywordLength]));
+
+                    if (beforeBoundary && afterBoundary)
+                        return i;
+                }
+            }
+
+            return std::string::npos;
+        }
+
+        std::vector<std::string> SplitInsertRows(std::string const& values)
+        {
+            std::vector<std::string> rows;
+            bool inSingleQuote = false;
+            bool inDoubleQuote = false;
+            bool escaped = false;
+            int depth = 0;
+            std::string::size_type rowBegin = 0;
+
+            for (std::string::size_type i = 0; i < values.length(); ++i)
+            {
+                char c = values[i];
+
+                if (inSingleQuote)
+                {
+                    if (escaped)
+                        escaped = false;
+                    else if (c == '\\')
+                        escaped = true;
+                    else if (c == '\'')
+                        inSingleQuote = false;
+
+                    continue;
+                }
+
+                if (inDoubleQuote)
+                {
+                    if (escaped)
+                        escaped = false;
+                    else if (c == '\\')
+                        escaped = true;
+                    else if (c == '"')
+                        inDoubleQuote = false;
+
+                    continue;
+                }
+
+                if (c == '\'')
+                {
+                    inSingleQuote = true;
+                    continue;
+                }
+
+                if (c == '"')
+                {
+                    inDoubleQuote = true;
+                    continue;
+                }
+
+                if (c == '(')
+                    ++depth;
+                else if (c == ')')
+                {
+                    if (depth > 0)
+                        --depth;
+                }
+                else if (c == ',' && depth == 0)
+                {
+                    std::string row = TrimCopy(values.substr(rowBegin, i - rowBegin));
+                    if (!row.empty())
+                        rows.push_back(row);
+
+                    rowBegin = i + 1;
+                }
+            }
+
+            std::string row = TrimCopy(values.substr(rowBegin));
+            if (!row.empty())
+                rows.push_back(row);
+
+            return rows;
         }
 
         bool ExecuteSetupQuery(MYSQL* setupConnection, std::string const& sql, char const* queryContext,
@@ -71,6 +278,77 @@ namespace Database
             return true;
         }
 
+        bool ExecuteSetupQueryWithInsertChunks(MYSQL* setupConnection, std::string const& sql,
+            char const* queryContext, SetupRuntimeContext const& context, std::string const& tableName,
+            SqlStatementContext const& sqlContext)
+        {
+            constexpr std::size_t InsertChunkRows = 250;
+            constexpr std::size_t LargeInsertThreshold = 1024 * 1024;
+
+            std::string trimmed = TrimCopy(sql);
+            if (trimmed.length() < LargeInsertThreshold || !StartsWithCaseInsensitive(trimmed, "INSERT INTO"))
+                return ExecuteSetupQuery(setupConnection, sql, queryContext, context);
+
+            std::string::size_type valuesPosition = FindKeywordOutsideQuotedText(trimmed, "VALUES");
+            if (valuesPosition == std::string::npos)
+                return ExecuteSetupQuery(setupConnection, sql, queryContext, context);
+
+            std::string header = TrimCopy(trimmed.substr(0, valuesPosition + 6));
+            std::string values = TrimCopy(trimmed.substr(valuesPosition + 6));
+            std::vector<std::string> rows = SplitInsertRows(values);
+
+            if (rows.size() <= InsertChunkRows)
+                return ExecuteSetupQuery(setupConnection, sql, queryContext, context);
+
+            std::size_t chunkCount = (rows.size() + InsertChunkRows - 1) / InsertChunkRows;
+            SF_LOG_INFO(context.LogFilter, "Large INSERT for %s database table `%s` has %u rows; executing %u chunks.",
+                context.DatabaseName, tableName.empty() ? "unknown" : tableName.c_str(), uint32(rows.size()),
+                uint32(chunkCount));
+
+            std::uintmax_t statementEndByte = sqlContext.BytesRead;
+            std::uintmax_t statementStartByte = statementEndByte > sql.length() ? statementEndByte - sql.length() : 0;
+            std::uintmax_t statementBytes = statementEndByte > statementStartByte ? statementEndByte - statementStartByte : 0;
+
+            for (std::size_t chunkIndex = 0; chunkIndex < chunkCount; ++chunkIndex)
+            {
+                std::size_t begin = chunkIndex * InsertChunkRows;
+                std::size_t end = std::min(begin + InsertChunkRows, rows.size());
+
+                std::ostringstream chunk;
+                chunk << header << ' ';
+                for (std::size_t rowIndex = begin; rowIndex < end; ++rowIndex)
+                {
+                    if (rowIndex != begin)
+                        chunk << ',';
+
+                    chunk << rows[rowIndex];
+                }
+
+                std::ostringstream chunkContext;
+                chunkContext << queryContext << " chunk " << (chunkIndex + 1) << "/" << chunkCount;
+
+                if (!ExecuteSetupQuery(setupConnection, chunk.str(), chunkContext.str().c_str(), context))
+                    return false;
+
+                std::uintmax_t chunkBytesRead = statementEndByte;
+                if (sqlContext.TotalBytes && statementBytes)
+                    chunkBytesRead = statementStartByte + statementBytes * (chunkIndex + 1) / chunkCount;
+
+                uint32 percent = 0;
+                if (sqlContext.TotalBytes)
+                {
+                    std::uintmax_t percentValue = chunkBytesRead * 100 / sqlContext.TotalBytes;
+                    percent = uint32(percentValue > 100 ? 100 : percentValue);
+                }
+
+                SF_LOG_INFO(context.LogFilter, "Import progress: %u%% - %s database table `%s` - chunk %u/%u.",
+                    percent, context.DatabaseName, tableName.empty() ? "unknown" : tableName.c_str(),
+                    uint32(chunkIndex + 1), uint32(chunkCount));
+            }
+
+            return true;
+        }
+
         bool QuerySetupUInt32(MYSQL* setupConnection, char const* sql, uint32& value, char const* queryContext,
             SetupRuntimeContext const& context)
         {
@@ -99,14 +377,6 @@ namespace Database
             return true;
         }
 
-        bool ExecuteSqlText(MYSQL* setupConnection, std::string const& sql, SetupRuntimeContext const& context)
-        {
-            return ExecuteSqlScript(sql, [setupConnection, &context](std::string const& statement)
-            {
-                return ExecuteSetupQuery(setupConnection, statement, context.SqlExecutionContext, context);
-            });
-        }
-
         bool RecordUpdateMetadata(MYSQL* setupConnection, SetupOptions const& options, SqlUpdateFile const& update,
             std::string const& hash, SetupRuntimeContext const& context)
         {
@@ -123,9 +393,9 @@ namespace Database
         }
 
         bool RecordAppliedUpdate(MYSQL* setupConnection, SetupOptions const& options, SqlUpdateFile const& update,
-            std::string const& sql, SetupRuntimeContext const& context)
+            std::string const& hash, SetupRuntimeContext const& context)
         {
-            if (!RecordUpdateMetadata(setupConnection, options, update, CalculateStableSqlHash(sql), context))
+            if (!RecordUpdateMetadata(setupConnection, options, update, hash, context))
                 return false;
 
             std::string queryContext = "Could not record " + std::string(context.DatabaseName) +
@@ -287,17 +557,68 @@ namespace Database
     bool ExecuteSqlFile(MYSQL* setupConnection, std::filesystem::path const& path, std::string& contents,
         SetupRuntimeContext const& context)
     {
-        if (!ReadTextFile(path, contents))
+        contents.clear();
+
+        std::ifstream file(path, std::ios::in | std::ios::binary);
+        if (!file)
         {
             SF_LOG_ERROR(context.LogFilter, "Could not read SQL file %s.", path.string().c_str());
             return false;
         }
 
-        if (!ExecuteSqlText(setupConnection, contents, context))
+        std::uintmax_t totalBytes = 0;
+        std::error_code fileSizeError;
+        totalBytes = std::filesystem::file_size(path, fileSizeError);
+        if (fileSizeError)
+            totalBytes = 0;
+
+        std::string fileName = path.filename().string();
+        std::string currentTable;
+        uint32 lastLoggedPercent = 0;
+
+        SF_LOG_INFO(context.LogFilter, "Executing SQL file %s (%llu bytes).",
+            path.string().c_str(), static_cast<unsigned long long>(totalBytes));
+
+        bool executed = ExecuteSqlStream(file, totalBytes,
+            [setupConnection, &context, &currentTable, &fileName, &lastLoggedPercent]
+            (std::string const& statement, SqlStatementContext const& sqlContext)
+        {
+            std::string detectedTable = ExtractSqlTableName(statement);
+            if (!detectedTable.empty() && detectedTable != currentTable)
+            {
+                currentTable = detectedTable;
+                SF_LOG_INFO(context.LogFilter, "Importing %s database table `%s` from %s.",
+                    context.DatabaseName, currentTable.c_str(), fileName.c_str());
+            }
+
+            uint32 percent = CalculateSqlProgressPercent(sqlContext);
+            if (sqlContext.StatementCount == 1 || sqlContext.StatementCount % 500 == 0 ||
+                percent >= lastLoggedPercent + 5 || percent == 100)
+            {
+                lastLoggedPercent = percent;
+                SF_LOG_INFO(context.LogFilter,
+                    "Import progress: %u%% - %s database table `%s` - %u statements.",
+                    percent, context.DatabaseName, currentTable.empty() ? "unknown" : currentTable.c_str(),
+                    uint32(sqlContext.StatementCount));
+            }
+
+            std::ostringstream queryContext;
+            queryContext << context.SqlExecutionContext << " statement " << sqlContext.StatementCount
+                << " near byte " << static_cast<unsigned long long>(sqlContext.BytesRead);
+            if (!currentTable.empty())
+                queryContext << " while importing table `" << currentTable << "`";
+
+            return ExecuteSetupQueryWithInsertChunks(setupConnection, statement, queryContext.str().c_str(),
+                context, currentTable, sqlContext);
+        });
+
+        if (!executed)
         {
             SF_LOG_ERROR(context.LogFilter, "Failed while executing SQL file %s.", path.string().c_str());
             return false;
         }
+
+        SF_LOG_INFO(context.LogFilter, "Finished executing SQL file %s.", path.string().c_str());
 
         return true;
     }
@@ -375,7 +696,7 @@ namespace Database
             if (!ExecuteSqlFile(setupConnection, update.Path, updateSql, context))
                 return false;
 
-            if (!RecordAppliedUpdate(setupConnection, options, update, updateSql, context))
+            if (!RecordAppliedUpdate(setupConnection, options, update, update.Hash, context))
             {
                 SF_LOG_ERROR(context.LogFilter, "Could not record %s database update %s.",
                     context.DatabaseName, update.Name.c_str());
