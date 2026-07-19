@@ -176,7 +176,13 @@ void WorldSession::HandleLfgLeaveOpcode(WorldPacket& recvData)
     }
 
     SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE GroupLeader: %lu left group queue.", guid);
+    lfg::LfgState const groupState = sLFGMgr->GetState(groupGuid);
+    bool const disbandDungeonGroup = group->isLFGGroup() &&
+        (groupState == lfg::LFG_STATE_DUNGEON || groupState == lfg::LFG_STATE_FINISHED_DUNGEON);
+
     sLFGMgr->LeaveLfg(groupGuid);
+    if (disbandDungeonGroup)
+        group->Disband();
 }
 
 void WorldSession::HandleLfgProposalResultOpcode(WorldPacket& recvData)
@@ -472,9 +478,6 @@ void WorldSession::HandleLfrLeaveOpcode(WorldPacket& recvData)
 void WorldSession::HandleLfgGetStatus(WorldPacket& /*recvData*/)
 {
     SF_LOG_DEBUG("lfg", "CMSG_LFG_GET_STATUS %s", GetPlayerInfo().c_str());
-
-    if (!GetPlayer()->isUsingLfg())
-        return;
 
     uint64 guid = GetPlayer()->GetGUID();
     lfg::LfgUpdateData updateData = sLFGMgr->GetLfgStatus(guid);

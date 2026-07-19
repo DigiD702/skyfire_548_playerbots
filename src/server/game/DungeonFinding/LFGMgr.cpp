@@ -2061,6 +2061,7 @@ namespace lfg
         ClearQueueState(guid, debugMsg);
         for (LfgGuidSet::const_iterator it = players.begin(); it != players.end(); ++it)
         {
+            SetGroup(*it, 0);
             ClearQueueState(*it, debugMsg);
             if (sendUpdate)
                 SendLfgUpdateStatus(*it, removedFromQueueData, true);
@@ -2173,6 +2174,8 @@ namespace lfg
                 ClearQueueState(guid, "Remove group data");
                 SendLfgUpdateStatus(guid, LfgUpdateData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE), true);
             }
+            else
+                ClearQueueState(guid, "Remove proposal group data");
         }
 
         RoleChecksStore.erase(guid);
@@ -2383,6 +2386,15 @@ namespace lfg
         LfgPlayerData& playerData = PlayersStore[guid];
         if (uint64 gguid = GetGroup(guid))
         {
+            if (!sGroupMgr->GetGroupByGUID(GUID_LOPART(gguid)))
+            {
+                SF_LOG_DEBUG("lfg.status", "Player %u had stale LFG group %u while requesting status; clearing finder state.",
+                    GUID_LOPART(guid), GUID_LOPART(gguid));
+                SetGroup(guid, 0);
+                ClearQueueState(guid, "Stale group status request");
+                return LfgUpdateData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE);
+            }
+
             RestoreActiveQueue(gguid);
             LfgState groupState = GetState(gguid);
             if (groupState != LFG_STATE_NONE)
