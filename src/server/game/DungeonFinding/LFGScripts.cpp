@@ -110,11 +110,12 @@ namespace lfg
                 uint64 const playerGuid = player->GetGUID();
 
                 sLFGMgr->ClearDungeonGroupState(groupGuid, group->GetDbStoreId(), "Left LFG dungeon map", true);
+                group->ConvertToGroup();
 
                 SF_LOG_DEBUG("lfg", "LFGPlayerScript::OnMapChanged, Player %s(%u) left LFG dungeon map; detached from LFG group %u.",
                     player->GetName().c_str(), GUID_LOPART(playerGuid), GUID_LOPART(groupGuid));
             }
-            else if (group && group->GetMembersCount() == 1)
+            else if (group && group->isLFGGroup() && group->GetMembersCount() == 1)
             {
                 sLFGMgr->LeaveLfg(group->GetGUID());
                 group->Disband();
@@ -227,6 +228,9 @@ namespace lfg
 
         uint64 gguid = group->GetGUID();
         SF_LOG_DEBUG("lfg", "LFGScripts::OnDisband [" UI64FMTD "]", gguid);
+
+        if (group->isLFGGroup())
+            sLFGMgr->ClearDungeonGroupState(gguid, group->GetDbStoreId(), "LFG group disband", true);
 
         sLFGMgr->RemoveGroupData(gguid);
     }
