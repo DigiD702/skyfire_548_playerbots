@@ -490,12 +490,12 @@ void WorldSession::HandleLfrJoinOpcode(WorldPacket& recvData)
 
     uint32 entry;                                          // Raid id to search
     recvData >> entry;
-    lfg::LfgType type = sLFGMgr->GetDungeonType(entry);
+    bool const isRaidFinderDungeon = sLFGMgr->IsRaidFinderDungeon(entry);
 
-    SF_LOG_DEBUG("lfg.lfr", "CMSG_LFG_LFR_JOIN %s dungeon entry: %u type: %u size: %u",
-        GetPlayerInfo().c_str(), entry, uint32(type), uint32(recvData.size()));
+    SF_LOG_DEBUG("lfg.lfr", "CMSG_LFG_LFR_JOIN %s dungeon entry: %u isRaid: %u size: %u",
+        GetPlayerInfo().c_str(), entry, isRaidFinderDungeon ? 1 : 0, uint32(recvData.size()));
 
-    if (type != lfg::LFG_TYPE_RAID)
+    if (!isRaidFinderDungeon)
     {
         SendLfgJoinResult(lfg::LfgJoinResultData(lfg::LFG_JOIN_DUNGEON_INVALID));
         SendLfrRemovedFromQueue(this);
@@ -519,10 +519,10 @@ void WorldSession::HandleLfrLeaveOpcode(WorldPacket& recvData)
 
     uint32 dungeonId;                                      // Raid id queue to leave
     recvData >> dungeonId;
-    lfg::LfgType type = sLFGMgr->GetDungeonType(dungeonId);
+    bool const isRaidFinderDungeon = sLFGMgr->IsRaidFinderDungeon(dungeonId);
 
-    SF_LOG_DEBUG("lfg.lfr", "CMSG_LFG_LFR_LEAVE %s dungeonId: %u type: %u size: %u",
-        GetPlayerInfo().c_str(), dungeonId, uint32(type), uint32(recvData.size()));
+    SF_LOG_DEBUG("lfg.lfr", "CMSG_LFG_LFR_LEAVE %s dungeonId: %u isRaid: %u size: %u",
+        GetPlayerInfo().c_str(), dungeonId, isRaidFinderDungeon ? 1 : 0, uint32(recvData.size()));
 
     SendLfrRemovedFromQueue(this);
 }

@@ -1937,6 +1937,11 @@ namespace lfg
         return LfgType(dungeon->type);
     }
 
+    bool LFGMgr::IsRaidFinderDungeon(uint32 dungeonId)
+    {
+        return GetDungeonType(dungeonId) == LFG_TYPE_RAID;
+    }
+
     LfgState LFGMgr::GetState(uint64 guid)
     {
         LfgState state;
