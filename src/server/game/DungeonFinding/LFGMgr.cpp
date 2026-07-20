@@ -1690,6 +1690,13 @@ namespace lfg
             return;
         }
 
+        if (player->IsBeingTeleported())
+        {
+            SF_LOG_DEBUG("lfg.teleport", "Player %s already has a pending teleport, skipping LFG teleport %s.",
+                player->GetName().c_str(), out ? "out" : "in");
+            return;
+        }
+
         if (out)
         {
             SF_LOG_DEBUG("lfg.teleport", "Player %s is being teleported out. Current Map %u - Expected Map %u",
