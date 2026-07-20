@@ -1011,7 +1011,8 @@ void WorldSession::SendLfgTeleportError(uint8 err)
     SF_LOG_DEBUG("lfg", "SMSG_LFD_TELEPORT_DENIED %s reason: %u",
         GetPlayerInfo().c_str(), err);
     WorldPacket data(SMSG_LFD_TELEPORT_DENIED, 4);
-    data.WriteBits(err, 4);                                   // Error
+    data.WriteBits(err, 4);                                   // Reason
+    data.FlushBits();
     SendPacket(&data);
 }
 

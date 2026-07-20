@@ -59,6 +59,15 @@ namespace lfg
             return map && map->IsScenario();
         }
 
+        bool IsRaidDungeon(LFGDungeonData const& dungeon)
+        {
+            if (dungeon.type == LFG_TYPE_RAID)
+                return true;
+
+            MapEntry const* map = sMapStore.LookupEntry(dungeon.map);
+            return map && map->IsRaid();
+        }
+
         bool HasValidLfgTeleportLocation(LFGDungeonData const& dungeon)
         {
             if (!dungeon.map || (dungeon.x == 0.0f && dungeon.y == 0.0f && dungeon.z == 0.0f))
@@ -1174,6 +1183,9 @@ namespace lfg
             }
         }
 
+        if (IsRaidDungeon(*dungeon) && !grp->isRaidGroup())
+            grp->ConvertToRaid();
+
         grp->SetDungeonDifficulty(DifficultyID(dungeon->difficulty));
         uint64 gguid = grp->GetGUID();
         SetActiveQueueId(gguid, GetActiveQueueId(proposal.leader));
@@ -1939,7 +1951,8 @@ namespace lfg
 
     bool LFGMgr::IsRaidFinderDungeon(uint32 dungeonId)
     {
-        return GetDungeonType(dungeonId) == LFG_TYPE_RAID;
+        LFGDungeonData const* dungeon = GetLFGDungeon(dungeonId);
+        return dungeon && IsRaidDungeon(*dungeon);
     }
 
     LfgState LFGMgr::GetState(uint64 guid)
