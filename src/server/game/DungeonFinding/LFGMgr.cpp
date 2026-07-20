@@ -2088,7 +2088,10 @@ namespace lfg
             SetGroup(*it, 0);
             ClearQueueState(*it, debugMsg);
             if (sendUpdate)
+            {
                 SendLfgUpdateStatus(*it, removedFromQueueData, true);
+                SendLfgUpdateStatus(*it, removedFromQueueData, false);
+            }
         }
     }
 
