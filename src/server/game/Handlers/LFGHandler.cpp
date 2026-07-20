@@ -597,18 +597,15 @@ void WorldSession::SendLfgUpdateStatus(lfg::LfgUpdateData const& updateData, boo
 
     for (lfg::LfgDungeonSet::const_iterator it = updateData.dungeons.begin(); it != updateData.dungeons.end(); ++it)
     {
-        lfg::LFGDungeonData const* dungeon = sLFGMgr->GetLFGDungeon(*it);
-        if (!dungeon && (*it & 0xFF000000))
-            dungeon = sLFGMgr->GetLFGDungeon(*it & 0x00FFFFFF);
-
-        if (dungeon)
-        {
-            dungeonEntries.push_back(dungeon->Entry());
-            if (!dungeonCategory)
-                dungeonCategory = dungeon->category;
-        }
+        uint32 const dungeonId = (*it & 0xFF000000) ? (*it & 0x00FFFFFF) : *it;
+        uint32 const dungeonEntry = sLFGMgr->GetLFGDungeonEntry(dungeonId);
+        if (dungeonEntry)
+            dungeonEntries.push_back(dungeonEntry);
         else
             dungeonEntries.push_back(*it);
+
+        if (!dungeonCategory)
+            dungeonCategory = sLFGMgr->GetLFGDungeonCategory(dungeonId);
     }
 
     switch (updateData.updateType)

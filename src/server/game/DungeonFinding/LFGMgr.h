@@ -339,6 +339,8 @@ namespace lfg
         bool SendActiveProposal(uint64 guid);
         /// Return Lfg dungeon entry for given dungeon id
         uint32 GetLFGDungeonEntry(uint32 id);
+        /// Return Lfg dungeon category for given dungeon id
+        uint8 GetLFGDungeonCategory(uint32 id);
         /// Check whether the dungeon id belongs to a Raid Finder queue entry
         bool IsRaidFinderDungeon(uint32 dungeonId);
 

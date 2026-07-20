@@ -2933,6 +2933,15 @@ namespace lfg
         return 0;
     }
 
+    uint8 LFGMgr::GetLFGDungeonCategory(uint32 id)
+    {
+        if (id)
+            if (LFGDungeonData const* dungeon = GetLFGDungeon(id))
+                return dungeon->category;
+
+        return 0;
+    }
+
     LfgDungeonSet LFGMgr::GetRandomAndSeasonalDungeons(uint8 level, uint8 expansion)
     {
         LfgDungeonSet randomDungeons;
