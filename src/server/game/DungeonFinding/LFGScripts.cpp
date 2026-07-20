@@ -25,6 +25,32 @@ namespace lfg
         {
             return state == LFG_STATE_DUNGEON || state == LFG_STATE_FINISHED_DUNGEON;
         }
+
+        bool ClearStrayPlayerState(Player* player, char const* reason)
+        {
+            if (!player)
+                return false;
+
+            Group* group = player->GetGroup();
+            if (group && group->isLFGGroup())
+                return false;
+
+            uint64 const guid = player->GetGUID();
+            LfgState const state = sLFGMgr->GetState(guid);
+            uint64 const savedGroup = sLFGMgr->GetGroup(guid);
+            if (!savedGroup && !IsLfgDungeonState(state) && state != LFG_STATE_BOOT)
+                return false;
+
+            if (savedGroup)
+                sLFGMgr->SetGroup(guid, 0);
+
+            sLFGMgr->LeaveSoloLfg(guid, sLFGMgr->GetQueueId(guid));
+            player->GetSession()->SendLfgUpdateStatus(LfgUpdateData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE), false);
+            SF_LOG_DEBUG("lfg", "%s, Player %s(%u) cleared stray LFG state %u savedGroup %u.",
+                reason ? reason : "LFG stray state cleanup", player->GetName().c_str(), GUID_LOPART(guid),
+                uint32(state), GUID_LOPART(savedGroup));
+            return true;
+        }
     }
 
     LFGPlayerScript::LFGPlayerScript() : PlayerScript("LFGPlayerScript") { }
@@ -63,6 +89,9 @@ namespace lfg
             }
         }
         sLFGMgr->SetTeam(player->GetGUID(), player->GetTeam());
+
+        if (ClearStrayPlayerState(player, "LFGPlayerScript::OnLogin"))
+            return;
 
         if (sLFGMgr->RestoreActiveQueue(guid))
         {
@@ -103,6 +132,12 @@ namespace lfg
         }
         else
         {
+            if (ClearStrayPlayerState(player, "LFGPlayerScript::OnMapChanged"))
+            {
+                player->RemoveAurasDueToSpell(LFG_SPELL_LUCK_OF_THE_DRAW);
+                return;
+            }
+
             Group* group = player->GetGroup();
             if (group && group->isLFGGroup())
             {

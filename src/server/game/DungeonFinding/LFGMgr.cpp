@@ -2330,7 +2330,10 @@ namespace lfg
             {
                 ClearQueueState(guid, "Remove group data");
                 if (state != LFG_STATE_NONE)
+                {
                     SendLfgUpdateStatus(guid, LfgUpdateData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE), true);
+                    SendLfgUpdateStatus(guid, LfgUpdateData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE), false);
+                }
             }
             else
                 ClearQueueState(guid, "Remove proposal group data");

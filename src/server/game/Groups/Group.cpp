@@ -699,6 +699,8 @@ void Group::ChangeLeader(uint64 newLeaderGuid)
 
 void Group::Disband(bool hideDestroy /* = false */)
 {
+    bool const wasLFGGroup = isLFGGroup();
+
     sScriptMgr->OnGroupDisband(this);
 
     Player* player;
@@ -740,6 +742,9 @@ void Group::Disband(bool hideDestroy /* = false */)
             group->SendUpdate();
         else
             SendUpdateToPlayer(player->GetGUID(), NULL);
+
+        if (wasLFGGroup)
+            player->GetSession()->SendLfgUpdateStatus(lfg::LfgUpdateData(lfg::LFG_UPDATETYPE_REMOVED_FROM_QUEUE), false);
 
         _homebindIfInstance(player);
     }
