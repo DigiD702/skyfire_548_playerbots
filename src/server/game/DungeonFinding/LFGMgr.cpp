@@ -2835,11 +2835,25 @@ namespace lfg
 
     bool LFGMgr::inLfgDungeonMap(uint64 guid, uint32 map, DifficultyID difficulty)
     {
-        if (!IS_GROUP_GUID(guid))
-            guid = GetGroup(guid);
+        if (IS_GROUP_GUID(guid))
+        {
+            if (uint32 dungeonId = GetDungeon(guid, true))
+                if (LFGDungeonData const* dungeon = GetLFGDungeon(dungeonId))
+                    if (uint32(dungeon->map) == map && dungeon->difficulty == difficulty)
+                        return true;
 
-        if (uint32 dungeonId = GetDungeon(guid, true))
-            if (LFGDungeonData const* dungeon = GetLFGDungeon(dungeonId))
+            return false;
+        }
+
+        if (uint64 gguid = GetGroup(guid))
+            if (uint32 dungeonId = GetDungeon(gguid, true))
+                if (LFGDungeonData const* dungeon = GetLFGDungeon(dungeonId))
+                    if (uint32(dungeon->map) == map && dungeon->difficulty == difficulty)
+                        return true;
+
+        LfgDungeonSet const& selectedDungeons = GetSelectedDungeons(guid);
+        for (LfgDungeonSet::const_iterator itr = selectedDungeons.begin(); itr != selectedDungeons.end(); ++itr)
+            if (LFGDungeonData const* dungeon = GetLFGDungeon(*itr))
                 if (uint32(dungeon->map) == map && dungeon->difficulty == difficulty)
                     return true;
 
