@@ -1183,10 +1183,16 @@ namespace lfg
             }
         }
 
-        if (IsRaidDungeon(*dungeon) && !grp->isRaidGroup())
+        bool const isRaidDungeon = IsRaidDungeon(*dungeon);
+        if (isRaidDungeon && !grp->isRaidGroup())
             grp->ConvertToRaid();
 
-        grp->SetDungeonDifficulty(DifficultyID(dungeon->difficulty));
+        DifficultyID const difficulty = DifficultyID(dungeon->difficulty);
+        if (isRaidDungeon)
+            grp->SetRaidDifficulty(difficulty);
+        else
+            grp->SetDungeonDifficulty(difficulty);
+
         uint64 gguid = grp->GetGUID();
         SetActiveQueueId(gguid, GetActiveQueueId(proposal.leader));
         SetDungeon(gguid, dungeon->Entry());
