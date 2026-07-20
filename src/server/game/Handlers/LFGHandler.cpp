@@ -11,6 +11,22 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 
+namespace
+{
+    bool HasPacketBytes(WorldPacket const& packet, size_t bytes)
+    {
+        return packet.rpos() + bytes <= packet.size();
+    }
+
+    void SendLfrRemovedFromQueue(WorldSession* session)
+    {
+        lfg::LfgUpdateData removed(lfg::LFG_UPDATETYPE_REMOVED_FROM_QUEUE);
+        session->SendLfgUpdateStatus(removed, false);
+        session->SendLfgUpdateStatus(removed, true);
+        session->SendLfgLfrList(false);
+    }
+}
+
 void BuildPlayerLockDungeonBlock(WorldPacket& data, lfg::LfgLockMap const& lock)
 {
     for (lfg::LfgLockMap::const_iterator it = lock.begin(); it != lock.end(); ++it)
@@ -463,20 +479,52 @@ void WorldSession::SendLfgPartyLockInfo()
 
 void WorldSession::HandleLfrJoinOpcode(WorldPacket& recvData)
 {
+    if (!HasPacketBytes(recvData, sizeof(uint32)))
+    {
+        SF_LOG_DEBUG("lfg.lfr", "CMSG_LFG_LFR_JOIN %s malformed packet size: %u",
+            GetPlayerInfo().c_str(), uint32(recvData.size()));
+        SendLfgJoinResult(lfg::LfgJoinResultData(lfg::LFG_JOIN_DUNGEON_INVALID));
+        SendLfrRemovedFromQueue(this);
+        return;
+    }
+
     uint32 entry;                                          // Raid id to search
     recvData >> entry;
-    SF_LOG_DEBUG("lfg", "CMSG_LFG_LFR_JOIN %s dungeon entry: %u",
-        GetPlayerInfo().c_str(), entry);
-    //SendLfrUpdateListOpcode(entry);
+    lfg::LfgType type = sLFGMgr->GetDungeonType(entry);
+
+    SF_LOG_DEBUG("lfg.lfr", "CMSG_LFG_LFR_JOIN %s dungeon entry: %u type: %u size: %u",
+        GetPlayerInfo().c_str(), entry, uint32(type), uint32(recvData.size()));
+
+    if (type != lfg::LFG_TYPE_RAID)
+    {
+        SendLfgJoinResult(lfg::LfgJoinResultData(lfg::LFG_JOIN_DUNGEON_INVALID));
+        SendLfrRemovedFromQueue(this);
+        return;
+    }
+
+    // Matching is intentionally not enabled in the scaffolding slice.
+    SendLfgJoinResult(lfg::LfgJoinResultData(lfg::LFG_JOIN_INTERNAL_ERROR));
+    SendLfrRemovedFromQueue(this);
 }
 
 void WorldSession::HandleLfrLeaveOpcode(WorldPacket& recvData)
 {
+    if (!HasPacketBytes(recvData, sizeof(uint32)))
+    {
+        SF_LOG_DEBUG("lfg.lfr", "CMSG_LFG_LFR_LEAVE %s malformed packet size: %u",
+            GetPlayerInfo().c_str(), uint32(recvData.size()));
+        SendLfrRemovedFromQueue(this);
+        return;
+    }
+
     uint32 dungeonId;                                      // Raid id queue to leave
     recvData >> dungeonId;
-    SF_LOG_DEBUG("lfg", "CMSG_LFG_LFR_LEAVE %s dungeonId: %u",
-        GetPlayerInfo().c_str(), dungeonId);
-    //sLFGMgr->LeaveLfr(GetPlayer(), dungeonId);
+    lfg::LfgType type = sLFGMgr->GetDungeonType(dungeonId);
+
+    SF_LOG_DEBUG("lfg.lfr", "CMSG_LFG_LFR_LEAVE %s dungeonId: %u type: %u size: %u",
+        GetPlayerInfo().c_str(), dungeonId, uint32(type), uint32(recvData.size()));
+
+    SendLfrRemovedFromQueue(this);
 }
 
 void WorldSession::HandleLfgGetStatus(WorldPacket& /*recvData*/)
