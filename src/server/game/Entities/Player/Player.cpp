@@ -711,6 +711,7 @@ Player::Player(WorldSession* session) : Unit(true)
         m_powerFraction[i] = 0;
 
     isDebugAreaTriggers = false;
+    m_debugLfgRequirementOverride = false;
 
     m_WeeklyQuestChanged = false;
 
