@@ -15764,6 +15764,8 @@ void Player::Whisper(const std::string& text, Language language, uint64 receiver
         language = Language::LANG_UNIVERSAL; // whispers should always be readable
 
     Player* rPlayer = ObjectAccessor::FindPlayer(receiver);
+    if (!rPlayer || !rPlayer->GetSession())
+        return;
 
     std::string _text(text);
     sScriptMgr->OnPlayerChat(this, ChatMsg::CHAT_MSG_WHISPER, language, _text, rPlayer);

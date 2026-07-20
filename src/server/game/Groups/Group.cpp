@@ -706,7 +706,7 @@ void Group::Disband(bool hideDestroy /* = false */)
     Player* player;
     for (member_citerator citr = m_memberSlots.begin(); citr != m_memberSlots.end(); ++citr)
     {
-        player = ObjectAccessor::FindPlayer(citr->guid);
+        player = ObjectAccessor::FindPlayerInOrOutOfWorld(citr->guid);
         if (!player)
             continue;
 
@@ -724,7 +724,7 @@ void Group::Disband(bool hideDestroy /* = false */)
         }
 
         // quest related GO state dependent from raid membership
-        if (isRaidGroup())
+        if (isRaidGroup() && player->IsInWorld())
             player->UpdateForQuestWorldObjects();
 
         if (!player->GetSession())
