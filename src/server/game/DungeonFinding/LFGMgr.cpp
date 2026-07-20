@@ -16,6 +16,7 @@
 #include "LFGPlayerData.h"
 #include "LFGQueue.h"
 #include "LFGScripts.h"
+#include "MapManager.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "RBAC.h"
@@ -55,6 +56,26 @@ namespace lfg
                 return false;
 
             return Skyfire::IsValidMapCoord(dungeon.x, dungeon.y, dungeon.z, dungeon.o);
+        }
+
+        bool BindLfgGroupToDungeonInstance(Group* group, LFGDungeonData const& dungeon)
+        {
+            if (!group)
+                return false;
+
+            MapEntry const* map = sMapStore.LookupEntry(dungeon.map);
+            if (!map || (!map->IsInstance() && !map->IsScenario()))
+                return true;
+
+            DifficultyID difficulty = DifficultyID(dungeon.difficulty);
+            if (group->GetBoundInstance(difficulty, dungeon.map))
+                return true;
+
+            InstanceSave* save = sInstanceSaveMgr->AddInstanceSave(dungeon.map, sMapMgr->GenerateInstanceId(), difficulty, 0, true);
+            if (!save)
+                return false;
+
+            return group->BindToInstance(save, false) != NULL;
         }
 
         struct LfgRoleAssignment
@@ -1160,6 +1181,13 @@ namespace lfg
                 SetupGroupMember(*it, gguid);
 
         _SaveToDB(gguid, grp->GetDbStoreId());
+
+        if (!BindLfgGroupToDungeonInstance(grp, *dungeon))
+        {
+            SF_LOG_ERROR("lfg.proposal.group.make", "Proposal %u failed to bind group %u to dungeon %u map %u.",
+                proposal.id, GUID_LOPART(gguid), dungeon->id, uint32(dungeon->map));
+            return false;
+        }
 
         // Teleport Player
         for (LfgGuidList::const_iterator it = playersToTeleport.begin(); it != playersToTeleport.end(); ++it)
