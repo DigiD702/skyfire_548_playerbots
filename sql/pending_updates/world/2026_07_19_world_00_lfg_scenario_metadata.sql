@@ -18,8 +18,8 @@ INSERT INTO `instance_template` (`map`, `parent`, `script`, `allowMount`) VALUES
 INSERT INTO `lfg_dungeon_template`
     (`dungeonId`, `position_x`, `position_y`, `position_z`, `orientation`, `requiredItemLevel`)
 VALUES
-    (542, -3813.67, -4790.98, 10.5307, 0.805, 425),
-    (543, -4023.08, -4748.8, 5.21768, 0.781, 425)
+    (542, -3813.67, -4790.98, 10.5307, 0.805, 0),
+    (543, -4023.08, -4748.8, 5.21768, 0.781, 0)
 ON DUPLICATE KEY UPDATE
     `position_x` = VALUES(`position_x`),
     `position_y` = VALUES(`position_y`),
