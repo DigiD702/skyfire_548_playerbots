@@ -582,7 +582,10 @@ void WorldSession::SendLfgUpdateStatus(lfg::LfgUpdateData const& updateData, boo
     uint64 queueGuid = _player->GetGUID();
     if (party)
         if (Group* group = _player->GetGroup())
+        {
+            guid = group->GetGUID();
             queueGuid = group->GetGUID();
+        }
 
     time_t joinTime = sLFGMgr->GetQueueJoinTime(queueGuid);
     uint32 queueId = sLFGMgr->GetQueueId(queueGuid);
@@ -602,7 +605,7 @@ void WorldSession::SendLfgUpdateStatus(lfg::LfgUpdateData const& updateData, boo
             join = true;
             break;
         case lfg::LFG_UPDATETYPE_UPDATE_STATUS:
-            join = updateData.state == lfg::LFG_STATE_QUEUED;
+            join = updateData.state != lfg::LFG_STATE_NONE;
             queued = updateData.state == lfg::LFG_STATE_QUEUED;
             break;
         default:
