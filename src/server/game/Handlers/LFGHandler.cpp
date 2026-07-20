@@ -483,6 +483,9 @@ void WorldSession::HandleLfgGetStatus(WorldPacket& /*recvData*/)
     lfg::LfgUpdateData updateData = sLFGMgr->GetLfgStatus(guid);
     bool hasActiveProposal = updateData.state == lfg::LFG_STATE_PROPOSAL;
 
+    if (updateData.state == lfg::LFG_STATE_NONE)
+        updateData = lfg::LfgUpdateData(lfg::LFG_UPDATETYPE_REMOVED_FROM_QUEUE);
+
     if (Group* group = GetPlayer()->GetGroup())
     {
         if (group->isLFGGroup() && sLFGMgr->GetState(group->GetGUID()) == lfg::LFG_STATE_NONE)
