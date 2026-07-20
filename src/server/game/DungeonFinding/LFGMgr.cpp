@@ -1199,7 +1199,7 @@ namespace lfg
             return false;
         }
 
-        bool const forceChangeInstance = !isContinue && groupAlreadyExisted;
+        bool const forceChangeInstance = !proposal.isNew && groupAlreadyExisted;
 
         // Teleport Player
         for (LfgGuidList::const_iterator it = playersToTeleport.begin(); it != playersToTeleport.end(); ++it)
