@@ -1641,6 +1641,30 @@ namespace lfg
             dungeon->x, dungeon->y, dungeon->z, error);
     }
 
+    void LFGMgr::TeleportDungeonGroupOut(Group* group)
+    {
+        if (!group || !group->isLFGGroup())
+            return;
+
+        uint64 const groupGuid = group->GetGUID();
+        LfgState const groupState = GetState(groupGuid);
+        if (groupState != LFG_STATE_DUNGEON && groupState != LFG_STATE_FINISHED_DUNGEON)
+            return;
+
+        LFGDungeonData const* dungeon = GetLFGDungeon(GetDungeon(groupGuid));
+        if (!dungeon)
+            return;
+
+        for (GroupReference* itr = group->GetFirstMember(); itr != NULL; itr = itr->next())
+        {
+            Player* member = itr->GetSource();
+            if (!member || member->GetMapId() != uint32(dungeon->map))
+                continue;
+
+            TeleportPlayer(member, true);
+        }
+    }
+
     /**
        Finish a dungeon and give reward, if any.
 

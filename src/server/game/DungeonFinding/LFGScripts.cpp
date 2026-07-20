@@ -116,6 +116,7 @@ namespace lfg
                     return;
                 }
 
+                sLFGMgr->TeleportDungeonGroupOut(group);
                 sLFGMgr->ClearDungeonGroupState(groupGuid, group->GetDbStoreId(), "Left LFG dungeon map", true);
                 group->Disband();
 
@@ -229,7 +230,10 @@ namespace lfg
         SF_LOG_DEBUG("lfg", "LFGScripts::OnDisband [" UI64FMTD "]", gguid);
 
         if (group->isLFGGroup())
+        {
+            sLFGMgr->TeleportDungeonGroupOut(group);
             sLFGMgr->ClearDungeonGroupState(gguid, group->GetDbStoreId(), "LFG group disband", true);
+        }
 
         sLFGMgr->RemoveGroupData(gguid);
     }

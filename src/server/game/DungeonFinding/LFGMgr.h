@@ -394,6 +394,8 @@ namespace lfg
         LfgDungeonSet GetRandomAndSeasonalDungeons(uint8 level, uint8 expansion);
         /// Teleport a player to/from selected dungeon
         void TeleportPlayer(Player* player, bool out, bool fromOpcode = false);
+        /// Teleport online members of an LFG dungeon group back to their saved entry points
+        void TeleportDungeonGroupOut(Group* group);
         /// Inits new proposal to boot a player
         void InitBoot(uint64 gguid, uint64 kguid, uint64 vguid, std::string const& reason);
         /// Updates player boot proposal with new player answer
