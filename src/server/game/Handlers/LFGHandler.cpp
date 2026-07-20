@@ -22,10 +22,7 @@ namespace
 
     void SendLfrRemovedFromQueue(WorldSession* session)
     {
-        lfg::LfgUpdateData removed(lfg::LFG_UPDATETYPE_REMOVED_FROM_QUEUE);
-        session->SendLfgUpdateStatus(removed, false);
-        session->SendLfgUpdateStatus(removed, true);
-        session->SendLfgLfrList(false);
+        session->SendLfgClearStatus();
     }
 }
 
@@ -171,6 +168,7 @@ void WorldSession::HandleLfgLeaveOpcode(WorldPacket& recvData)
 
         SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE Player: %lu left solo queue.", guid);
         sLFGMgr->LeaveSoloLfg(guid, activeQueueId);
+        SendLfgClearStatus();
         return;
     }
 
@@ -185,15 +183,6 @@ void WorldSession::HandleLfgLeaveOpcode(WorldPacket& recvData)
         SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE %s requested queue %u but active group queue is %u.",
             GetPlayerInfo().c_str(), queueID, sLFGMgr->GetQueueId(groupGuid));
 
-    // Check cheating - only leader can leave the queue
-    if (leaderGuid != guid)
-    {
-        SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE %s ignored non-leader group queue leave.",
-            GetPlayerInfo().c_str());
-        return;
-    }
-
-    SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE GroupLeader: %lu left group queue.", guid);
     lfg::LfgState const groupState = sLFGMgr->GetState(groupGuid);
     bool const disbandDungeonGroup = group->isLFGGroup() &&
         (groupState == lfg::LFG_STATE_DUNGEON || groupState == lfg::LFG_STATE_FINISHED_DUNGEON);
@@ -204,7 +193,17 @@ void WorldSession::HandleLfgLeaveOpcode(WorldPacket& recvData)
         return;
     }
 
+    // Check cheating - only leader can leave the queue
+    if (leaderGuid != guid)
+    {
+        SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE %s ignored non-leader group queue leave.",
+            GetPlayerInfo().c_str());
+        return;
+    }
+
+    SF_LOG_DEBUG("lfg.leave", "CMSG_LFD_LEAVE GroupLeader: %lu left group queue.", guid);
     sLFGMgr->LeaveLfg(groupGuid);
+    SendLfgClearStatus();
 }
 
 void WorldSession::HandleLfgProposalResultOpcode(WorldPacket& recvData)
@@ -1014,6 +1013,14 @@ void WorldSession::SendLfgLfrList(bool update)
     WorldPacket data(SMSG_LFG_UPDATE_SEARCH, 1);
     data << uint8(update);                                 // In Lfg Queue?
     SendPacket(&data);
+}
+
+void WorldSession::SendLfgClearStatus()
+{
+    lfg::LfgUpdateData removed(lfg::LFG_UPDATETYPE_REMOVED_FROM_QUEUE);
+    SendLfgUpdateStatus(removed, false);
+    SendLfgUpdateStatus(removed, true);
+    SendLfgLfrList(false);
 }
 
 void WorldSession::SendLfgDisabled()

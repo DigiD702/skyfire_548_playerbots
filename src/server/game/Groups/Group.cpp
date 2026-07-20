@@ -744,7 +744,7 @@ void Group::Disband(bool hideDestroy /* = false */)
             SendUpdateToPlayer(player->GetGUID(), NULL);
 
         if (wasLFGGroup)
-            player->GetSession()->SendLfgUpdateStatus(lfg::LfgUpdateData(lfg::LFG_UPDATETYPE_REMOVED_FROM_QUEUE), false);
+            player->GetSession()->SendLfgClearStatus();
 
         _homebindIfInstance(player);
     }

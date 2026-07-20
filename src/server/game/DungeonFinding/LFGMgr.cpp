@@ -2266,8 +2266,13 @@ namespace lfg
             ClearQueueState(*it, debugMsg);
             if (sendUpdate)
             {
-                SendLfgUpdateStatus(*it, removedFromQueueData, true);
-                SendLfgUpdateStatus(*it, removedFromQueueData, false);
+                if (Player* player = ObjectAccessor::FindPlayer(*it))
+                    player->GetSession()->SendLfgClearStatus();
+                else
+                {
+                    SendLfgUpdateStatus(*it, removedFromQueueData, true);
+                    SendLfgUpdateStatus(*it, removedFromQueueData, false);
+                }
             }
         }
     }

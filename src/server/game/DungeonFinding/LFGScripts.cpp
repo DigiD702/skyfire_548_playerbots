@@ -45,7 +45,7 @@ namespace lfg
                 sLFGMgr->SetGroup(guid, 0);
 
             sLFGMgr->LeaveSoloLfg(guid, sLFGMgr->GetQueueId(guid));
-            player->GetSession()->SendLfgUpdateStatus(LfgUpdateData(LFG_UPDATETYPE_REMOVED_FROM_QUEUE), false);
+            player->GetSession()->SendLfgClearStatus();
             SF_LOG_DEBUG("lfg", "%s, Player %s(%u) cleared stray LFG state %u savedGroup %u.",
                 reason ? reason : "LFG stray state cleanup", player->GetName().c_str(), GUID_LOPART(guid),
                 uint32(state), GUID_LOPART(savedGroup));
