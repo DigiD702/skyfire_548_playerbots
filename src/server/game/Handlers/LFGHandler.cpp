@@ -622,9 +622,7 @@ void WorldSession::SendLfgUpdateStatus(lfg::LfgUpdateData const& updateData, boo
             break;
         case lfg::LFG_UPDATETYPE_UPDATE_STATUS:
             queued = updateData.state == lfg::LFG_STATE_QUEUED;
-            join = queued ||
-                updateData.state == lfg::LFG_STATE_DUNGEON ||
-                updateData.state == lfg::LFG_STATE_FINISHED_DUNGEON;
+            join = queued;
             break;
         default:
             break;

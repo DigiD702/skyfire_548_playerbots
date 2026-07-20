@@ -1597,7 +1597,8 @@ void Group::SendUpdate()
 
 void Group::SendUpdateToPlayer(uint64 playerGUID, MemberSlot* slot)
 {
-    Player* player = ObjectAccessor::FindPlayer(playerGUID);
+    Player* player = slot ? ObjectAccessor::FindPlayer(playerGUID) :
+        ObjectAccessor::FindPlayerInOrOutOfWorld(playerGUID);
 
     if (!player || !player->GetSession())
         return;
