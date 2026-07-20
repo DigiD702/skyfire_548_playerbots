@@ -9,6 +9,7 @@
 #include "GameEventMgr.h"
 #include "Group.h"
 #include "GroupMgr.h"
+#include "GridDefines.h"
 #include "InstanceSaveMgr.h"
 #include "LFGGroupData.h"
 #include "LFGMgr.h"
@@ -34,6 +35,26 @@ namespace lfg
         bool IsScenarioDifficulty(uint32 difficulty)
         {
             return difficulty == DIFFICULTY_SCE_NORMAL || difficulty == DIFFICULTY_SCE_HEROIC;
+        }
+
+        bool IsScenarioDungeon(LFGDungeonEntry const* dungeon)
+        {
+            if (!dungeon)
+                return false;
+
+            if (IsScenarioDifficulty(dungeon->m_DifficultyID))
+                return true;
+
+            MapEntry const* map = sMapStore.LookupEntry(dungeon->m_ContinentID);
+            return map && map->IsScenario();
+        }
+
+        bool HasValidLfgTeleportLocation(LFGDungeonData const& dungeon)
+        {
+            if (!dungeon.map || (dungeon.x == 0.0f && dungeon.y == 0.0f && dungeon.z == 0.0f))
+                return false;
+
+            return Skyfire::IsValidMapCoord(dungeon.x, dungeon.y, dungeon.z, dungeon.o);
         }
 
         struct LfgRoleAssignment
@@ -242,6 +263,10 @@ namespace lfg
                 case LFG_TYPE_RANDOM:
                     LfgDungeonStore[dungeon->m_ID] = LFGDungeonData(dungeon);
                     break;
+                default:
+                    if (IsScenarioDungeon(dungeon))
+                        LfgDungeonStore[dungeon->m_ID] = LFGDungeonData(dungeon);
+                    break;
             }
         }
 
@@ -314,6 +339,13 @@ namespace lfg
                 dungeon.y = at->target_Y;
                 dungeon.z = at->target_Z;
                 dungeon.o = at->target_Orientation;
+            }
+
+            if (dungeon.type != LFG_TYPE_RANDOM && !HasValidLfgTeleportLocation(dungeon))
+            {
+                SF_LOG_ERROR("sql.sql", "LFG dungeon %u (%s) has no valid teleport location for map %u. Add lfg_dungeon_template data.",
+                    dungeon.id, dungeon.name.c_str(), uint32(dungeon.map));
+                continue;
             }
 
             if (dungeon.type != LFG_TYPE_RANDOM)
@@ -1631,7 +1663,14 @@ namespace lfg
             float z = dungeon->z;
             float orientation = dungeon->o;
 
-            if (!fromOpcode)
+            if (!HasValidLfgTeleportLocation(*dungeon))
+            {
+                SF_LOG_ERROR("lfg.teleport", "Player %s cannot teleport to LFG dungeon %u (%s): invalid entrance map %u position %f %f %f %f",
+                    player->GetName().c_str(), dungeon->id, dungeon->name.c_str(), uint32(dungeon->map), dungeon->x, dungeon->y, dungeon->z, dungeon->o);
+                error = LFG_TELEPORTERROR_INVALID_LOCATION;
+            }
+
+            if (error == LFG_TELEPORTERROR_OK && !fromOpcode)
             {
                 // Select a player inside to be teleported to
                 for (GroupReference* itr = group->GetFirstMember(); itr != NULL; itr = itr->next())
@@ -1649,16 +1688,16 @@ namespace lfg
                 }
             }
 
-            if (!player->GetMap()->IsInstance())
+            if (error == LFG_TELEPORTERROR_OK && !player->GetMap()->IsInstance())
                 player->SetBattlegroundEntryPoint();
 
-            if (player->IsInFlight())
+            if (error == LFG_TELEPORTERROR_OK && player->IsInFlight())
             {
                 player->GetMotionMaster()->MovementExpired();
                 player->CleanupAfterTaxiFlight();
             }
 
-            if (!player->TeleportTo(mapid, x, y, z, orientation))
+            if (error == LFG_TELEPORTERROR_OK && !player->TeleportTo(mapid, x, y, z, orientation))
                 error = LFG_TELEPORTERROR_INVALID_LOCATION;
         }
         else
