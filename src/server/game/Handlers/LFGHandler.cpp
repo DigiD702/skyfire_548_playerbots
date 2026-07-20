@@ -553,8 +553,14 @@ void WorldSession::HandleLfgGetStatus(WorldPacket& /*recvData*/)
     if (GetPlayer()->GetGroup())
     {
         SendLfgUpdateStatus(updateData, true);
-        updateData.dungeons.clear();
-        SendLfgUpdateStatus(updateData, false);
+
+        bool const inDungeonStatus = updateData.updateType == lfg::LFG_UPDATETYPE_UPDATE_STATUS &&
+            (updateData.state == lfg::LFG_STATE_DUNGEON || updateData.state == lfg::LFG_STATE_FINISHED_DUNGEON);
+        if (!inDungeonStatus)
+        {
+            updateData.dungeons.clear();
+            SendLfgUpdateStatus(updateData, false);
+        }
     }
     else
     {
@@ -596,7 +602,7 @@ void WorldSession::SendLfgUpdateStatus(lfg::LfgUpdateData const& updateData, boo
             join = true;
             break;
         case lfg::LFG_UPDATETYPE_UPDATE_STATUS:
-            join = updateData.state != lfg::LFG_STATE_NONE;
+            join = updateData.state == lfg::LFG_STATE_QUEUED;
             queued = updateData.state == lfg::LFG_STATE_QUEUED;
             break;
         default:
