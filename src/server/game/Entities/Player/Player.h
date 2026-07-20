@@ -2507,6 +2507,15 @@ public:
     {
         mSemaphoreTeleport_Far = semphsetting;
     }
+    bool IsForcedTeleportFar() const { return m_forcedTeleportFar; }
+    void SetForcedTeleportFar(bool forced)
+    {
+        m_forcedTeleportFar = forced;
+        if (forced)
+            SetSemaphoreTeleportForcedFar(true);
+    }
+    bool IsBeingForcedTeleportFar() const { return m_forcedTeleportFarSemaphore; }
+    void SetSemaphoreTeleportForcedFar(bool semphsetting) { m_forcedTeleportFarSemaphore = semphsetting; }
     void ProcessDelayedOperations();
 
     void CheckAreaExploreAndOutdoor(void);
@@ -2908,6 +2917,8 @@ public:
 
     uint32 m_HomebindTimer;
     bool m_InstanceValid;
+    bool m_forcedTeleportFar;
+    bool m_forcedTeleportFarSemaphore;
     // permanent binds and solo binds by difficulty
     BoundInstancesMap m_boundInstances[15];
     InstancePlayerBind* GetBoundInstance(uint32 mapid, DifficultyID difficulty);

@@ -651,6 +651,8 @@ Player::Player(WorldSession* session) : Unit(true)
 
     m_HomebindTimer = 0;
     m_InstanceValid = true;
+    m_forcedTeleportFar = false;
+    m_forcedTeleportFarSemaphore = false;
     m_dungeonDifficulty = DIFFICULTY_NORMAL;
     m_raidDifficulty = DIFFICULTY_10MAN_NORMAL;
 
@@ -2130,7 +2132,7 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
     if (duel && GetMapId() != mapid && GetMap()->GetGameObject(GetUInt64Value(PLAYER_FIELD_DUEL_ARBITER)))
         DuelComplete(DuelCompleteType::DUEL_FLED);
 
-    if (GetMapId() == mapid)
+    if (GetMapId() == mapid && !IsForcedTeleportFar())
     {
         //lets reset far teleport flag if it wasn't reset during chained teleports
         SetSemaphoreTeleportFar(false);

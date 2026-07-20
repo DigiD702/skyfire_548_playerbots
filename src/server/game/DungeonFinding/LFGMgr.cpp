@@ -1094,7 +1094,7 @@ namespace lfg
             else
                 players.push_back(guid);
 
-            if (proposal.isNew || GetGroup(guid) != proposal.group)
+            if (proposal.isNew || proposal.group || GetGroup(guid) != proposal.group)
                 playersToTeleport.push_back(guid);
         }
 
@@ -1108,6 +1108,7 @@ namespace lfg
         }
 
         Group* grp = proposal.group ? sGroupMgr->GetGroupByGUID(GUID_LOPART(proposal.group)) : NULL;
+        bool const groupAlreadyExisted = grp != NULL;
         for (LfgGuidList::const_iterator it = players.begin(); it != players.end(); ++it)
         {
             uint64 pguid = (*it);
@@ -1198,10 +1199,13 @@ namespace lfg
             return false;
         }
 
+        bool const forceChangeInstance = !isContinue && groupAlreadyExisted;
+
         // Teleport Player
         for (LfgGuidList::const_iterator it = playersToTeleport.begin(); it != playersToTeleport.end(); ++it)
             if (Player* player = ObjectAccessor::FindPlayer(*it))
-                TeleportPlayer(player, false);
+                if (player->GetMapId() != uint32(dungeon->map) || forceChangeInstance)
+                    TeleportPlayer(player, false, false, forceChangeInstance);
 
         // Update group info
         grp->SendUpdate();
@@ -1652,7 +1656,7 @@ namespace lfg
        @param[in]     out Teleport out (true) or in (false)
        @param[in]     fromOpcode Function called from opcode handlers? (Default false)
     */
-    void LFGMgr::TeleportPlayer(Player* player, bool out, bool fromOpcode /*= false*/)
+    void LFGMgr::TeleportPlayer(Player* player, bool out, bool fromOpcode /*= false*/, bool forceChangeInstance /*= false*/)
     {
         LFGDungeonData const* dungeon = NULL;
         Group* group = player->GetGroup();
@@ -1692,7 +1696,7 @@ namespace lfg
             error = LFG_TELEPORTERROR_IN_VEHICLE;
         else if (player->GetCharmGUID())
             error = LFG_TELEPORTERROR_CHARMING;
-        else if (player->GetMapId() != uint32(dungeon->map))  // Do not teleport players in dungeon to the entrance
+        else if (player->GetMapId() != uint32(dungeon->map) || forceChangeInstance)  // Do not teleport players in dungeon to the entrance
         {
             uint32 mapid = dungeon->map;
             float x = dungeon->x;
@@ -1707,7 +1711,7 @@ namespace lfg
                 error = LFG_TELEPORTERROR_INVALID_LOCATION;
             }
 
-            if (error == LFG_TELEPORTERROR_OK && !fromOpcode)
+            if (error == LFG_TELEPORTERROR_OK && !fromOpcode && !forceChangeInstance)
             {
                 // Select a player inside to be teleported to
                 for (GroupReference* itr = group->GetFirstMember(); itr != NULL; itr = itr->next())
@@ -1734,8 +1738,17 @@ namespace lfg
                 player->CleanupAfterTaxiFlight();
             }
 
-            if (error == LFG_TELEPORTERROR_OK && !player->TeleportTo(mapid, x, y, z, orientation))
-                error = LFG_TELEPORTERROR_INVALID_LOCATION;
+            if (error == LFG_TELEPORTERROR_OK)
+            {
+                player->SetForcedTeleportFar(forceChangeInstance);
+                if (!player->TeleportTo(mapid, x, y, z, orientation))
+                {
+                    error = LFG_TELEPORTERROR_INVALID_LOCATION;
+                    if (forceChangeInstance)
+                        player->SetSemaphoreTeleportForcedFar(false);
+                }
+                player->SetForcedTeleportFar(false);
+            }
         }
         else
             error = LFG_TELEPORTERROR_INVALID_LOCATION;

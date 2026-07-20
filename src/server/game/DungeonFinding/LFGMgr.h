@@ -393,7 +393,7 @@ namespace lfg
         /// Returns all random and seasonal dungeons for given level and expansion
         LfgDungeonSet GetRandomAndSeasonalDungeons(uint8 level, uint8 expansion);
         /// Teleport a player to/from selected dungeon
-        void TeleportPlayer(Player* player, bool out, bool fromOpcode = false);
+        void TeleportPlayer(Player* player, bool out, bool fromOpcode = false, bool forceChangeInstance = false);
         /// Teleport online members of an LFG dungeon group back to their saved entry points
         void TeleportDungeonGroupOut(Group* group);
         /// Inits new proposal to boot a player
