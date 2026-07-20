@@ -181,11 +181,12 @@ void WorldSession::HandleLfgLeaveOpcode(WorldPacket& recvData)
         (groupState == lfg::LFG_STATE_DUNGEON || groupState == lfg::LFG_STATE_FINISHED_DUNGEON);
 
     if (disbandDungeonGroup)
-        sLFGMgr->TeleportDungeonGroupOut(group);
+    {
+        group->Disband();
+        return;
+    }
 
     sLFGMgr->LeaveLfg(groupGuid);
-    if (disbandDungeonGroup)
-        group->Disband();
 }
 
 void WorldSession::HandleLfgProposalResultOpcode(WorldPacket& recvData)

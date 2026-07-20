@@ -116,8 +116,6 @@ namespace lfg
                     return;
                 }
 
-                sLFGMgr->TeleportDungeonGroupOut(group);
-                sLFGMgr->ClearDungeonGroupState(groupGuid, group->GetDbStoreId(), "Left LFG dungeon map", true);
                 group->Disband();
 
                 SF_LOG_DEBUG("lfg", "LFGPlayerScript::OnMapChanged, Player %s(%u) left LFG dungeon flow; disbanded LFG group %u with state %u.",
