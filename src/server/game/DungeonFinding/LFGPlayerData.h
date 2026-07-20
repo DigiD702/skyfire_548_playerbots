@@ -11,6 +11,18 @@
 
 namespace lfg
 {
+    struct LfgReturnLocation
+    {
+        LfgReturnLocation();
+
+        bool IsSet;
+        uint32 MapId;
+        float X;
+        float Y;
+        float Z;
+        float O;
+    };
+
     struct LfgPlayerQueueData
     {
         LfgPlayerQueueData();
@@ -20,6 +32,7 @@ namespace lfg
         uint8 Roles;                                        ///< Roles the player selected when joined LFG
         std::string Comment;                                ///< Player comment used when joined LFG
         LfgDungeonSet SelectedDungeons;                     ///< Selected dungeons when joined LFG
+        LfgReturnLocation ReturnLocation;                   ///< Player location before teleporting into LFG
     };
 
     typedef std::map<uint8, LfgPlayerQueueData> LfgPlayerQueueDataContainer;
@@ -44,6 +57,8 @@ namespace lfg
         void SetRoles(uint8 roles);
         void SetComment(std::string const& comment);
         void SetSelectedDungeons(const LfgDungeonSet& dungeons);
+        void SetReturnLocation(uint32 mapId, float x, float y, float z, float o);
+        void ClearReturnLocation();
 
         // General
         LfgState GetState() const;
@@ -57,6 +72,7 @@ namespace lfg
         uint8 GetRoles() const;
         std::string const& GetComment() const;
         LfgDungeonSet const& GetSelectedDungeons() const;
+        LfgReturnLocation const& GetReturnLocation() const;
 
     private:
         LfgPlayerQueueData& GetActiveQueueData();

@@ -16,6 +16,9 @@ namespace lfg
         }
     }
 
+    LfgReturnLocation::LfgReturnLocation() : IsSet(false), MapId(0), X(0.0f), Y(0.0f), Z(0.0f), O(0.0f)
+    { }
+
     LfgPlayerQueueData::LfgPlayerQueueData() : State(LFG_STATE_NONE), OldState(LFG_STATE_NONE),
         Roles(0), Comment("")
     { }
@@ -94,6 +97,24 @@ namespace lfg
         GetActiveQueueData().SelectedDungeons = dungeons;
     }
 
+    void LfgPlayerData::SetReturnLocation(uint32 mapId, float x, float y, float z, float o)
+    {
+        LfgReturnLocation& location = GetActiveQueueData().ReturnLocation;
+        location.IsSet = true;
+        location.MapId = mapId;
+        location.X = x;
+        location.Y = y;
+        location.Z = z;
+        location.O = o;
+    }
+
+    void LfgPlayerData::ClearReturnLocation()
+    {
+        LfgPlayerQueueDataContainer::iterator itr = m_Queues.find(m_ActiveQueueId);
+        if (itr != m_Queues.end())
+            itr->second.ReturnLocation = LfgReturnLocation();
+    }
+
     LfgState LfgPlayerData::GetState() const
     {
         return GetActiveQueueData().State;
@@ -137,6 +158,11 @@ namespace lfg
     LfgDungeonSet const& LfgPlayerData::GetSelectedDungeons() const
     {
         return GetActiveQueueData().SelectedDungeons;
+    }
+
+    LfgReturnLocation const& LfgPlayerData::GetReturnLocation() const
+    {
+        return GetActiveQueueData().ReturnLocation;
     }
 
     LfgPlayerQueueData& LfgPlayerData::GetActiveQueueData()

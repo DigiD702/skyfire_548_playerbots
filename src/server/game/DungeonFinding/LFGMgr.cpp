@@ -1695,7 +1695,25 @@ namespace lfg
             SF_LOG_DEBUG("lfg.teleport", "Player %s is being teleported out. Current Map %u - Expected Map %u",
                 player->GetName().c_str(), player->GetMapId(), uint32(dungeon->map));
             if (player->GetMapId() == uint32(dungeon->map))
+            {
+                uint64 const guid = player->GetGUID();
+                LfgPlayerData& playerData = PlayersStore[guid];
+                LfgReturnLocation const& returnLocation = playerData.GetReturnLocation();
+                if (returnLocation.IsSet && MapManager::IsValidMapCoord(returnLocation.MapId, returnLocation.X, returnLocation.Y, returnLocation.Z, returnLocation.O))
+                {
+                    if (player->TeleportTo(returnLocation.MapId, returnLocation.X, returnLocation.Y, returnLocation.Z, returnLocation.O))
+                    {
+                        playerData.ClearReturnLocation();
+                        return;
+                    }
+
+                    SF_LOG_DEBUG("lfg.teleport", "Player %s failed LFG return teleport to map %u (x: %f, y: %f, z: %f), falling back to battleground entry point",
+                        player->GetName().c_str(), returnLocation.MapId, returnLocation.X, returnLocation.Y, returnLocation.Z);
+                }
+
+                playerData.ClearReturnLocation();
                 player->TeleportToBGEntryPoint();
+            }
 
             return;
         }
@@ -1748,7 +1766,12 @@ namespace lfg
             }
 
             if (error == LFG_TELEPORTERROR_OK && !player->GetMap()->IsInstance())
+            {
+                if (MapManager::IsValidMapCoord(player->GetMapId(), player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), player->GetOrientation()))
+                    PlayersStore[uint64(player->GetGUID())].SetReturnLocation(player->GetMapId(), player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), player->GetOrientation());
+
                 player->SetBattlegroundEntryPoint();
+            }
 
             if (error == LFG_TELEPORTERROR_OK && player->IsInFlight())
             {
