@@ -266,12 +266,12 @@ namespace lfg
     struct LFGDungeonData
     {
         LFGDungeonData() : id(0), name(""), map(0), type(0), expansion(0), group(0), minlevel(0),
-            maxlevel(0), difficulty(DIFFICULTY_NONE), requiredItemLevel(0), seasonal(false), x(0.0f), y(0.0f), z(0.0f), o(0.0f)
+            maxlevel(0), difficulty(DIFFICULTY_NONE), category(0), requiredItemLevel(0), seasonal(false), x(0.0f), y(0.0f), z(0.0f), o(0.0f)
         { }
         LFGDungeonData(LFGDungeonEntry const* dbc) : id(dbc->m_ID), name(dbc->m_Name), map(dbc->m_ContinentID),
             type(dbc->m_Type), expansion(dbc->m_ExpansionLevel), group(dbc->m_GroupID),
             minlevel(dbc->m_MinLevel), maxlevel(dbc->m_MaxLevel), difficulty(DifficultyID(dbc->m_DifficultyID)),
-            requiredItemLevel(0), seasonal(dbc->m_Flags& LFG_FLAG_SEASONAL), x(0.0f), y(0.0f), z(0.0f), o(0.0f)
+            category(uint8(dbc->m_SubType)), requiredItemLevel(0), seasonal(dbc->m_Flags& LFG_FLAG_SEASONAL), x(0.0f), y(0.0f), z(0.0f), o(0.0f)
         { }
 
         uint32 id;
@@ -283,6 +283,7 @@ namespace lfg
         uint8 minlevel;
         uint8 maxlevel;
         DifficultyID difficulty;
+        uint8 category;
         uint32 requiredItemLevel;
         bool seasonal;
         float x, y, z, o;
