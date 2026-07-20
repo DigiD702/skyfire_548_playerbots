@@ -31,6 +31,11 @@ namespace lfg
     {
         uint8 const LFG_COMBAT_ROLE_MASK = PLAYER_ROLE_TANK | PLAYER_ROLE_HEALER | PLAYER_ROLE_DAMAGE;
 
+        bool IsScenarioDifficulty(uint32 difficulty)
+        {
+            return difficulty == DIFFICULTY_SCE_NORMAL || difficulty == DIFFICULTY_SCE_HEROIC;
+        }
+
         struct LfgRoleAssignment
         {
             uint64 guid;
@@ -818,7 +823,22 @@ namespace lfg
             {
                 // use temporal var to check roles, CheckGroupRoles modifies the roles
                 check_roles = roleCheck.roles;
-                roleCheck.state = CheckGroupRoles(check_roles) ? LFG_ROLECHECK_FINISHED : LFG_ROLECHECK_WRONG_ROLES;
+                bool scenario = false;
+                for (LfgDungeonSet::const_iterator it = roleCheck.dungeons.begin(); it != roleCheck.dungeons.end(); ++it)
+                {
+                    LFGDungeonData const* dungeon = GetLFGDungeon(*it);
+                    if (!dungeon)
+                        continue;
+
+                    MapEntry const* map = sMapStore.LookupEntry(dungeon->map);
+                    if (IsScenarioDifficulty(dungeon->difficulty) || (map && map->IsScenario()))
+                    {
+                        scenario = true;
+                        break;
+                    }
+                }
+
+                roleCheck.state = (scenario ? CheckDpsOnlyRoles(check_roles, uint8(check_roles.size())) : CheckGroupRoles(check_roles)) ? LFG_ROLECHECK_FINISHED : LFG_ROLECHECK_WRONG_ROLES;
             }
         }
 
@@ -978,6 +998,17 @@ namespace lfg
 
         for (LfgRoleAssignment const& assignment : assignments)
             groles[assignment.guid] = assignment.assignedRole;
+
+        return true;
+    }
+
+    bool LFGMgr::CheckDpsOnlyRoles(LfgRolesMap& groles, uint8 neededDamage)
+    {
+        if (groles.empty() || groles.size() > neededDamage)
+            return false;
+
+        for (LfgRolesMap::iterator it = groles.begin(); it != groles.end(); ++it)
+            it->second = PLAYER_ROLE_DAMAGE | (it->second & PLAYER_ROLE_LEADER);
 
         return true;
     }

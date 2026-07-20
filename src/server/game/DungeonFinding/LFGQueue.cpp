@@ -60,8 +60,74 @@ namespace lfg
                 --dps;
         }
 
-        void CalculateRoleShortage(LfgRolesMap const& roles, uint8& tanks, uint8& healers, uint8& dps)
+        bool IsScenarioDifficulty(uint32 difficulty)
         {
+            return difficulty == DIFFICULTY_SCE_NORMAL || difficulty == DIFFICULTY_SCE_HEROIC;
+        }
+
+        bool IsScenarioDungeon(uint32 dungeonId)
+        {
+            LFGDungeonEntry const* dungeon = sLFGDungeonStore.LookupEntry(dungeonId);
+            if (!dungeon)
+                return false;
+
+            if (IsScenarioDifficulty(dungeon->m_DifficultyID))
+                return true;
+
+            MapEntry const* map = sMapStore.LookupEntry(dungeon->m_ContinentID);
+            return map && map->IsScenario();
+        }
+
+        uint8 GetDungeonGroupSize(uint32 dungeonId)
+        {
+            LFGDungeonEntry const* dungeon = sLFGDungeonStore.LookupEntry(dungeonId);
+            if (!dungeon || !IsScenarioDungeon(dungeonId))
+                return MAXGROUPSIZE;
+
+            if (MapDifficulty const* difficulty = GetMapDifficultyData(dungeon->m_ContinentID, DifficultyID(dungeon->m_DifficultyID)))
+                if (difficulty->maxPlayers)
+                    return uint8(std::min<uint32>(difficulty->maxPlayers, MAXGROUPSIZE));
+
+            return 3;
+        }
+
+        bool HasScenarioDungeon(LfgDungeonSet const& dungeons)
+        {
+            for (LfgDungeonSet::const_iterator it = dungeons.begin(); it != dungeons.end(); ++it)
+                if (IsScenarioDungeon(*it))
+                    return true;
+
+            return false;
+        }
+
+        uint8 GetQueueGroupSize(LfgDungeonSet const& dungeons)
+        {
+            uint8 groupSize = MAXGROUPSIZE;
+            for (LfgDungeonSet::const_iterator it = dungeons.begin(); it != dungeons.end(); ++it)
+                groupSize = std::min<uint8>(groupSize, GetDungeonGroupSize(*it));
+
+            return groupSize ? groupSize : MAXGROUPSIZE;
+        }
+
+        bool CheckQueueRoles(LfgRolesMap& roles, LfgDungeonSet const& dungeons)
+        {
+            if (HasScenarioDungeon(dungeons))
+                return LFGMgr::CheckDpsOnlyRoles(roles, GetQueueGroupSize(dungeons));
+
+            return LFGMgr::CheckGroupRoles(roles);
+        }
+
+        void CalculateRoleShortage(LfgRolesMap const& roles, LfgDungeonSet const& dungeons, uint8& tanks, uint8& healers, uint8& dps)
+        {
+            if (HasScenarioDungeon(dungeons))
+            {
+                uint8 groupSize = GetQueueGroupSize(dungeons);
+                tanks = 0;
+                healers = 0;
+                dps = roles.size() >= groupSize ? 0 : uint8(groupSize - roles.size());
+                return;
+            }
+
             tanks = LFG_TANKS_NEEDED;
             healers = LFG_HEALERS_NEEDED;
             dps = LFG_DPS_NEEDED;
@@ -434,24 +500,29 @@ namespace lfg
             }
         }
 
-        // Group with less that MAXGROUPSIZE members always compatible
-        if (check.size() == 1 && numPlayers != MAXGROUPSIZE)
+        // Group with less than the target dungeon size is always compatible
+        if (check.size() == 1)
         {
-            SF_LOG_DEBUG("lfg.queue.match.compatibility.check", "Guids: (%s) single group. Compatibles", strGuids.c_str());
             LfgQueueDataContainer::iterator itQueue = QueueDataStore.find(check.front());
+            uint8 groupSize = GetQueueGroupSize(itQueue->second.dungeons);
 
-            LfgCompatibilityData data(LFG_COMPATIBLES_WITH_LESS_PLAYERS);
-            data.roles = itQueue->second.roles;
-            if (!LFGMgr::CheckGroupRoles(data.roles))
+            if (numPlayers != groupSize)
             {
-                SF_LOG_DEBUG("lfg.queue.match.compatibility.check", "Guids: (%s) single group has invalid roles", strGuids.c_str());
-                SetCompatibles(strGuids, LFG_INCOMPATIBLES_NO_ROLES);
-                return LFG_INCOMPATIBLES_NO_ROLES;
-            }
+                SF_LOG_DEBUG("lfg.queue.match.compatibility.check", "Guids: (%s) single group. Compatibles", strGuids.c_str());
 
-            UpdateBestCompatibleInQueue(itQueue, strGuids, data.roles);
-            SetCompatibilityData(strGuids, data);
-            return LFG_COMPATIBLES_WITH_LESS_PLAYERS;
+                LfgCompatibilityData data(LFG_COMPATIBLES_WITH_LESS_PLAYERS);
+                data.roles = itQueue->second.roles;
+                if (!CheckQueueRoles(data.roles, itQueue->second.dungeons))
+                {
+                    SF_LOG_DEBUG("lfg.queue.match.compatibility.check", "Guids: (%s) single group has invalid roles", strGuids.c_str());
+                    SetCompatibles(strGuids, LFG_INCOMPATIBLES_NO_ROLES);
+                    return LFG_INCOMPATIBLES_NO_ROLES;
+                }
+
+                UpdateBestCompatibleInQueue(itQueue, strGuids, data.roles);
+                SetCompatibilityData(strGuids, data);
+                return LFG_COMPATIBLES_WITH_LESS_PLAYERS;
+            }
         }
 
         if (numLfgGroups > 1)
@@ -459,13 +530,6 @@ namespace lfg
             SF_LOG_DEBUG("lfg.queue.match.compatibility.check", "Guids: (%s) More than one Lfggroup (%u)", strGuids.c_str(), numLfgGroups);
             SetCompatibles(strGuids, LFG_INCOMPATIBLES_MULTIPLE_LFG_GROUPS);
             return LFG_INCOMPATIBLES_MULTIPLE_LFG_GROUPS;
-        }
-
-        if (numPlayers > MAXGROUPSIZE)
-        {
-            SF_LOG_DEBUG("lfg.queue.match.compatibility.check", "Guids: (%s) Too much players (%u)", strGuids.c_str(), numPlayers);
-            SetCompatibles(strGuids, LFG_INCOMPATIBLES_TOO_MUCH_PLAYERS);
-            return LFG_INCOMPATIBLES_TOO_MUCH_PLAYERS;
         }
 
         // If it's single group no need to check for duplicate players, ignores, bad roles or bad dungeons as it's been checked before joining
@@ -498,18 +562,6 @@ namespace lfg
                 return LFG_INCOMPATIBLES_HAS_IGNORES;
             }
 
-            LfgRolesMap debugRoles = proposalRoles;
-            if (!LFGMgr::CheckGroupRoles(proposalRoles))
-            {
-                std::ostringstream o;
-                for (LfgRolesMap::const_iterator it = debugRoles.begin(); it != debugRoles.end(); ++it)
-                    o << ", " << it->first << ": " << GetRolesString(it->second);
-
-                SF_LOG_DEBUG("lfg.queue.match.compatibility.check", "Guids: (%s) Roles not compatible%s", strGuids.c_str(), o.str().c_str());
-                SetCompatibles(strGuids, LFG_INCOMPATIBLES_NO_ROLES);
-                return LFG_INCOMPATIBLES_NO_ROLES;
-            }
-
             LfgGuidList::iterator itguid = check.begin();
             proposalDungeons = QueueDataStore[*itguid].dungeons;
             std::ostringstream o;
@@ -529,6 +581,18 @@ namespace lfg
                 SetCompatibles(strGuids, LFG_INCOMPATIBLES_NO_DUNGEONS);
                 return LFG_INCOMPATIBLES_NO_DUNGEONS;
             }
+
+            LfgRolesMap debugRoles = proposalRoles;
+            if (!CheckQueueRoles(proposalRoles, proposalDungeons))
+            {
+                std::ostringstream rolesDebug;
+                for (LfgRolesMap::const_iterator it = debugRoles.begin(); it != debugRoles.end(); ++it)
+                    rolesDebug << ", " << it->first << ": " << GetRolesString(it->second);
+
+                SF_LOG_DEBUG("lfg.queue.match.compatibility.check", "Guids: (%s) Roles not compatible%s", strGuids.c_str(), rolesDebug.str().c_str());
+                SetCompatibles(strGuids, LFG_INCOMPATIBLES_NO_ROLES);
+                return LFG_INCOMPATIBLES_NO_ROLES;
+            }
         }
         else
         {
@@ -537,7 +601,7 @@ namespace lfg
             proposalDungeons = queue.dungeons;
             proposalRoles = queue.roles;
             LfgRolesMap debugRoles = proposalRoles;
-            if (!LFGMgr::CheckGroupRoles(proposalRoles))     // assign new roles
+            if (!CheckQueueRoles(proposalRoles, proposalDungeons))     // assign new roles
             {
                 std::ostringstream o;
                 for (LfgRolesMap::const_iterator it = debugRoles.begin(); it != debugRoles.end(); ++it)
@@ -549,8 +613,16 @@ namespace lfg
             }
         }
 
+        uint8 groupSize = GetQueueGroupSize(proposalDungeons);
+        if (numPlayers > groupSize)
+        {
+            SF_LOG_DEBUG("lfg.queue.match.compatibility.check", "Guids: (%s) Too much players (%u)", strGuids.c_str(), numPlayers);
+            SetCompatibles(strGuids, LFG_INCOMPATIBLES_TOO_MUCH_PLAYERS);
+            return LFG_INCOMPATIBLES_TOO_MUCH_PLAYERS;
+        }
+
         // Enough players?
-        if (numPlayers != MAXGROUPSIZE)
+        if (numPlayers != groupSize)
         {
             SF_LOG_DEBUG("lfg.queue.match.compatibility.check", "Guids: (%s) Compatibles but not enough players(%u)", strGuids.c_str(), numPlayers);
             LfgCompatibilityData data(LFG_COMPATIBLES_WITH_LESS_PLAYERS);
@@ -649,7 +721,7 @@ namespace lfg
                 waitTime = SelectWaitTime(tanks, healers, dps, wtTank, wtHealer, wtDps, wtAvg);
             else
             {
-                CalculateRoleShortage(queueinfo.roles, tanks, healers, dps);
+                CalculateRoleShortage(queueinfo.roles, queueinfo.dungeons, tanks, healers, dps);
                 waitTime = SelectWaitTime(tanks, healers, dps, wtTank, wtHealer, wtDps, wtAvg);
             }
 
@@ -807,7 +879,7 @@ namespace lfg
             queueData.bestCompatible.c_str(), key.c_str(), itrQueue->first);
 
         queueData.bestCompatible = key;
-        CalculateRoleShortage(roles, queueData.tanks, queueData.healers, queueData.dps);
+        CalculateRoleShortage(roles, queueData.dungeons, queueData.tanks, queueData.healers, queueData.dps);
     }
 
 } // namespace lfg

@@ -432,6 +432,8 @@ namespace lfg
         time_t GetQueueJoinTime(uint64 guid);
         /// Checks if given roles match, modifies given roles map with new roles
         static bool CheckGroupRoles(LfgRolesMap& groles);
+        /// Assigns queued players to damage roles for role-neutral scenario queues
+        static bool CheckDpsOnlyRoles(LfgRolesMap& groles, uint8 neededDamage);
         /// Checks if given players are ignoring each other
         static bool HasIgnore(uint64 guid1, uint64 guid2);
         /// Sends queue status to player
