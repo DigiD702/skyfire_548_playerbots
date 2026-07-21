@@ -2945,6 +2945,11 @@ void WorldSession::HandleDiscardedTimeSyncAcks(WorldPacket& recvData)
     if (!request.hasCounter)
         return;
 
+    // This opcode is STATUS_LOGGEDIN_OR_RECENTLY_LOGGOUT: it can be dispatched right after
+    // logout when _player is already NULL, so the handler must guard against that itself.
+    if (!_player)
+        return;
+
     while (!_player->m_timeSyncQueue.empty())
     {
         uint32 counter = _player->m_timeSyncQueue.front();

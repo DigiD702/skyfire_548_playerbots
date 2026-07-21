@@ -511,7 +511,12 @@ bool Group::RemoveMember(uint64 guid, const RemoveMethod& method /*= GROUP_REMOV
     // remove member and change leader (if need) only if strong more 2 members _before_ member remove (BG/BF allow 1 member group)
     if (GetMembersCount() > ((isBGGroup() || isLFGGroup() || isBFGroup()) ? 1u : 2u))
     {
-        Player* player = ObjectAccessor::FindPlayer(guid);
+        // LFG scripts (OnGroupRemoveMember above) may far-teleport the leaver out of the
+        // instance, which removes them from the world. FindPlayer() ignores out-of-world
+        // players, so use the in-or-out-of-world lookup to still clear their group pointer
+        // and update their client; otherwise m_group dangles (logout crash) and the client
+        // stays stuck showing the old party.
+        Player* player = ObjectAccessor::FindPlayerInOrOutOfWorld(guid);
         if (player)
         {
             // Battleground group handling
