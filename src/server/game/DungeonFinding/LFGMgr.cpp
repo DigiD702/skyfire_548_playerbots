@@ -25,6 +25,7 @@
 #include "WorldSession.h"
 
 #include <algorithm>
+#include <functional>
 #include <vector>
 
 namespace lfg
@@ -499,6 +500,17 @@ namespace lfg
 
                 if (proposal.state == LFG_PROPOSAL_SUCCESS)
                     UpdateProposal(proposalId, guid, true);
+                else if (proposal.autoAccept)
+                {
+                    // Raid Finder proposals are accepted on behalf of every player. Snapshot the
+                    // guids first because a successful UpdateProposal erases the proposal.
+                    LfgGuidList autoAcceptGuids;
+                    for (LfgProposalPlayerContainer::const_iterator itPlayers = proposal.players.begin(); itPlayers != proposal.players.end(); ++itPlayers)
+                        autoAcceptGuids.push_back(itPlayers->first);
+
+                    for (LfgGuidList::const_iterator itGuid = autoAcceptGuids.begin(); itGuid != autoAcceptGuids.end(); ++itGuid)
+                        UpdateProposal(proposalId, *itGuid, true);
+                }
             }
         }
 
@@ -1084,6 +1096,82 @@ namespace lfg
         return true;
     }
 
+    bool LFGMgr::CheckRaidFinderRoles(LfgRolesMap& groles, uint8 neededTanks, uint8 neededHealers, uint8 neededDamage)
+    {
+        if (groles.empty() || groles.size() > uint32(neededTanks + neededHealers + neededDamage))
+            return false;
+
+        std::vector<LfgRoleAssignment> assignments;
+        assignments.reserve(groles.size());
+
+        for (LfgRolesMap::iterator it = groles.begin(); it != groles.end(); ++it)
+        {
+            uint8 roles = it->second & LFG_COMBAT_ROLE_MASK;
+            if (!roles)
+                return false;
+
+            LfgRoleAssignment assignment;
+            assignment.guid = it->first;
+            assignment.leader = it->second & PLAYER_ROLE_LEADER;
+            assignment.availableRoles = roles;
+            assignment.assignedRole = PLAYER_ROLE_NONE;
+            assignments.push_back(assignment);
+        }
+
+        // Assign the most constrained players first to improve the chance of a full fit
+        std::sort(assignments.begin(), assignments.end(), [](LfgRoleAssignment const& left, LfgRoleAssignment const& right)
+        {
+            uint8 leftCount = CountAvailableRoles(left.availableRoles);
+            uint8 rightCount = CountAvailableRoles(right.availableRoles);
+            if (leftCount != rightCount)
+                return leftCount < rightCount;
+
+            return left.guid < right.guid;
+        });
+
+        std::function<bool(size_t, uint8, uint8, uint8)> assign =
+            [&](size_t index, uint8 tanks, uint8 healers, uint8 damage) -> bool
+        {
+            if (index == assignments.size())
+                return true;
+
+            LfgRoleAssignment& assignment = assignments[index];
+            uint8 const rolePreference[] = { PLAYER_ROLE_TANK, PLAYER_ROLE_HEALER, PLAYER_ROLE_DAMAGE };
+
+            for (uint8 role : rolePreference)
+            {
+                if (!(assignment.availableRoles & role))
+                    continue;
+
+                if (role == PLAYER_ROLE_TANK && tanks >= neededTanks)
+                    continue;
+                if (role == PLAYER_ROLE_HEALER && healers >= neededHealers)
+                    continue;
+                if (role == PLAYER_ROLE_DAMAGE && damage >= neededDamage)
+                    continue;
+
+                assignment.assignedRole = role | assignment.leader;
+
+                if (assign(index + 1,
+                    tanks + (role == PLAYER_ROLE_TANK),
+                    healers + (role == PLAYER_ROLE_HEALER),
+                    damage + (role == PLAYER_ROLE_DAMAGE)))
+                    return true;
+            }
+
+            assignment.assignedRole = PLAYER_ROLE_NONE;
+            return false;
+        };
+
+        if (!assign(0, 0, 0, 0))
+            return false;
+
+        for (LfgRoleAssignment const& assignment : assignments)
+            groles[assignment.guid] = assignment.assignedRole;
+
+        return true;
+    }
+
     /**
        Makes a new group given a proposal
        @param[in]     proposal Proposal to get info from
@@ -1115,6 +1203,8 @@ namespace lfg
                 proposal.id, proposal.dungeonId);
             return false;
         }
+
+        bool const isRaidDungeon = IsRaidDungeon(*dungeon);
 
         Group* grp = proposal.group ? sGroupMgr->GetGroupByGUID(GUID_LOPART(proposal.group)) : NULL;
         bool const groupAlreadyExisted = grp != NULL;
@@ -1149,6 +1239,12 @@ namespace lfg
                 SetActiveQueueId(gguid, GetActiveQueueId(proposal.leader));
                 SetState(gguid, LFG_STATE_PROPOSAL);
                 sGroupMgr->AddGroup(grp);
+
+                // Convert to raid BEFORE adding the remaining members so AddMember spreads them
+                // across raid subgroups. Otherwise every member is crammed into subgroup 0 (which
+                // only holds 5), producing an invalid raid roster that crashes the client raid frames.
+                if (isRaidDungeon && !grp->isRaidGroup())
+                    grp->ConvertToRaid();
             }
             else if (group != grp)
             {
@@ -1183,7 +1279,7 @@ namespace lfg
             }
         }
 
-        bool const isRaidDungeon = IsRaidDungeon(*dungeon);
+        // Safety net for the reformed-group path: ensure a raid dungeon always has a raid group
         if (isRaidDungeon && !grp->isRaidGroup())
             grp->ConvertToRaid();
 
@@ -1219,14 +1315,17 @@ namespace lfg
 
         bool const forceChangeInstance = !proposal.isNew && groupAlreadyExisted;
 
+        // Update group info BEFORE teleporting so the client knows it is a (raid) group
+        // before entering the instance map, otherwise raid maps reject the entry with
+        // "you must be in a raid group".
+        grp->SendUpdate();
+
         // Teleport Player
         for (LfgGuidList::const_iterator it = playersToTeleport.begin(); it != playersToTeleport.end(); ++it)
             if (Player* player = ObjectAccessor::FindPlayer(*it))
                 if (player->GetMapId() != uint32(dungeon->map) || forceChangeInstance)
                     TeleportPlayer(player, false, false, forceChangeInstance);
 
-        // Update group info
-        grp->SendUpdate();
         return true;
     }
 

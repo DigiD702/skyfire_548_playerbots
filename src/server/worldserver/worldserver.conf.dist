@@ -1268,6 +1268,17 @@ TicketSystem.FeedBackTickets = 1
 DungeonFinder.OptionsMask = 1
 
 #
+#     DungeonFinder.RaidFinderMinSize
+#        Description: Minimum number of players required before a Raid Finder (LFR) queue
+#                     forms a raid and teleports the players in. The role composition is
+#                     always capped at 2 tanks, 6 healers and 17 dps (25 total). Lower this
+#                     for testing on servers with few players.
+#        Range:       1 - 25
+#        Default:     25
+
+DungeonFinder.RaidFinderMinSize = 25
+
+#
 #   DBC.EnforceItemAttributes
 #        Description: Disallow overriding item attributes stored in DBC files with values from the
 #                     database.

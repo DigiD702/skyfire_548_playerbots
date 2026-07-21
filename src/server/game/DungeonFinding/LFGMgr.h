@@ -226,7 +226,7 @@ namespace lfg
     struct LfgProposal
     {
         LfgProposal(uint32 dungeon = 0) : id(0), dungeonId(dungeon), state(LFG_PROPOSAL_INITIATING),
-            group(0), leader(0), cancelTime(0), encounters(0), isNew(true)
+            group(0), leader(0), cancelTime(0), encounters(0), isNew(true), autoAccept(false)
         { }
 
         uint32 id;                                             ///< Proposal Id
@@ -237,6 +237,7 @@ namespace lfg
         time_t cancelTime;                                     ///< Time when we will cancel this proposal
         uint32 encounters;                                     ///< Dungeon Encounters
         bool isNew;                                            ///< Determines if it's new group or not
+        bool autoAccept;                                       ///< Raid Finder proposals auto-accept for all players
         LfgGuidList queues;                                    ///< Queue Ids to remove/readd
         LfgGuidList showorder;                                 ///< Show order in update window
         LfgProposalPlayerContainer players;                    ///< Players data
@@ -439,6 +440,8 @@ namespace lfg
         static bool CheckGroupRoles(LfgRolesMap& groles);
         /// Assigns queued players to damage roles for role-neutral scenario queues
         static bool CheckDpsOnlyRoles(LfgRolesMap& groles, uint8 neededDamage);
+        /// Assigns queued players to raid finder role slots (caps on tanks/healers/dps)
+        static bool CheckRaidFinderRoles(LfgRolesMap& groles, uint8 neededTanks, uint8 neededHealers, uint8 neededDamage);
         /// Checks if given players are ignoring each other
         static bool HasIgnore(uint64 guid1, uint64 guid2);
         /// Sends queue status to player

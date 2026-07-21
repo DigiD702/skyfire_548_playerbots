@@ -119,6 +119,10 @@ namespace lfg
         LfgCompatibility FindNewGroups(LfgGuidList& check, LfgGuidList& all);
         LfgCompatibility CheckCompatibility(LfgGuidList check);
 
+        // Raid Finder uses a dedicated accumulator instead of the 5-man combinatorial matcher
+        uint8 FindRaidFinderGroups();
+        bool IsRaidFinderQueueEntry(uint64 guid) const;
+
         // Queue
         LfgQueueDataContainer QueueDataStore;              ///< Queued groups
         LfgCompatibleContainer CompatibleMapStore;         ///< Compatible dungeons

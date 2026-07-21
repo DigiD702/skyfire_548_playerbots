@@ -188,6 +188,30 @@ void Group::LoadMemberFromDB(uint32 guidLow, uint8 memberFlags, uint8 subgroup, 
         return;
     }
 
+    // Defensive: a raid subgroup only holds MAXGROUPSIZE members. If the stored roster is corrupt
+    // (e.g. an LFG raid saved with everyone in subgroup 0), reassign this member to the first
+    // subgroup with a free slot so the raid roster stays valid and does not crash the client.
+    if (m_subGroupsCounts && (subgroup >= MAX_RAID_SUBGROUPS || m_subGroupsCounts[subgroup] >= MAXGROUPSIZE))
+    {
+        uint8 freeGroup = 0;
+        for (; freeGroup < MAX_RAID_SUBGROUPS; ++freeGroup)
+            if (m_subGroupsCounts[freeGroup] < MAXGROUPSIZE)
+                break;
+
+        if (freeGroup < MAX_RAID_SUBGROUPS && freeGroup != subgroup)
+        {
+            SF_LOG_ERROR("misc", "Group::LoadMemberFromDB: member %u in group %u had invalid subgroup %u; reassigning to %u.",
+                guidLow, m_dbStoreId, subgroup, freeGroup);
+
+            subgroup = freeGroup;
+
+            PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_GROUP_MEMBER_SUBGROUP);
+            stmt->setUInt8(0, subgroup);
+            stmt->setUInt32(1, guidLow);
+            CharacterDatabase.Execute(stmt);
+        }
+    }
+
     member.group = subgroup;
     member.flags = memberFlags;
     member.roles = roles;

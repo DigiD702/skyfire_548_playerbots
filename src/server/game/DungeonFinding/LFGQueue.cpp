@@ -11,8 +11,10 @@
 #include "LFGQueue.h"
 #include "Log.h"
 #include "ObjectDefines.h"
+#include "World.h"
 
 #include <algorithm>
+#include <map>
 
 namespace lfg
 {
@@ -78,8 +80,25 @@ namespace lfg
             return map && map->IsScenario();
         }
 
+        bool IsRaidFinderDungeon(uint32 dungeonId)
+        {
+            return sLFGMgr->IsRaidFinderDungeon(dungeonId);
+        }
+
+        bool HasRaidFinderDungeon(LfgDungeonSet const& dungeons)
+        {
+            for (LfgDungeonSet::const_iterator it = dungeons.begin(); it != dungeons.end(); ++it)
+                if (IsRaidFinderDungeon(*it))
+                    return true;
+
+            return false;
+        }
+
         uint8 GetDungeonGroupSize(uint32 dungeonId)
         {
+            if (IsRaidFinderDungeon(dungeonId))
+                return LFG_RF_GROUP_SIZE;
+
             LFGDungeonEntry const* dungeon = sLFGDungeonStore.LookupEntry(dungeonId);
             if (!dungeon || !IsScenarioDungeon(dungeonId))
                 return MAXGROUPSIZE;
@@ -111,6 +130,9 @@ namespace lfg
 
         bool CheckQueueRoles(LfgRolesMap& roles, LfgDungeonSet const& dungeons)
         {
+            if (HasRaidFinderDungeon(dungeons))
+                return LFGMgr::CheckRaidFinderRoles(roles, LFG_RF_TANKS_NEEDED, LFG_RF_HEALERS_NEEDED, LFG_RF_DPS_NEEDED);
+
             if (HasScenarioDungeon(dungeons))
                 return LFGMgr::CheckDpsOnlyRoles(roles, GetQueueGroupSize(dungeons));
 
@@ -119,6 +141,22 @@ namespace lfg
 
         void CalculateRoleShortage(LfgRolesMap const& roles, LfgDungeonSet const& dungeons, uint8& tanks, uint8& healers, uint8& dps)
         {
+            if (HasRaidFinderDungeon(dungeons))
+            {
+                tanks = LFG_RF_TANKS_NEEDED;
+                healers = LFG_RF_HEALERS_NEEDED;
+                dps = LFG_RF_DPS_NEEDED;
+
+                LfgRolesMap assignedRoles = roles;
+                if (LFGMgr::CheckRaidFinderRoles(assignedRoles, tanks, healers, dps))
+                    for (LfgRolesMap::const_iterator it = assignedRoles.begin(); it != assignedRoles.end(); ++it)
+                        ConsumeRoleSlot(it->second, tanks, healers, dps);
+                else
+                    for (LfgRolesMap::const_iterator it = roles.begin(); it != roles.end(); ++it)
+                        ConsumeRoleSlot(it->second, tanks, healers, dps);
+                return;
+            }
+
             if (HasScenarioDungeon(dungeons))
             {
                 uint8 groupSize = GetQueueGroupSize(dungeons);
@@ -372,19 +410,44 @@ namespace lfg
         return NULL;
     }
 
+    bool LFGQueue::IsRaidFinderQueueEntry(uint64 guid) const
+    {
+        LfgQueueDataContainer::const_iterator itQueue = QueueDataStore.find(guid);
+        if (itQueue == QueueDataStore.end())
+            return false;
+
+        return HasRaidFinderDungeon(itQueue->second.dungeons);
+    }
+
     uint8 LFGQueue::FindGroups()
     {
         uint8 proposals = 0;
+
+        // Raid Finder is handled by its own accumulator; the 5-man combinatorial matcher cannot assemble 25 players
+        proposals += FindRaidFinderGroups();
+
         LfgGuidList firstNew;
         while (!newToQueueStore.empty())
         {
             uint64 frontguid = newToQueueStore.front();
             SF_LOG_DEBUG("lfg.queue.match.check.new", "Checking [%u] newToQueue(%u), currentQueue(%u)", GUID_LOPART(frontguid), uint32(newToQueueStore.size()), uint32(currentQueueStore.size()));
-            firstNew.clear();
-            firstNew.push_back(frontguid);
             RemoveFromNewQueue(frontguid);
 
-            LfgGuidList temporalList = currentQueueStore;
+            // Raid-finder entries never enter the 5-man matcher; keep them queued for the accumulator
+            if (IsRaidFinderQueueEntry(frontguid))
+            {
+                AddToCurrentQueue(frontguid);
+                continue;
+            }
+
+            firstNew.clear();
+            firstNew.push_back(frontguid);
+
+            LfgGuidList temporalList;
+            for (LfgGuidList::const_iterator it = currentQueueStore.begin(); it != currentQueueStore.end(); ++it)
+                if (!IsRaidFinderQueueEntry(*it))
+                    temporalList.push_back(*it);
+
             LfgCompatibility compatibles = FindNewGroups(firstNew, temporalList);
 
             if (compatibles == LFG_COMPATIBLES_MATCH)
@@ -392,6 +455,131 @@ namespace lfg
             else
                 AddToCurrentQueue(frontguid);                  // Lfg group not found, add this group to the queue.
         }
+        return proposals;
+    }
+
+    /**
+       Accumulate solo/queued raid-finder entries into a single raid proposal.
+
+       Raid Finder cannot use the recursive 5-man matcher (bounded by MAXGROUPSIZE), so instead we
+       greedily gather queued entries for each raid-finder dungeon, honoring the 2 tank / 6 heal /
+       17 dps caps, and form an auto-accepted proposal once the configured minimum size is reached.
+
+       @return number of proposals created
+    */
+    uint8 LFGQueue::FindRaidFinderGroups()
+    {
+        uint8 proposals = 0;
+
+        uint32 minSize = sWorld->getIntConfig(WorldIntConfigs::CONFIG_LFG_RAIDFINDER_MIN_SIZE);
+        if (!minSize)
+            minSize = LFG_RF_GROUP_SIZE;
+        minSize = std::min<uint32>(minSize, LFG_RF_GROUP_SIZE);
+
+        // Bucket currently-queued raid-finder entries by the specific raid-finder dungeon they can enter
+        std::map<uint32, LfgGuidList> candidatesByDungeon;
+        for (LfgQueueDataContainer::const_iterator it = QueueDataStore.begin(); it != QueueDataStore.end(); ++it)
+        {
+            uint64 guid = it->first;
+            if (!QueueContainsGuid(newToQueueStore, guid) && !QueueContainsGuid(currentQueueStore, guid))
+                continue;
+
+            for (LfgDungeonSet::const_iterator itDungeon = it->second.dungeons.begin(); itDungeon != it->second.dungeons.end(); ++itDungeon)
+                if (IsRaidFinderDungeon(*itDungeon))
+                    candidatesByDungeon[*itDungeon].push_back(guid);
+        }
+
+        LfgGuidSet consumedGuids;                              // guids already placed into a proposal this pass
+        for (std::map<uint32, LfgGuidList>::iterator itDungeon = candidatesByDungeon.begin(); itDungeon != candidatesByDungeon.end(); ++itDungeon)
+        {
+            uint32 dungeonId = itDungeon->first;
+            LfgGuidList const& candidates = itDungeon->second;
+
+            LfgGuidList selectedQueues;
+            LfgRolesMap selectedRoles;
+            std::map<uint64, uint64> playerGroups;             // player guid -> original group guid (0 if solo)
+            uint32 selectedCount = 0;
+
+            for (LfgGuidList::const_iterator itGuid = candidates.begin(); itGuid != candidates.end() && selectedCount < minSize; ++itGuid)
+            {
+                if (consumedGuids.find(*itGuid) != consumedGuids.end())
+                    continue;
+
+                LfgQueueDataContainer::const_iterator itData = QueueDataStore.find(*itGuid);
+                if (itData == QueueDataStore.end())
+                    continue;
+
+                LfgRolesMap const& entryRoles = itData->second.roles;
+                if (entryRoles.empty())
+                    continue;
+
+                if (selectedCount + entryRoles.size() > LFG_RF_GROUP_SIZE)
+                    continue;
+
+                // Trial-fit this entry's players into the current selection honoring the raid role caps
+                LfgRolesMap trialRoles = selectedRoles;
+                for (LfgRolesMap::const_iterator itRole = entryRoles.begin(); itRole != entryRoles.end(); ++itRole)
+                    trialRoles[itRole->first] = itRole->second;
+
+                if (!LFGMgr::CheckRaidFinderRoles(trialRoles, LFG_RF_TANKS_NEEDED, LFG_RF_HEALERS_NEEDED, LFG_RF_DPS_NEEDED))
+                    continue;
+
+                selectedRoles.swap(trialRoles);
+                selectedQueues.push_back(*itGuid);
+                selectedCount += entryRoles.size();
+
+                uint64 groupGuid = IS_GROUP_GUID(*itGuid) ? *itGuid : 0;
+                for (LfgRolesMap::const_iterator itRole = entryRoles.begin(); itRole != entryRoles.end(); ++itRole)
+                    playerGroups[itRole->first] = groupGuid;
+            }
+
+            if (selectedCount < minSize)
+                continue;
+
+            // Build an auto-accepted raid proposal
+            LfgProposal proposal;
+            proposal.queues = selectedQueues;
+            proposal.isNew = true;
+            proposal.autoAccept = true;
+            proposal.cancelTime = time(NULL) + LFG_TIME_PROPOSAL;
+            proposal.state = LFG_PROPOSAL_INITIATING;
+            proposal.leader = 0;
+            proposal.dungeonId = dungeonId;
+            proposal.group = 0;
+
+            bool leader = false;
+            for (LfgRolesMap::const_iterator itRole = selectedRoles.begin(); itRole != selectedRoles.end(); ++itRole)
+            {
+                if (itRole->second & PLAYER_ROLE_LEADER)
+                {
+                    if (!leader || !proposal.leader || std::rand() % 2)
+                        proposal.leader = itRole->first;
+                    leader = true;
+                }
+                else if (!leader && (!proposal.leader || std::rand() % 2))
+                    proposal.leader = itRole->first;
+
+                LfgProposalPlayer& data = proposal.players[itRole->first];
+                data.role = itRole->second;
+                std::map<uint64, uint64>::const_iterator itGroup = playerGroups.find(itRole->first);
+                data.group = itGroup != playerGroups.end() ? itGroup->second : 0;
+            }
+
+            // Remove selected entries from the working queues so the 5-man matcher never touches them.
+            // Queue data is kept until the proposal completes (UpdateProposal validates queue data exists).
+            for (LfgGuidList::const_iterator itGuid = selectedQueues.begin(); itGuid != selectedQueues.end(); ++itGuid)
+            {
+                RemoveFromNewQueue(*itGuid);
+                RemoveFromCurrentQueue(*itGuid);
+                consumedGuids.insert(*itGuid);
+            }
+
+            sLFGMgr->AddProposal(proposal);
+            ++proposals;
+
+            SF_LOG_DEBUG("lfg.queue.match.raidfinder", "Raid Finder MATCH! Dungeon %u formed with %u players", dungeonId, selectedCount);
+        }
+
         return proposals;
     }
 

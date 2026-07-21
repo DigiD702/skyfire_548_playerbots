@@ -18,6 +18,14 @@ namespace lfg
         LFG_DPS_NEEDED = 3
     };
 
+    enum LFGRaidFinderEnum
+    {
+        LFG_RF_TANKS_NEEDED = 2,
+        LFG_RF_HEALERS_NEEDED = 6,
+        LFG_RF_DPS_NEEDED = 17,
+        LFG_RF_GROUP_SIZE = 25
+    };
+
     enum LfgRoles
     {
         PLAYER_ROLE_NONE = 0x00,
