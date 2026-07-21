@@ -1346,6 +1346,20 @@ namespace lfg
        @param[in]     guid Player guid to update answer
        @param[in]     accept Player answer
     */
+    uint32 LFGMgr::GetActiveProposalIdForPlayer(uint64 guid) const
+    {
+        for (LfgProposalContainer::const_iterator it = ProposalsStore.begin(); it != ProposalsStore.end(); ++it)
+        {
+            if (it->second.state != LFG_PROPOSAL_INITIATING)
+                continue;
+
+            LfgProposalPlayerContainer::const_iterator itPlayer = it->second.players.find(guid);
+            if (itPlayer != it->second.players.end() && itPlayer->second.accept == LFG_ANSWER_PENDING)
+                return it->first;
+        }
+        return 0;
+    }
+
     void LFGMgr::UpdateProposal(uint32 proposalId, uint64 guid, bool accept)
     {
         // Check if the proposal exists

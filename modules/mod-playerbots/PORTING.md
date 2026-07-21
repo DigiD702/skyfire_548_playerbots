@@ -97,12 +97,24 @@ Remaining for later phases:
   and talents - the largest single piece).
 * [TODO] Non-combat behaviour: loot, vendor, repair, rest, travel.
 
-## Phase 4 - Feature testing targets (the reason for this port)
+## Phase 4 - Feature testing targets (the reason for this port) (IN PROGRESS)
 
-* LFG: bots queue for and complete 5-man dungeons.
-* LFR: bots fill raid finder queues.
-* Random battlegrounds / rated battlegrounds and arenas.
-* Open-world grinding/questing for population.
+Merged the `lfg_mechanics` branch (LFG/LFR/scenario/challenge-mode work) into
+`playerbots` so bots can use the existing dungeon finder. `lfg_mechanics` is kept
+for future updates.
+
+* [DONE] LFG auto-response: the master queues a party (normal client UI) and the
+  bots auto-answer the group role check and accept the join proposal. Role check
+  uses a deterministic, group-aware assignment (first tank-capable bot tanks,
+  first healer-capable heals, rest dps) so a bot party forms a valid composition
+  without communicating. Core exposes `LFGMgr::GetActiveProposalIdForPlayer` so
+  the module can find a bot's pending proposal to accept.
+* [TODO] In-dungeon behaviour: bots need real tanking/healing/threat and
+  boss/trash handling to actually *complete* a dungeon (depends on per-spec
+  rotations above).
+* [TODO] LFR: bots fill raid finder queues (auto-accept the LFR prompt/roles).
+* [TODO] Random battlegrounds / rated battlegrounds and arenas.
+* [TODO] Open-world grinding/questing for population.
 
 ## Phase 5 - Content data
 

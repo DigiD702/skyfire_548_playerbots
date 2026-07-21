@@ -1811,6 +1811,42 @@ bool WorldSession::LoginBotCharacter(uint64 playerGuid)
     return GetPlayer() != nullptr;
 }
 
+uint32 WorldSession::CreateBotCharacter(std::string const& name, uint8 race, uint8 cls, uint8 gender,
+    uint8 skin, uint8 face, uint8 hairStyle, uint8 hairColor, uint8 facialHair, uint8 level)
+{
+    if (GetPlayer())
+        return 0;
+
+    WorldPacket dummy;
+    CharacterCreateInfo createInfo(name, race, cls, gender, skin, face, hairStyle, hairColor, facialHair, 0, dummy);
+
+    Player newChar(this);
+    newChar.GetMotionMaster()->Initialize();
+    if (!newChar.Create(sObjectMgr->GenerateLowGuid(HIGHGUID_PLAYER), &createInfo))
+    {
+        newChar.CleanupsBeforeDelete();
+        return 0;
+    }
+
+    newChar.SetAtLoginFlag(AT_LOGIN_FIRST);
+
+    if (level > newChar.getLevel())
+        newChar.GiveLevel(level);
+
+    newChar.SaveToDB(true);
+
+    uint32 lowGuid = newChar.GetGUIDLow();
+
+    if (PlayerInfo const* info = sObjectMgr->GetPlayerInfo(newChar.getRace(), newChar.getClass()))
+        SeedStarterHunterPetRecord(&newChar, info);
+
+    sWorld->AddCharacterNameData(lowGuid, newChar.GetName(), newChar.getGender(), newChar.getRace(),
+        newChar.getClass(), newChar.getLevel(), newChar.getVirtualRealm());
+
+    newChar.CleanupsBeforeDelete();
+    return lowGuid;
+}
+
 void WorldSession::HandleSetLfgBonusFactionID(WorldPacket& recvData)
 {
     SF_LOG_DEBUG("network", "WORLD: Received CMSG_SET_LFG_BONUS_FACTION_ID");

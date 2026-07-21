@@ -6,12 +6,17 @@
 #include "PlayerbotAI.h"
 #include "Group.h"
 #include "GroupMgr.h"
+#include "GroupReference.h"
+#include "LFGMgr.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "PetDefines.h"
 #include "Player.h"
 #include "SharedDefines.h"
 #include "WorldSession.h"
+
+#include <algorithm>
+#include <vector>
 
 namespace
 {
@@ -32,8 +37,43 @@ namespace
     constexpr float BOT_CAST_DIST = 25.0f;
 }
 
-PlayerbotAI::PlayerbotAI(Player* bot) : _bot(bot), _updateTimer(0), _chaseGuid(0), _followGuid(0)
+PlayerbotAI::PlayerbotAI(Player* bot)
+    : _bot(bot), _updateTimer(0), _chaseGuid(0), _followGuid(0),
+      _lfgRoleResponded(false), _lfgProposalResponded(false)
 {
+}
+
+namespace
+{
+    bool CanTankClass(uint8 cls)
+    {
+        switch (cls)
+        {
+            case CLASS_WARRIOR:
+            case CLASS_PALADIN:
+            case CLASS_DEATH_KNIGHT:
+            case CLASS_DRUID:
+            case CLASS_MONK:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    bool CanHealClass(uint8 cls)
+    {
+        switch (cls)
+        {
+            case CLASS_PALADIN:
+            case CLASS_PRIEST:
+            case CLASS_SHAMAN:
+            case CLASS_DRUID:
+            case CLASS_MONK:
+                return true;
+            default:
+                return false;
+        }
+    }
 }
 
 void PlayerbotAI::UpdateAI(uint32 diff)
@@ -47,6 +87,7 @@ void PlayerbotAI::UpdateAI(uint32 diff)
     _updateTimer = 0;
 
     HandlePendingInvites();
+    HandleLfg();
 
     if (!_bot->IsAlive())
         return; // TODO: corpse release / resurrection handling
@@ -92,6 +133,92 @@ void PlayerbotAI::HandlePendingInvites()
         return;
 
     group->BroadcastGroupUpdate();
+}
+
+// Auto-respond to the dungeon finder so a master can queue a party of bots: the
+// bot answers the group role check and accepts the join proposal. The rest of
+// the LFG flow (teleport in/out, boot votes, etc.) is handled by the core.
+void PlayerbotAI::HandleLfg()
+{
+    Group* grp = _bot->GetGroup();
+    if (!grp)
+    {
+        _lfgRoleResponded = false;
+        _lfgProposalResponded = false;
+        return;
+    }
+
+    uint64 guid = _bot->GetGUID();
+    lfg::LfgState state = sLFGMgr->GetState(guid);
+
+    if (state == lfg::LFG_STATE_ROLECHECK)
+    {
+        if (!_lfgRoleResponded)
+        {
+            sLFGMgr->UpdateRoleCheck(grp->GetGUID(), guid, ComputeLfgRole());
+            _lfgRoleResponded = true;
+        }
+    }
+    else
+        _lfgRoleResponded = false;
+
+    if (state == lfg::LFG_STATE_PROPOSAL)
+    {
+        if (!_lfgProposalResponded)
+        {
+            if (uint32 proposalId = sLFGMgr->GetActiveProposalIdForPlayer(guid))
+            {
+                sLFGMgr->UpdateProposal(proposalId, guid, true);
+                _lfgProposalResponded = true;
+            }
+        }
+    }
+    else
+        _lfgProposalResponded = false;
+}
+
+// Pick a role for the role check. All bots in the group run the same
+// deterministic assignment (by GUID order), so without communicating they still
+// produce a valid tank/healer/dps spread: first tank-capable bot tanks, first
+// healer-capable bot heals, the rest are damage.
+uint8 PlayerbotAI::ComputeLfgRole()
+{
+    Group* grp = _bot->GetGroup();
+    if (!grp)
+        return lfg::PLAYER_ROLE_DAMAGE;
+
+    std::vector<uint64> botGuids;
+    for (GroupReference* itr = grp->GetFirstMember(); itr != NULL; itr = itr->next())
+        if (Player* m = itr->GetSource())
+            if (m->GetSession() && m->GetSession()->IsBot())
+                botGuids.push_back(m->GetGUID());
+
+    std::sort(botGuids.begin(), botGuids.end());
+
+    bool tankTaken = false;
+    bool healTaken = false;
+    for (uint64 g : botGuids)
+    {
+        Player* m = ObjectAccessor::FindPlayer(g);
+        uint8 cls = m ? m->getClass() : 0;
+
+        uint8 role = lfg::PLAYER_ROLE_DAMAGE;
+        if (!tankTaken && CanTankClass(cls))
+        {
+            role = lfg::PLAYER_ROLE_TANK;
+            tankTaken = true;
+        }
+        else if (!healTaken && CanHealClass(cls))
+        {
+            role = lfg::PLAYER_ROLE_HEALER;
+            healTaken = true;
+        }
+
+        if (g == _bot->GetGUID())
+            return role;
+    }
+
+    return lfg::PLAYER_ROLE_DAMAGE;
 }
 
 // Combat: acquire a target (own attacker, or assist the group leader), position

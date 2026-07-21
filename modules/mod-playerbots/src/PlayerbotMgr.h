@@ -52,6 +52,14 @@ public:
     // Forces the candidate bot-character pool to be reloaded on the next tick.
     void ReloadCandidates() { _candidatesLoaded = false; }
 
+    bool IsAutoCreateOnStartup() const { return _autoCreateOnStartup; }
+
+    // Provisions bot accounts (prefix + n) and fills them with characters using
+    // the configured faction/role ratios and start level. Incremental: existing
+    // accounts and characters are reused. Returns the number of characters
+    // created; a human-readable summary is appended to *report when provided.
+    uint32 CreateBotPopulation(std::string* report = nullptr);
+
     uint32 GetActiveBotCount() const { return uint32(_bots.size()); }
     uint32 GetRandomBotCount() const { return uint32(_randomBots.size()); }
     uint32 GetCandidateCount() const { return uint32(_candidates.size()); }
@@ -70,11 +78,25 @@ private:
     void CleanupDeadBots();
     void DestroyBotAI(uint64 characterGuid);
 
+    // Auto-creation helpers.
+    uint32 PopulateAccount(uint32 accountId);               // create missing characters on one account
+    bool CreateOneCharacter(uint32 accountId);              // roll & create a single character
+
     bool _enabled = false;
     bool _randomBotsEnabled = false;
     uint32 _maxRandomBots = 0;
     std::string _accountPrefix = "RNDBOT";
     uint32 _loginIntervalMs = 2000;
+
+    // Auto-creation settings.
+    bool _autoCreateOnStartup = false;
+    uint32 _autoAccountCount = 0;
+    std::string _autoPassword = "password";
+    uint32 _autoCharsPerAccount = 1;
+    uint32 _autoAlliancePct = 50;
+    uint32 _autoTankPct = 20;
+    uint32 _autoHealerPct = 20;
+    uint32 _autoLevel = 1;
 
     uint32 _loginTimer = 0;
     bool _candidatesLoaded = false;

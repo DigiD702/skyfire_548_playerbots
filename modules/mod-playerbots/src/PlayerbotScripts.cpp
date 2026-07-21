@@ -8,6 +8,7 @@
 #include "Chat.h"
 #include "Group.h"
 #include "GroupReference.h"
+#include "Log.h"
 #include "MotionMaster.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -43,6 +44,18 @@ public:
         sPlayerbotMgr->LoadConfig();
     }
 
+    void OnStartup() override
+    {
+        // Optionally provision bot accounts/characters once the world is fully
+        // loaded (all DBC/db data available for valid race/class/name checks).
+        if (sPlayerbotMgr->IsEnabled() && sPlayerbotMgr->IsAutoCreateOnStartup())
+        {
+            std::string report;
+            sPlayerbotMgr->CreateBotPopulation(&report);
+            SF_LOG_INFO("modules", "[mod-playerbots] %s", report.c_str());
+        }
+    }
+
     void OnUpdate(uint32 diff) override
     {
         sPlayerbotMgr->Update(diff);
@@ -70,6 +83,7 @@ public:
             { "summon", rbac::RBAC_PERM_COMMAND_GM, false, &HandlePlayerbotSummonCommand, "", },
             { "list",   rbac::RBAC_PERM_COMMAND_GM, true, &HandlePlayerbotListCommand,   "", },
             { "reload", rbac::RBAC_PERM_COMMAND_GM, true, &HandlePlayerbotReloadCommand, "", },
+            { "create", rbac::RBAC_PERM_COMMAND_GM, true, &HandlePlayerbotCreateCommand, "", },
         };
 
         static std::vector<ChatCommand> commandTable =
@@ -196,6 +210,23 @@ public:
         sPlayerbotMgr->LoadConfig();
         sPlayerbotMgr->ReloadCandidates();
         handler->SendSysMessage("Playerbots configuration and candidate pool reloaded.");
+        return true;
+    }
+
+    static bool HandlePlayerbotCreateCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        if (!sPlayerbotMgr->IsEnabled())
+        {
+            handler->SendSysMessage("Playerbots module is disabled (set Playerbots.Enable = 1).");
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        handler->SendSysMessage("Provisioning bot accounts and characters; this may take a moment...");
+
+        std::string report;
+        sPlayerbotMgr->CreateBotPopulation(&report);
+        handler->PSendSysMessage("%s", report.c_str());
         return true;
     }
 

@@ -45,3 +45,74 @@ Playerbots.RandomBots.AccountPrefix = "RNDBOT"
 #        Default:     2000
 
 Playerbots.RandomBots.LoginInterval = 2000
+
+########################################
+# Bot auto-creation
+########################################
+#
+# The auto-creator provisions dedicated bot accounts (AccountPrefix + n, e.g.
+# RNDBOT1..RNDBOTn) and fills them with characters generated according to the
+# faction and role ratios below. Run it with the ".playerbots create" command,
+# or set Playerbots.AutoCreate.OnStartup = 1 to run it once when the world boots.
+# It is incremental and idempotent: existing accounts/characters are reused, and
+# only the missing ones are created.
+#
+
+#
+#    Playerbots.AutoCreate.OnStartup
+#        Description: Run the auto-creator automatically when the world starts.
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+
+Playerbots.AutoCreate.OnStartup = 0
+
+#
+#    Playerbots.AutoCreate.AccountCount
+#        Description: Number of bot accounts to ensure exist. Accounts are named
+#                     <AccountPrefix><n> for n = 1..AccountCount (RNDBOT1..).
+#        Default:     0
+
+Playerbots.AutoCreate.AccountCount = 0
+
+#
+#    Playerbots.AutoCreate.AccountPassword
+#        Description: Password assigned to newly created bot accounts.
+#        Default:     "password"
+
+Playerbots.AutoCreate.AccountPassword = "password"
+
+#
+#    Playerbots.AutoCreate.CharactersPerAccount
+#        Description: Number of characters to create on each bot account. The
+#                     realm limit is 11 characters per account.
+#        Default:     1
+
+Playerbots.AutoCreate.CharactersPerAccount = 1
+
+#
+#    Playerbots.AutoCreate.AlliancePct
+#        Description: Percentage (0-100) of created characters that are Alliance;
+#                     the remainder are Horde.
+#        Default:     50
+
+Playerbots.AutoCreate.AlliancePct = 50
+
+#
+#    Playerbots.AutoCreate.TankPct
+#    Playerbots.AutoCreate.HealerPct
+#        Description: Percentage (0-100) of created characters assigned the tank
+#                     and healer roles. The remainder become damage dealers. The
+#                     role picks a class capable of filling it. TankPct + HealerPct
+#                     should be <= 100.
+#        Default:     20 / 20
+
+Playerbots.AutoCreate.TankPct = 20
+Playerbots.AutoCreate.HealerPct = 20
+
+#
+#    Playerbots.AutoCreate.Level
+#        Description: Level assigned to newly created bot characters (1 = start
+#                     level). Death Knights are excluded from auto-creation.
+#        Default:     1
+
+Playerbots.AutoCreate.Level = 1

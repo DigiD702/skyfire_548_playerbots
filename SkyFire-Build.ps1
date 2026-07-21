@@ -498,6 +498,210 @@ function Invoke-SkyFireMenuAction {
     }
 }
 
+function Invoke-SkyFireGitCommand {
+    param(
+        [Parameter(Mandatory)]
+        [hashtable] $Config,
+        [Parameter(Mandatory)]
+        [string[]] $GitArgs,
+        [switch] $Quiet
+    )
+
+    $sourceDir = $Config.SourceDir
+    if (-not $Quiet) {
+        Write-Host "git $($GitArgs -join ' ')" -ForegroundColor DarkCyan
+    }
+    Write-SkyFireLog -Message "git -C $sourceDir $($GitArgs -join ' ')"
+
+    $savedGitStderrRedirect = $env:GIT_REDIRECT_STDERR
+    $env:GIT_REDIRECT_STDERR = '2>&1'
+    try {
+        $exitCode = Invoke-SkyFireNativeCommand -EchoOutput -ArgumentList @($sourceDir, $GitArgs) -Command {
+            param([string] $RepoPath, [string[]] $GitArguments)
+            & git -C $RepoPath @GitArguments
+        }
+    }
+    finally {
+        if ($null -eq $savedGitStderrRedirect) {
+            Remove-Item Env:\GIT_REDIRECT_STDERR -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:GIT_REDIRECT_STDERR = $savedGitStderrRedirect
+        }
+    }
+
+    if ($exitCode -ne 0) {
+        Write-Host "git exited with code $exitCode." -ForegroundColor Yellow
+        Write-SkyFireLog -Message "git command failed with exit code $exitCode" -Level WARN
+    }
+    return $exitCode
+}
+
+function Get-SkyFireGitBranches {
+    param([hashtable] $Config)
+
+    $sourceDir = $Config.SourceDir
+    $output = & git -C $sourceDir branch --list --format '%(refname:short)' 2>$null
+    return @($output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
+}
+
+function Get-SkyFireCurrentBranch {
+    param([hashtable] $Config)
+
+    $sourceDir = $Config.SourceDir
+    $branch = (& git -C $sourceDir rev-parse --abbrev-ref HEAD 2>$null | Select-Object -First 1)
+    if ($null -ne $branch) {
+        return $branch.Trim()
+    }
+    return ''
+}
+
+function Show-SkyFireGitBranches {
+    param([hashtable] $Config)
+
+    Write-Host ''
+    Write-Host 'Local and remote branches:' -ForegroundColor Cyan
+    Invoke-SkyFireGitCommand -Config $Config -GitArgs @('branch', '-a', '-vv') | Out-Null
+}
+
+function Switch-SkyFireGitBranch {
+    param([hashtable] $Config)
+
+    $branches = Get-SkyFireGitBranches -Config $Config
+    $current = Get-SkyFireCurrentBranch -Config $Config
+
+    if ($branches.Count -eq 0) {
+        Write-Host 'No local branches found.' -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host ''
+    Write-Host 'Local branches:' -ForegroundColor Cyan
+    for ($i = 0; $i -lt $branches.Count; $i++) {
+        $marker = if ($branches[$i] -eq $current) { '*' } else { ' ' }
+        Write-Host ("  {0} {1}) {2}" -f $marker, ($i + 1), $branches[$i])
+    }
+    Write-Host ''
+    Write-Host 'Enter a number to switch to a local branch, or type a branch name' -ForegroundColor DarkGray
+    Write-Host '(a remote branch name like origin/foo will create a tracking branch). Blank to cancel.' -ForegroundColor DarkGray
+
+    $answer = Read-Host 'Switch to'
+    if ([string]::IsNullOrWhiteSpace($answer)) {
+        Write-Host 'Cancelled.' -ForegroundColor Yellow
+        return
+    }
+
+    $target = $answer.Trim()
+    $index = 0
+    if ([int]::TryParse($target, [ref] $index) -and $index -ge 1 -and $index -le $branches.Count) {
+        $target = $branches[$index - 1]
+    }
+
+    if ($target -match '^(?:remotes/)?[^/]+/(.+)$' -and (@($branches) -notcontains $target)) {
+        $localName = $Matches[1]
+        Write-Host "Creating local branch '$localName' tracking '$target'..." -ForegroundColor Cyan
+        Invoke-SkyFireGitCommand -Config $Config -GitArgs @('checkout', '-b', $localName, '--track', $target) | Out-Null
+    }
+    else {
+        Invoke-SkyFireGitCommand -Config $Config -GitArgs @('checkout', $target) | Out-Null
+    }
+
+    $now = Get-SkyFireCurrentBranch -Config $Config
+    Write-Host "Current branch: $now" -ForegroundColor Green
+}
+
+function Show-SkyFireGitStashMenu {
+    param([hashtable] $Config)
+
+    while ($true) {
+        Write-Host ''
+        Write-Host '--- Git Stash ---' -ForegroundColor Cyan
+        Write-Host ' 1) List stashes'
+        Write-Host ' 2) Stash changes            (git stash push)'
+        Write-Host ' 3) Stash including untracked (git stash push -u)'
+        Write-Host ' 4) Apply latest stash        (keep in list)'
+        Write-Host ' 5) Pop latest stash          (apply + remove)'
+        Write-Host ' 6) Show latest stash diff'
+        Write-Host ' 7) Drop latest stash'
+        Write-Host ' 0) Back'
+        Write-Host ''
+
+        $choice = Read-Host 'Select an option'
+        switch ($choice) {
+            '1' { Invoke-SkyFireGitCommand -Config $Config -GitArgs @('stash', 'list') | Out-Null }
+            '2' {
+                $message = Read-Host 'Optional stash message (blank for none)'
+                if ([string]::IsNullOrWhiteSpace($message)) {
+                    Invoke-SkyFireGitCommand -Config $Config -GitArgs @('stash', 'push') | Out-Null
+                }
+                else {
+                    Invoke-SkyFireGitCommand -Config $Config -GitArgs @('stash', 'push', '-m', $message) | Out-Null
+                }
+            }
+            '3' {
+                $message = Read-Host 'Optional stash message (blank for none)'
+                if ([string]::IsNullOrWhiteSpace($message)) {
+                    Invoke-SkyFireGitCommand -Config $Config -GitArgs @('stash', 'push', '-u') | Out-Null
+                }
+                else {
+                    Invoke-SkyFireGitCommand -Config $Config -GitArgs @('stash', 'push', '-u', '-m', $message) | Out-Null
+                }
+            }
+            '4' { Invoke-SkyFireGitCommand -Config $Config -GitArgs @('stash', 'apply') | Out-Null }
+            '5' { Invoke-SkyFireGitCommand -Config $Config -GitArgs @('stash', 'pop') | Out-Null }
+            '6' { Invoke-SkyFireGitCommand -Config $Config -GitArgs @('stash', 'show', '-p') | Out-Null }
+            '7' {
+                $confirm = Read-Host 'Drop the latest stash? This cannot be undone. [y/N]'
+                if ($confirm -match '^(y|yes)$') {
+                    Invoke-SkyFireGitCommand -Config $Config -GitArgs @('stash', 'drop') | Out-Null
+                }
+                else {
+                    Write-Host 'Cancelled.' -ForegroundColor Yellow
+                }
+            }
+            '0' { return }
+            default { Write-Host 'Invalid choice.' -ForegroundColor Yellow }
+        }
+    }
+}
+
+function Show-SkyFireGitMenu {
+    param([ref] $Config)
+
+    while ($true) {
+        Update-SkyFireRuntimeConfig -Config $Config -AnnounceChanges | Out-Null
+        $current = Get-SkyFireCurrentBranch -Config $Config.Value
+
+        Write-Host ''
+        Write-Host '========================================' -ForegroundColor Cyan
+        Write-Host ' Dev Tools / Git Commands' -ForegroundColor Cyan
+        Write-Host '========================================' -ForegroundColor Cyan
+        Write-Host " Repo:   $($Config.Value.SourceDir)"
+        Write-Host " Branch: $current"
+        Write-Host '----------------------------------------'
+        Write-Host ' 1) Status              (git status)'
+        Write-Host ' 2) List branches       (local + remote)'
+        Write-Host ' 3) Switch branch'
+        Write-Host ' 4) Stash menu'
+        Write-Host ' 5) Fetch               (git fetch --all --prune)'
+        Write-Host ' 6) Recent log          (last 15 commits)'
+        Write-Host ' 0) Back to main menu'
+        Write-Host ''
+
+        $choice = Read-Host 'Select an option'
+        switch ($choice) {
+            '1' { Invoke-SkyFireMenuAction -Config $Config -ActionName 'Git status' -ActionBlock { Invoke-SkyFireGitCommand -Config $Config.Value -GitArgs @('status') | Out-Null } }
+            '2' { Invoke-SkyFireMenuAction -Config $Config -ActionName 'Git branches' -ActionBlock { Show-SkyFireGitBranches -Config $Config.Value } }
+            '3' { Invoke-SkyFireMenuAction -Config $Config -ActionName 'Git switch branch' -ActionBlock { Switch-SkyFireGitBranch -Config $Config.Value } }
+            '4' { Invoke-SkyFireMenuAction -Config $Config -ActionName 'Git stash' -ActionBlock { Show-SkyFireGitStashMenu -Config $Config.Value } }
+            '5' { Invoke-SkyFireMenuAction -Config $Config -ActionName 'Git fetch' -ActionBlock { Invoke-SkyFireGitCommand -Config $Config.Value -GitArgs @('fetch', '--all', '--prune') | Out-Null } }
+            '6' { Invoke-SkyFireMenuAction -Config $Config -ActionName 'Git log' -ActionBlock { Invoke-SkyFireGitCommand -Config $Config.Value -GitArgs @('log', '--oneline', '--graph', '--decorate', '-n', '15') | Out-Null } }
+            '0' { return }
+            default { Write-Host 'Invalid choice.' -ForegroundColor Yellow }
+        }
+    }
+}
+
 function Show-SkyFireBuildMenu {
     $Config = Get-SkyFireBuildConfig
     $null = Update-SkyFireRuntimeConfig -Config ([ref]$Config)
@@ -523,6 +727,7 @@ function Show-SkyFireBuildMenu {
         Write-Host ' 7) Install configs   (.conf.dist -> .conf)'
         Write-Host ' 8) Show settings'
         Write-Host ' 9) Open local config (skyfire-build.config.ps1)'
+        Write-Host ' x) Dev tools / Git   (branches, switch, stash)'
         Write-Host ' 0) Exit'
         Write-Host ''
 
@@ -544,6 +749,7 @@ function Show-SkyFireBuildMenu {
             '7' { Invoke-SkyFireMenuAction -Config ([ref]$Config) -ActionBlock { Install-SkyFireDistConfigs -Config $Config } -ActionName 'Install configs' }
             '8' { Write-SkyFireBuildConfig -Config $Config }
             '9' { Invoke-SkyFireMenuAction -Config ([ref]$Config) -ActionName 'Open config' -ActionBlock { Open-SkyFireLocalConfig } }
+            'x' { Show-SkyFireGitMenu -Config ([ref]$Config) }
             '0' { return }
             default { Write-Host 'Invalid choice.' -ForegroundColor Yellow }
         }

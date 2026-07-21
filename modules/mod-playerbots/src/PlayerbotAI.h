@@ -30,6 +30,8 @@ public:
 private:
     // Behaviour steps (kept small and independent so strategies can be added).
     void HandlePendingInvites();
+    void HandleLfg();      // auto-respond to LFG role checks and proposals
+    uint8 ComputeLfgRole();
     bool HandleCombat();   // returns true if the bot is engaged (chasing a target)
     void HandleFollow();   // out of combat: stick with the group leader
     void TeleportToLeader(Player* leader);
@@ -47,6 +49,10 @@ private:
     // (which would restart the movement and cause stutter).
     uint64 _chaseGuid;
     uint64 _followGuid;
+
+    // LFG state, so we only answer a role check / proposal once each.
+    bool _lfgRoleResponded;
+    bool _lfgProposalResponded;
 };
 
 #endif // _SF_PLAYERBOT_AI_H

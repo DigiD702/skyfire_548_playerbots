@@ -25,11 +25,35 @@ This module is being ported in phases. What is present today:
   * `.playerbots summon` - teleport all of your grouped bots to you (in-game).
   * `.playerbots list` - list active bots.
   * `.playerbots reload` - reload config and the candidate bot pool.
+  * `.playerbots create` - run the bot auto-creator (see below).
+
+### Bot auto-creation
+
+The auto-creator provisions dedicated bot accounts and fills them with
+characters, so you do not have to create bot accounts/characters by hand. It is
+driven entirely by the `Playerbots.AutoCreate.*` keys and is **incremental and
+idempotent** - existing accounts and characters are reused, only the missing
+ones are created.
+
+* Accounts are named `<AccountPrefix><n>` (e.g. `RNDBOT1` .. `RNDBOTn`) up to
+  `Playerbots.AutoCreate.AccountCount`. New accounts get the realm's expansion
+  so every race/class is available.
+* Each account is filled to `Playerbots.AutoCreate.CharactersPerAccount`
+  characters. For each character the faction is chosen by `AlliancePct`, the role
+  by `TankPct` / `HealerPct` (remainder become DPS), and a class capable of that
+  role plus a valid race for the faction are selected. Characters are created at
+  `Playerbots.AutoCreate.Level`. Death Knights and neutral Pandaren are skipped.
+
+Run it on demand with `.playerbots create`, or set
+`Playerbots.AutoCreate.OnStartup = 1` to run it once when the world boots. Newly
+created characters are picked up by the random-bot pool automatically.
 
 What is **not** implemented yet (tracked in `PORTING.md`):
 
-* Bot AI, strategies, actions and triggers (bots currently just stand in world).
-* Random-bot pool and the automated LFG/LFR/RBG queue behaviour.
+* Talent/specialization and gear initialisation for created bots (they are
+  created blank at the configured level for now).
+* Bot AI strategies, actions and triggers beyond follow/assist/basic combat.
+* The automated LFG/LFR/RBG queue behaviour.
 
 To try it: set `Playerbots.Enable = 1`, then `.playerbots add <charname>` for a
 character that is offline. The bot appears in the world at its saved location.

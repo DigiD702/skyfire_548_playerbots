@@ -425,6 +425,9 @@ namespace lfg
         void UpdateBoot(uint64 guid, bool accept);
         /// Updates proposal to join dungeon with player answer
         void UpdateProposal(uint32 proposalId, uint64 guid, bool accept);
+        /// Finds an initiating proposal awaiting this player's answer (0 if none).
+        /// Used by the playerbots module so bots can auto-accept proposals.
+        uint32 GetActiveProposalIdForPlayer(uint64 guid) const;
         /// Updates the role check with player answer
         void UpdateRoleCheck(uint64 gguid, uint64 guid = 0, uint8 roles = PLAYER_ROLE_NONE);
         /// Sets player lfg roles
