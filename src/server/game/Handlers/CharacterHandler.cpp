@@ -41,6 +41,9 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 
+#include <chrono>
+#include <thread>
+
 class LoginQueryHolder : public SQLQueryHolder
 {
 private:
@@ -1764,6 +1767,50 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder* holder)
     sScriptMgr->OnPlayerLogin(pCurrChar, firstLogin);
     delete holder;
 }
+
+// Synchronously logs a character into the world through this (bot) session.
+// Mirrors HandlePlayerLoginOpcode but blocks for the login query holder instead
+// of relying on the asynchronous character-login callback, since bot sessions
+// are not driven by World::UpdateSessions.
+bool WorldSession::LoginBotCharacter(uint64 playerGuid)
+{
+    if (PlayerLoading() || GetPlayer())
+        return false;
+
+    m_playerLoading = true;
+
+    LoginQueryHolder* holder = new LoginQueryHolder(GetAccountId(), playerGuid);
+    if (!holder->Initialize())
+    {
+        delete holder;                                      // delete all unprocessed queries
+        m_playerLoading = false;
+        return false;
+    }
+
+    QueryResultHolderFuture future = CharacterDatabase.DelayQueryHolder((SQLQueryHolder*)holder);
+
+    // Block until the database worker has finished the holder. Keep the wait
+    // bounded so a stalled DB can never hang the world thread indefinitely.
+    uint32 waitedMs = 0;
+    while (!future.ready())
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (++waitedMs > 15000)                             // 15s safety timeout
+        {
+            SF_LOG_ERROR("misc", "LoginBotCharacter: timed out loading character (GUID: %u) for account %u.",
+                GUID_LOPART(playerGuid), GetAccountId());
+            m_playerLoading = false;
+            return false;
+        }
+    }
+
+    SQLQueryHolder* param = nullptr;
+    future.get(param);
+    HandlePlayerLogin((LoginQueryHolder*)param);            // sets m_playerLoading = false and deletes the holder
+
+    return GetPlayer() != nullptr;
+}
+
 void WorldSession::HandleSetLfgBonusFactionID(WorldPacket& recvData)
 {
     SF_LOG_DEBUG("network", "WORLD: Received CMSG_SET_LFG_BONUS_FACTION_ID");

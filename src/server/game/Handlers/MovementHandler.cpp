@@ -479,6 +479,40 @@ void WorldSession::HandleMoveTeleportAck(WorldPacket& recvPacket)
     GetPlayer()->ProcessDelayedOperations();
 }
 
+// Playerbots: a bot has no game client to send the teleport ack that normally
+// finalizes a pending near/far teleport, so the module drives completion here
+// right after Player::TeleportTo. Mirrors the two ack handlers above.
+bool WorldSession::FinalizeBotTeleport()
+{
+    if (!_player)
+        return false;
+
+    if (_player->IsBeingTeleportedFar())
+    {
+        HandleMoveWorldportAckOpcode();
+        return true;
+    }
+
+    if (_player->IsBeingTeleportedNear())
+    {
+        _player->SetSemaphoreTeleportNear(false);
+
+        WorldLocation const& dest = _player->GetTeleportDest();
+        _player->UpdatePosition(dest, true);
+
+        uint32 newzone, newarea;
+        _player->GetZoneAndAreaId(newzone, newarea);
+        _player->UpdateZone(newzone, newarea);
+
+        _player->ResummonPetTemporaryUnSummonedIfAny();
+        _player->GetBattlePetMgr()->ResummonLastBattlePet();
+        _player->ProcessDelayedOperations();
+        return true;
+    }
+
+    return false;
+}
+
 void WorldSession::HandleMovementOpcodes(WorldPacket& recvPacket)
 {
     uint16 opcode = recvPacket.GetOpcode();

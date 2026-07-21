@@ -1,0 +1,47 @@
+[worldserver]
+
+########################################
+# mod-playerbots configuration
+########################################
+#
+#    Playerbots.Enable
+#        Description: Master switch for the playerbots module.
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+
+Playerbots.Enable = 0
+
+#
+#    Playerbots.RandomBots.Enable
+#        Description: Allow the random-bot pool to populate the world with bots
+#                     used for testing LFG/LFR/RBG queues and open-world activity.
+#        Default:     0 - (Disabled)
+#                     1 - (Enabled)
+
+Playerbots.RandomBots.Enable = 0
+
+#
+#    Playerbots.RandomBots.MaxBots
+#        Description: Maximum number of random bots kept online at once.
+#        Default:     0
+
+Playerbots.RandomBots.MaxBots = 0
+
+#
+#    Playerbots.RandomBots.AccountPrefix
+#        Description: Only characters that belong to accounts whose username
+#                     starts with this prefix are eligible for the random-bot
+#                     pool. Create dedicated bot accounts (e.g. RNDBOT1, RNDBOT2)
+#                     so real player characters are never used as bots.
+#        Default:     "RNDBOT"
+
+Playerbots.RandomBots.AccountPrefix = "RNDBOT"
+
+#
+#    Playerbots.RandomBots.LoginInterval
+#        Description: Minimum time in milliseconds between random-bot logins.
+#                     Bots are spawned one at a time on this cadence so logins
+#                     are spread out instead of happening all at once.
+#        Default:     2000
+
+Playerbots.RandomBots.LoginInterval = 2000

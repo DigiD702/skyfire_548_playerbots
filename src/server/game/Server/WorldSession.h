@@ -302,6 +302,18 @@ public:
     void SetPlayer(Player* player);
     uint8 Expansion() const { return m_expansion; }
 
+    // Playerbots: a bot session has no network socket and is not tracked in
+    // World::m_sessions; it is owned and updated by the playerbots module.
+    void SetBot(bool on) { m_isBot = on; }
+    bool IsBot() const { return m_isBot; }
+    // Synchronously loads a character into the world through this session.
+    // Intended for bot sessions; runs on the caller's (world) thread.
+    bool LoginBotCharacter(uint64 playerGuid);
+    // Completes a pending near/far teleport immediately. Bots have no client to
+    // send the teleport ack, so the module calls this after Player::TeleportTo.
+    // Returns true if a teleport was finalized.
+    bool FinalizeBotTeleport();
+
     void InitWarden(SessionKey const&, std::string const& os);
 
     /// Session in auth.queue currently
@@ -1199,6 +1211,7 @@ private:
     bool m_playerLogout;                                // code processed in LogoutPlayer
     bool m_playerRecentlyLogout;
     bool m_playerSave;
+    bool m_isBot;                                       // socketless session owned by the playerbots module
     LocaleConstant m_sessionDbcLocale;
     LocaleConstant m_sessionDbLocaleIndex;
     uint32 m_latency;

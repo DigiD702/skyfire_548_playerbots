@@ -1714,6 +1714,9 @@ void Player::Update(uint32 p_time)
     //because we don't want player's ghost teleported from graveyard
     if (IsHasDelayedTeleport() && IsAlive())
         TeleportTo(m_teleport_dest, m_teleport_options);
+
+    // Per-tick script hook (used by the playerbots module to drive bot AI).
+    sScriptMgr->OnPlayerUpdate(this, p_time);
 }
 
 void Player::setDeathState(DeathState s)
@@ -21855,6 +21858,11 @@ void Player::ResetTimeSync()
 
 void Player::SendTimeSync()
 {
+    // Bots have no game client to answer time-sync requests; skip entirely so
+    // the anti-cheat timeout never triggers for them.
+    if (GetSession() && GetSession()->IsBot())
+        return;
+
     m_timeSyncQueue.push(m_movementCounter++);
 
     WorldPacket data(SMSG_TIME_SYNC_REQUEST, 4);
