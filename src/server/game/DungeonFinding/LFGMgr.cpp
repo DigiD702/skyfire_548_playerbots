@@ -471,6 +471,9 @@ namespace lfg
         }
 
         uint32 lastProposalId = m_lfgProposalId;
+        // Reservations are per-tick: clear them so backfill accounting starts fresh. Pending proposals
+        // from the previous tick have already been applied (members added) before we reach here.
+        ResetRaidFinderBackfillReservations();
         // Check if a proposal can be formed with the new groups being added
         for (LfgQueueContainer::iterator it = QueuesStore.begin(); it != QueuesStore.end(); ++it)
             if (uint8 newProposals = it->second.FindGroups())
@@ -1650,6 +1653,32 @@ namespace lfg
        @param[in]     victim Victim guid
        @param[in]     reason Kick reason
     */
+    /**
+       Returns how many AGREE votes are required to boot a player: a majority of the
+       current group members (floor(members/2) + 1). Scales with raid size so a 5-man
+       needs 3 and a 25-man Raid Finder needs 13.
+
+       @param[in]     gguid Group guid
+       @returns       Number of agree votes needed to pass a boot
+    */
+    uint8 LFGMgr::GetKickVotesNeeded(uint64 gguid)
+    {
+        uint8 members = 0;
+        LfgGroupDataContainer::const_iterator groupData = GroupsStore.find(gguid);
+        if (groupData != GroupsStore.end())
+            members = uint8(groupData->second.GetPlayers().size());
+
+        // Fall back to the real group roster if LFG tracking is unavailable
+        if (!members)
+            if (Group* group = sGroupMgr->GetGroupByGUID(GUID_LOPART(gguid)))
+                members = group->GetMembersCount();
+
+        if (members < 2)
+            return 1;
+
+        return uint8(members / 2 + 1);
+    }
+
     void LFGMgr::InitBoot(uint64 gguid, uint64 kicker, uint64 victim, std::string const& reason)
     {
         LfgGroupDataContainer::const_iterator groupData = GroupsStore.find(gguid);
@@ -1741,8 +1770,10 @@ namespace lfg
             }
         }
 
+        uint8 votesNeeded = GetKickVotesNeeded(gguid);
+
         // if we don't have enough votes (agree or deny) do nothing
-        if (agreeNum < LFG_GROUP_KICK_VOTES_NEEDED && (votesNum - agreeNum) < LFG_GROUP_KICK_VOTES_NEEDED)
+        if (agreeNum < votesNeeded && (votesNum - agreeNum) < votesNeeded)
             return;
 
         // Send update info to all players
@@ -1757,7 +1788,7 @@ namespace lfg
 
         SetState(gguid, LFG_STATE_DUNGEON);
         SetVoteKick(gguid, false);
-        if (agreeNum == LFG_GROUP_KICK_VOTES_NEEDED)           // Vote passed - Kick player
+        if (agreeNum >= votesNeeded)                           // Vote passed - Kick player
         {
             if (Group* group = sGroupMgr->GetGroupByGUID(GUID_LOPART(gguid)))
                 Player::RemoveFromGroup(group, boot.victim, GROUP_REMOVEMETHOD_KICK_LFG);
@@ -1955,6 +1986,9 @@ namespace lfg
 
         SetState(gguid, LFG_STATE_FINISHED_DUNGEON);
 
+        // The raid is complete; stop pulling replacements from the queue.
+        DeregisterRaidFinderBackfill(gguid);
+
         const LfgGuidSet& players = GetPlayers(gguid);
         for (LfgGuidSet::const_iterator it = players.begin(); it != players.end(); ++it)
         {
@@ -2088,6 +2122,50 @@ namespace lfg
     {
         LFGDungeonData const* dungeon = GetLFGDungeon(dungeonId);
         return dungeon && IsRaidDungeon(*dungeon);
+    }
+
+    void LFGMgr::RegisterRaidFinderBackfill(uint64 gguid, uint32 dungeonId)
+    {
+        if (!gguid || !IsRaidFinderDungeon(dungeonId))
+            return;
+
+        RaidFinderBackfillStore[gguid].dungeonId = dungeonId;
+        SF_LOG_DEBUG("lfg.raidfinder.backfill", "Registered raid %u for Raid Finder backfill on dungeon %u.",
+            GUID_LOPART(gguid), dungeonId);
+    }
+
+    void LFGMgr::DeregisterRaidFinderBackfill(uint64 gguid)
+    {
+        if (RaidFinderBackfillStore.erase(gguid))
+            SF_LOG_DEBUG("lfg.raidfinder.backfill", "Deregistered raid %u from Raid Finder backfill.", GUID_LOPART(gguid));
+    }
+
+    std::vector<std::pair<uint64, uint32>> LFGMgr::GetRaidFinderBackfillGroups() const
+    {
+        std::vector<std::pair<uint64, uint32>> result;
+        result.reserve(RaidFinderBackfillStore.size());
+        for (std::map<uint64, RaidFinderBackfillInfo>::const_iterator it = RaidFinderBackfillStore.begin(); it != RaidFinderBackfillStore.end(); ++it)
+            result.push_back(std::make_pair(it->first, it->second.dungeonId));
+        return result;
+    }
+
+    uint32 LFGMgr::GetRaidFinderBackfillReserved(uint64 gguid) const
+    {
+        std::map<uint64, RaidFinderBackfillInfo>::const_iterator it = RaidFinderBackfillStore.find(gguid);
+        return it != RaidFinderBackfillStore.end() ? it->second.reserved : 0;
+    }
+
+    void LFGMgr::ReserveRaidFinderBackfillSlots(uint64 gguid, uint32 slots)
+    {
+        std::map<uint64, RaidFinderBackfillInfo>::iterator it = RaidFinderBackfillStore.find(gguid);
+        if (it != RaidFinderBackfillStore.end())
+            it->second.reserved += slots;
+    }
+
+    void LFGMgr::ResetRaidFinderBackfillReservations()
+    {
+        for (std::map<uint64, RaidFinderBackfillInfo>::iterator it = RaidFinderBackfillStore.begin(); it != RaidFinderBackfillStore.end(); ++it)
+            it->second.reserved = 0;
     }
 
     LfgState LFGMgr::GetState(uint64 guid)
@@ -2227,8 +2305,14 @@ namespace lfg
                     lockStatus = LFG_LOCKSTATUS_INSUFFICIENT_EXPANSION;
                 else if (DisableMgr::IsDisabledFor(DISABLE_TYPE_MAP, dungeon->map, player))
                     lockStatus = LFG_LOCKSTATUS_RAID_LOCKED;
-                else if (dungeon->difficulty > DIFFICULTY_NORMAL && player->GetBoundInstance(dungeon->map, DifficultyID(dungeon->difficulty)))
-                    lockStatus = LFG_LOCKSTATUS_RAID_LOCKED;
+                else if (dungeon->difficulty > DIFFICULTY_NORMAL)
+                {
+                    // Raid Finder only locks a player once they hold a permanent save (earned by
+                    // killing a boss). The temporary bind created on entry must not block requeueing.
+                    InstancePlayerBind* bind = player->GetBoundInstance(dungeon->map, DifficultyID(dungeon->difficulty));
+                    if (bind && (bind->perm || !IsRaidFinderDungeon(dungeon->id)))
+                        lockStatus = LFG_LOCKSTATUS_RAID_LOCKED;
+                }
                 else if (dungeon->minlevel > level)
                     lockStatus = LFG_LOCKSTATUS_TOO_LOW_LEVEL;
                 else if (dungeon->maxlevel < level)

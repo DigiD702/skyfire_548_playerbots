@@ -345,6 +345,21 @@ namespace lfg
         /// Check whether the dungeon id belongs to a Raid Finder queue entry
         bool IsRaidFinderDungeon(uint32 dungeonId);
 
+        // Raid Finder auto-backfill: track under-strength LFR raids so the queue accumulator can
+        // pull matching queued players into them without a prompt (retail-style silent backfill).
+        /// Mark a Raid Finder raid as needing more players (dungeonId is the LFG dungeon id)
+        void RegisterRaidFinderBackfill(uint64 gguid, uint32 dungeonId);
+        /// Stop backfilling a Raid Finder raid (full, disbanded, or finished)
+        void DeregisterRaidFinderBackfill(uint64 gguid);
+        /// Snapshot of raids awaiting backfill as (group guid -> dungeon id) pairs
+        std::vector<std::pair<uint64, uint32>> GetRaidFinderBackfillGroups() const;
+        /// Player-slots already committed to a raid by pending backfill proposals this Update tick
+        uint32 GetRaidFinderBackfillReserved(uint64 gguid) const;
+        /// Reserve extra player-slots so parallel team queues do not overfill the same raid in one tick
+        void ReserveRaidFinderBackfillSlots(uint64 gguid, uint32 slots);
+        /// Clear all pending reservations (called once per Update before matching runs)
+        void ResetRaidFinderBackfillReservations();
+
         // cs_lfg
         /// Get current player roles
         uint8 GetRoles(uint64 guid);
@@ -402,6 +417,8 @@ namespace lfg
         void TeleportPlayer(Player* player, bool out, bool fromOpcode = false, bool forceChangeInstance = false);
         /// Teleport online members of an LFG dungeon group back to their saved entry points
         void TeleportDungeonGroupOut(Group* group);
+        /// Number of agree votes required to boot a player (majority of current members)
+        uint8 GetKickVotesNeeded(uint64 gguid);
         /// Inits new proposal to boot a player
         void InitBoot(uint64 gguid, uint64 kguid, uint64 vguid, std::string const& reason);
         /// Updates player boot proposal with new player answer
@@ -500,6 +517,14 @@ namespace lfg
         LfgPlayerBootContainer BootsStore;                 ///< Current player kicks
         LfgPlayerDataContainer PlayersStore;               ///< Player data
         LfgGroupDataContainer GroupsStore;                 ///< Group data
+
+        struct RaidFinderBackfillInfo
+        {
+            RaidFinderBackfillInfo() : dungeonId(0), reserved(0) { }
+            uint32 dungeonId;                              ///< LFG dungeon id the raid is running
+            uint32 reserved;                               ///< Player-slots committed by pending proposals this tick
+        };
+        std::map<uint64, RaidFinderBackfillInfo> RaidFinderBackfillStore; ///< Under-strength LFR raids awaiting backfill
     };
 
 } // namespace lfg

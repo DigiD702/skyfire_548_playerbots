@@ -19982,7 +19982,10 @@ PartyResult Player::CanUninviteFromGroup() const
         if (sLFGMgr->IsVoteKickActive(gguid))
             return PartyResult::ERR_PARTY_LFG_BOOT_IN_PROGRESS;
 
-        if (grp->GetMembersCount() <= lfg::LFG_GROUP_KICK_VOTES_NEEDED)
+        // A boot uses a majority vote (floor(members/2)+1) and the victim auto-denies, so at
+        // least 3 members are required for a vote to be able to pass. This is a fixed floor and
+        // must not scale with raid size, otherwise large Raid Finder groups could never boot.
+        if (grp->GetMembersCount() < 3)
             return PartyResult::ERR_PARTY_LFG_BOOT_TOO_FEW_PLAYERS;
 
         if (state == lfg::LFG_STATE_FINISHED_DUNGEON)

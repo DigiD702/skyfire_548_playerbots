@@ -7,6 +7,7 @@
 #include "DBCStores.h"
 #include "DBCStructure.h"
 #include "Group.h"
+#include "GroupMgr.h"
 #include "LFGMgr.h"
 #include "LFGQueue.h"
 #include "Log.h"
@@ -463,7 +464,8 @@ namespace lfg
 
        Raid Finder cannot use the recursive 5-man matcher (bounded by MAXGROUPSIZE), so instead we
        greedily gather queued entries for each raid-finder dungeon, honoring the 2 tank / 6 heal /
-       17 dps caps, and form an auto-accepted proposal once the configured minimum size is reached.
+       17 dps caps, and form a proposal once the configured minimum size is reached. Players accept
+       the proposal dialog (no auto-accept) before being teleported in.
 
        @return number of proposals created
     */
@@ -536,11 +538,12 @@ namespace lfg
             if (selectedCount < minSize)
                 continue;
 
-            // Build an auto-accepted raid proposal
+            // Build the raid proposal. Like normal LFG, each player must accept via the proposal
+            // dialog before being teleported in (no silent auto-accept/auto-port).
             LfgProposal proposal;
             proposal.queues = selectedQueues;
             proposal.isNew = true;
-            proposal.autoAccept = true;
+            proposal.autoAccept = false;
             proposal.cancelTime = time(NULL) + LFG_TIME_PROPOSAL;
             proposal.state = LFG_PROPOSAL_INITIATING;
             proposal.leader = 0;
@@ -578,6 +581,145 @@ namespace lfg
             ++proposals;
 
             SF_LOG_DEBUG("lfg.queue.match.raidfinder", "Raid Finder MATCH! Dungeon %u formed with %u players", dungeonId, selectedCount);
+        }
+
+        proposals += FindRaidFinderBackfill(candidatesByDungeon, consumedGuids);
+
+        return proposals;
+    }
+
+    /**
+       Silently backfill under-strength Raid Finder raids from this queue's candidates.
+
+       For each raid registered as needing players (via LFGMgr), pull queued entries whose roles fit
+       within the remaining 2 tank / 6 heal / 17 dps caps and build a join-existing proposal
+       (proposal.group = raid guid, isNew = false) that the new players accept before joining.
+       Reservations guard against two team queues overfilling the same raid within a single Update tick.
+
+       @param[in]     candidatesByDungeon Queued raid-finder entries bucketed by dungeon id
+       @param[in,out] consumedGuids       Guids already placed into a proposal this pass
+       @return number of proposals created
+    */
+    uint8 LFGQueue::FindRaidFinderBackfill(std::map<uint32, LfgGuidList>& candidatesByDungeon, LfgGuidSet& consumedGuids)
+    {
+        uint8 proposals = 0;
+
+        std::vector<std::pair<uint64, uint32>> backfillRaids = sLFGMgr->GetRaidFinderBackfillGroups();
+        for (std::vector<std::pair<uint64, uint32>>::const_iterator itRaid = backfillRaids.begin(); itRaid != backfillRaids.end(); ++itRaid)
+        {
+            uint64 raidGuid = itRaid->first;
+            uint32 dungeonId = itRaid->second;
+
+            std::map<uint32, LfgGuidList>::iterator itCandidates = candidatesByDungeon.find(dungeonId);
+            if (itCandidates == candidatesByDungeon.end())
+                continue;                                      // no queued players for this raid's dungeon in this queue
+
+            Group* raid = sGroupMgr->GetGroupByGUID(GUID_LOPART(raidGuid));
+            if (!raid || !raid->isLFGGroup() || !raid->isRaidGroup() || sLFGMgr->GetState(raidGuid) != LFG_STATE_DUNGEON)
+            {
+                sLFGMgr->DeregisterRaidFinderBackfill(raidGuid);
+                continue;
+            }
+
+            // Account for members already committed by pending proposals this tick to avoid overfilling
+            uint32 filledCount = raid->GetMembersCount() + sLFGMgr->GetRaidFinderBackfillReserved(raidGuid);
+            if (filledCount >= LFG_RF_GROUP_SIZE)
+            {
+                sLFGMgr->DeregisterRaidFinderBackfill(raidGuid);
+                continue;
+            }
+
+            // Seed the role map with the raid's current members so caps are honored across the whole raid
+            LfgRolesMap selectedRoles;
+            for (Group::MemberSlot const& slot : raid->GetMemberSlots())
+            {
+                uint8 role = slot.roles & (PLAYER_ROLE_TANK | PLAYER_ROLE_HEALER | PLAYER_ROLE_DAMAGE);
+                selectedRoles[slot.guid] = role ? role : uint8(PLAYER_ROLE_DAMAGE);
+            }
+
+            LfgGuidList const& candidates = itCandidates->second;
+            LfgGuidList selectedQueues;
+            std::map<uint64, uint64> playerGroups;             // player guid -> original group guid (0 if solo)
+            LfgGuidSet addedPlayers;                            // new players pulled into the raid
+
+            for (LfgGuidList::const_iterator itGuid = candidates.begin(); itGuid != candidates.end() && filledCount < LFG_RF_GROUP_SIZE; ++itGuid)
+            {
+                if (consumedGuids.find(*itGuid) != consumedGuids.end())
+                    continue;
+
+                LfgQueueDataContainer::const_iterator itData = QueueDataStore.find(*itGuid);
+                if (itData == QueueDataStore.end())
+                    continue;
+
+                LfgRolesMap const& entryRoles = itData->second.roles;
+                if (entryRoles.empty())
+                    continue;
+
+                if (filledCount + entryRoles.size() > LFG_RF_GROUP_SIZE)
+                    continue;
+
+                // Trial-fit this entry's players alongside the existing raid honoring the raid role caps
+                LfgRolesMap trialRoles = selectedRoles;
+                for (LfgRolesMap::const_iterator itRole = entryRoles.begin(); itRole != entryRoles.end(); ++itRole)
+                    trialRoles[itRole->first] = itRole->second;
+
+                if (!LFGMgr::CheckRaidFinderRoles(trialRoles, LFG_RF_TANKS_NEEDED, LFG_RF_HEALERS_NEEDED, LFG_RF_DPS_NEEDED))
+                    continue;
+
+                selectedRoles.swap(trialRoles);
+                selectedQueues.push_back(*itGuid);
+                filledCount += entryRoles.size();
+
+                uint64 groupGuid = IS_GROUP_GUID(*itGuid) ? *itGuid : 0;
+                for (LfgRolesMap::const_iterator itRole = entryRoles.begin(); itRole != entryRoles.end(); ++itRole)
+                {
+                    playerGroups[itRole->first] = groupGuid;
+                    addedPlayers.insert(itRole->first);
+                }
+            }
+
+            if (selectedQueues.empty())
+                continue;                                      // nothing matched this pass; keep the raid registered
+
+            // Build a join-existing proposal containing only the new players. They must accept the
+            // proposal dialog before being pulled into the raid (matches normal LFG behavior).
+            LfgProposal proposal;
+            proposal.queues = selectedQueues;
+            proposal.isNew = false;
+            proposal.autoAccept = false;
+            proposal.cancelTime = time(NULL) + LFG_TIME_PROPOSAL;
+            proposal.state = LFG_PROPOSAL_INITIATING;
+            proposal.leader = raid->GetLeaderGUID();
+            proposal.dungeonId = dungeonId;
+            proposal.group = raidGuid;
+
+            for (LfgRolesMap::const_iterator itRole = selectedRoles.begin(); itRole != selectedRoles.end(); ++itRole)
+            {
+                if (addedPlayers.find(itRole->first) == addedPlayers.end())
+                    continue;                                  // existing raid member; leave untouched
+
+                LfgProposalPlayer& data = proposal.players[itRole->first];
+                data.role = itRole->second;
+                std::map<uint64, uint64>::const_iterator itGroup = playerGroups.find(itRole->first);
+                data.group = itGroup != playerGroups.end() ? itGroup->second : 0;
+            }
+
+            for (LfgGuidList::const_iterator itGuid = selectedQueues.begin(); itGuid != selectedQueues.end(); ++itGuid)
+            {
+                RemoveFromNewQueue(*itGuid);
+                RemoveFromCurrentQueue(*itGuid);
+                consumedGuids.insert(*itGuid);
+            }
+
+            sLFGMgr->ReserveRaidFinderBackfillSlots(raidGuid, uint32(addedPlayers.size()));
+            sLFGMgr->AddProposal(proposal);
+            ++proposals;
+
+            if (filledCount >= LFG_RF_GROUP_SIZE)
+                sLFGMgr->DeregisterRaidFinderBackfill(raidGuid);
+
+            SF_LOG_DEBUG("lfg.queue.match.raidfinder", "Raid Finder BACKFILL! Raid %u dungeon %u pulled %u players (now %u)",
+                GUID_LOPART(raidGuid), dungeonId, uint32(addedPlayers.size()), filledCount);
         }
 
         return proposals;

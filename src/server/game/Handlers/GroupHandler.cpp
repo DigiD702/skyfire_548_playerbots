@@ -495,8 +495,15 @@ void WorldSession::HandleGroupDisbandOpcode(WorldPacket& /*recvData*/)
         lfg::LfgState const state = sLFGMgr->GetState(grp->GetGUID());
         if (state == lfg::LFG_STATE_DUNGEON || state == lfg::LFG_STATE_FINISHED_DUNGEON)
         {
-            grp->Disband();
-            return;
+            // Raid Finder: leaving removes only this player and keeps the raid intact for everyone
+            // else (the slot is auto-backfilled); disbanding a 25-man raid over one leaver is wrong.
+            // Non-raid-finder LFG keeps its existing disband-on-leave behavior.
+            uint32 const dungeonId = sLFGMgr->GetDungeon(grp->GetGUID(), true);
+            if (!(grp->isRaidGroup() && sLFGMgr->IsRaidFinderDungeon(dungeonId)))
+            {
+                grp->Disband();
+                return;
+            }
         }
     }
 

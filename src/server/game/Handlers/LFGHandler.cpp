@@ -189,6 +189,18 @@ void WorldSession::HandleLfgLeaveOpcode(WorldPacket& recvData)
 
     if (disbandDungeonGroup)
     {
+        // Raid Finder: one player leaving must remove only that player and keep the raid intact for
+        // everyone else (the vacated slot is auto-backfilled). Disbanding a 25-man raid because one
+        // person pressed Leave is wrong. RemoveMember fires the LFG hook (teleport out, clear the
+        // leaver's panel, apply deserter, register backfill) and only disbands when the last member
+        // leaves. Non-raid-finder LFG keeps its existing disband-on-leave behavior.
+        uint32 const dungeonId = sLFGMgr->GetDungeon(groupGuid, true);
+        if (group->isRaidGroup() && sLFGMgr->IsRaidFinderDungeon(dungeonId))
+        {
+            Player::RemoveFromGroup(group, guid, GROUP_REMOVEMETHOD_LEAVE);
+            return;
+        }
+
         group->Disband();
         return;
     }
@@ -867,6 +879,8 @@ void WorldSession::SendLfgPlayerReward(lfg::LfgPlayerRewardData const& rewardDat
 void WorldSession::SendLfgBootProposalUpdate(lfg::LfgPlayerBoot const& boot)
 {
     uint64 guid = GetPlayer()->GetGUID();
+    uint64 gguid = GetPlayer()->GetGroup() ? GetPlayer()->GetGroup()->GetGUID() : 0;
+    uint8 votesNeeded = sLFGMgr->GetKickVotesNeeded(gguid);
     lfg::LfgAnswerContainer::const_iterator itVote = boot.votes.find(guid);
     lfg::LfgAnswer playerVote = itVote != boot.votes.end() ? itVote->second : lfg::LFG_ANSWER_PENDING;
     uint8 votesNum = 0;
@@ -887,7 +901,7 @@ void WorldSession::SendLfgBootProposalUpdate(lfg::LfgPlayerBoot const& boot)
         "needed: %u - reason %s",
         GetPlayerInfo().c_str(), uint8(boot.inProgress), uint8(playerVote != lfg::LFG_ANSWER_PENDING),
         uint8(playerVote == lfg::LFG_ANSWER_AGREE), GUID_LOPART(boot.victim), votesNum, agreeNum,
-        secsleft, lfg::LFG_GROUP_KICK_VOTES_NEEDED, boot.reason.c_str());
+        secsleft, votesNeeded, boot.reason.c_str());
     WorldPacket data(SMSG_LFD_BOOT_PROPOSAL_UPDATE, 1 + 1 + 1 + 1 + 8 + 4 + 4 + 4 + 4 + boot.reason.length());
 
     ObjectGuid TargetGUID = boot.victim;
@@ -895,7 +909,7 @@ void WorldSession::SendLfgBootProposalUpdate(lfg::LfgPlayerBoot const& boot)
     data.WriteBit(boot.reason.size() > 0);
     data.WriteGuidMask(TargetGUID, 3);
     data.WriteBit(playerVote != lfg::LFG_ANSWER_PENDING);        // MyVoteCompleted
-    data.WriteBit(agreeNum >= lfg::LFG_GROUP_KICK_VOTES_NEEDED); // VotePassed
+    data.WriteBit(agreeNum >= votesNeeded);                     // VotePassed
     data.WriteBit(playerVote == lfg::LFG_ANSWER_AGREE);          // MyVote
     data.WriteGuidMask(TargetGUID, 6);
     if (boot.reason.size() > 0)
@@ -908,7 +922,7 @@ void WorldSession::SendLfgBootProposalUpdate(lfg::LfgPlayerBoot const& boot)
     data.FlushBits();
 
     data.WriteGuidBytes(TargetGUID, 2, 4, 3, 6);
-    data << uint32(lfg::LFG_GROUP_KICK_VOTES_NEEDED);            // VotesNeeded
+    data << uint32(votesNeeded);                                 // VotesNeeded
     data << uint32(secsleft);                                    // TimeLeft
     if (boot.reason.size() > 0)
     {

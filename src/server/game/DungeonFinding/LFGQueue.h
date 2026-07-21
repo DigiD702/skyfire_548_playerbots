@@ -121,6 +121,7 @@ namespace lfg
 
         // Raid Finder uses a dedicated accumulator instead of the 5-man combinatorial matcher
         uint8 FindRaidFinderGroups();
+        uint8 FindRaidFinderBackfill(std::map<uint32, LfgGuidList>& candidatesByDungeon, LfgGuidSet& consumedGuids);
         bool IsRaidFinderQueueEntry(uint64 guid) const;
 
         // Queue

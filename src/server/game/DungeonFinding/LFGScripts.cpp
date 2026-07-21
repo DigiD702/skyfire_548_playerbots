@@ -235,22 +235,35 @@ namespace lfg
                 // Update internal kick cooldown of kicked
 
             player->GetSession()->SendLfgUpdateStatus(LfgUpdateData(LFG_UPDATETYPE_LEADER_UNK1), true);
+            // Reset the client LFG/Raid Finder panel so the player can queue again immediately
+            // after leaving; otherwise the raid-finder UI stays stuck thinking they are in the raid.
+            player->GetSession()->SendLfgClearStatus();
             if (isLFG && player->GetMap()->IsInstance())            // Teleport player out the dungeon
                 sLFGMgr->TeleportPlayer(player, true);
         }
 
         if (isLFG && state != LFG_STATE_FINISHED_DUNGEON) // Need more players to finish the dungeon
         {
-            uint64 leaderGuid = sLFGMgr->GetLeader(gguid);
-            Player* leader = ObjectAccessor::FindPlayer(leaderGuid);
-            if (!leader)
+            uint32 dungeonId = sLFGMgr->GetDungeon(gguid, true);
+            if (group->isRaidGroup() && sLFGMgr->IsRaidFinderDungeon(dungeonId) && group->GetMembersCount() > 1)
             {
-                leaderGuid = group->GetLeaderGUID();
-                leader = ObjectAccessor::FindPlayer(leaderGuid);
+                // Raid Finder: silently backfill the raid from the queue (retail-style) instead of
+                // prompting the leader. The queue accumulator pulls matching queued players in.
+                sLFGMgr->RegisterRaidFinderBackfill(gguid, dungeonId);
             }
+            else
+            {
+                uint64 leaderGuid = sLFGMgr->GetLeader(gguid);
+                Player* leader = ObjectAccessor::FindPlayer(leaderGuid);
+                if (!leader)
+                {
+                    leaderGuid = group->GetLeaderGUID();
+                    leader = ObjectAccessor::FindPlayer(leaderGuid);
+                }
 
-            if (leader)
-                leader->GetSession()->SendLfgOfferContinue(sLFGMgr->GetDungeon(gguid, false));
+                if (leader)
+                    leader->GetSession()->SendLfgOfferContinue(sLFGMgr->GetDungeon(gguid, false));
+            }
         }
     }
 
@@ -261,6 +274,8 @@ namespace lfg
 
         uint64 gguid = group->GetGUID();
         SF_LOG_DEBUG("lfg", "LFGScripts::OnDisband [" UI64FMTD "]", gguid);
+
+        sLFGMgr->DeregisterRaidFinderBackfill(gguid);
 
         if (group->isLFGGroup())
         {
