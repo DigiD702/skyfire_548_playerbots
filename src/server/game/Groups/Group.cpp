@@ -188,6 +188,30 @@ void Group::LoadMemberFromDB(uint32 guidLow, uint8 memberFlags, uint8 subgroup, 
         return;
     }
 
+    // Defensive: a raid subgroup only holds MAXGROUPSIZE members. If the stored roster is corrupt
+    // (e.g. an LFG raid saved with everyone in subgroup 0), reassign this member to the first
+    // subgroup with a free slot so the raid roster stays valid and does not crash the client.
+    if (m_subGroupsCounts && (subgroup >= MAX_RAID_SUBGROUPS || m_subGroupsCounts[subgroup] >= MAXGROUPSIZE))
+    {
+        uint8 freeGroup = 0;
+        for (; freeGroup < MAX_RAID_SUBGROUPS; ++freeGroup)
+            if (m_subGroupsCounts[freeGroup] < MAXGROUPSIZE)
+                break;
+
+        if (freeGroup < MAX_RAID_SUBGROUPS && freeGroup != subgroup)
+        {
+            SF_LOG_ERROR("misc", "Group::LoadMemberFromDB: member %u in group %u had invalid subgroup %u; reassigning to %u.",
+                guidLow, m_dbStoreId, subgroup, freeGroup);
+
+            subgroup = freeGroup;
+
+            PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_GROUP_MEMBER_SUBGROUP);
+            stmt->setUInt8(0, subgroup);
+            stmt->setUInt32(1, guidLow);
+            CharacterDatabase.Execute(stmt);
+        }
+    }
+
     member.group = subgroup;
     member.flags = memberFlags;
     member.roles = roles;
@@ -511,7 +535,12 @@ bool Group::RemoveMember(uint64 guid, const RemoveMethod& method /*= GROUP_REMOV
     // remove member and change leader (if need) only if strong more 2 members _before_ member remove (BG/BF allow 1 member group)
     if (GetMembersCount() > ((isBGGroup() || isLFGGroup() || isBFGroup()) ? 1u : 2u))
     {
-        Player* player = ObjectAccessor::FindPlayer(guid);
+        // LFG scripts (OnGroupRemoveMember above) may far-teleport the leaver out of the
+        // instance, which removes them from the world. FindPlayer() ignores out-of-world
+        // players, so use the in-or-out-of-world lookup to still clear their group pointer
+        // and update their client; otherwise m_group dangles (logout crash) and the client
+        // stays stuck showing the old party.
+        Player* player = ObjectAccessor::FindPlayerInOrOutOfWorld(guid);
         if (player)
         {
             // Battleground group handling
@@ -699,12 +728,14 @@ void Group::ChangeLeader(uint64 newLeaderGuid)
 
 void Group::Disband(bool hideDestroy /* = false */)
 {
+    bool const wasLFGGroup = isLFGGroup();
+
     sScriptMgr->OnGroupDisband(this);
 
     Player* player;
     for (member_citerator citr = m_memberSlots.begin(); citr != m_memberSlots.end(); ++citr)
     {
-        player = ObjectAccessor::FindPlayer(citr->guid);
+        player = ObjectAccessor::FindPlayerInOrOutOfWorld(citr->guid);
         if (!player)
             continue;
 
@@ -722,7 +753,7 @@ void Group::Disband(bool hideDestroy /* = false */)
         }
 
         // quest related GO state dependent from raid membership
-        if (isRaidGroup())
+        if (isRaidGroup() && player->IsInWorld())
             player->UpdateForQuestWorldObjects();
 
         if (!player->GetSession())
@@ -740,6 +771,9 @@ void Group::Disband(bool hideDestroy /* = false */)
             group->SendUpdate();
         else
             SendUpdateToPlayer(player->GetGUID(), NULL);
+
+        if (wasLFGGroup)
+            player->GetSession()->SendLfgClearStatus();
 
         _homebindIfInstance(player);
     }
@@ -1592,7 +1626,8 @@ void Group::SendUpdate()
 
 void Group::SendUpdateToPlayer(uint64 playerGUID, MemberSlot* slot)
 {
-    Player* player = ObjectAccessor::FindPlayer(playerGUID);
+    Player* player = slot ? ObjectAccessor::FindPlayer(playerGUID) :
+        ObjectAccessor::FindPlayerInOrOutOfWorld(playerGUID);
 
     if (!player || !player->GetSession())
         return;

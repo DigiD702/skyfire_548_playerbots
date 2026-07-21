@@ -1280,6 +1280,13 @@ void World::LoadConfigSettings(bool reload)
     // Dungeon finder
     setIntConfig(WorldIntConfigs::CONFIG_LFG_OPTIONSMASK, sConfigMgr->GetIntDefault("DungeonFinder.OptionsMask", 1));
 
+    setIntConfig(WorldIntConfigs::CONFIG_LFG_RAIDFINDER_MIN_SIZE, sConfigMgr->GetIntDefault("DungeonFinder.RaidFinderMinSize", 25));
+    if (getIntConfig(WorldIntConfigs::CONFIG_LFG_RAIDFINDER_MIN_SIZE) < 1 || getIntConfig(WorldIntConfigs::CONFIG_LFG_RAIDFINDER_MIN_SIZE) > 25)
+    {
+        SF_LOG_ERROR("server.loading", "DungeonFinder.RaidFinderMinSize (%u) must be between 1 and 25. Set to 25.", getIntConfig(WorldIntConfigs::CONFIG_LFG_RAIDFINDER_MIN_SIZE));
+        setIntConfig(WorldIntConfigs::CONFIG_LFG_RAIDFINDER_MIN_SIZE, 25);
+    }
+
     // DBC_ItemAttributes
     SetBoolConfig(WorldBoolConfigs::CONFIG_DBC_ENFORCE_ITEM_ATTRIBUTES, sConfigMgr->GetBoolDefault("DBC.EnforceItemAttributes", true));
 

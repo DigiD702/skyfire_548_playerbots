@@ -949,9 +949,15 @@ public:                                                 // opcodes handlers
     void HandleLfrLeaveOpcode(WorldPacket& recvData);
     void HandleLfgGetStatus(WorldPacket& recvData);
 
+    // Challenge Mode
+    void HandleGetChallengeModeRewards(WorldPacket& recvData);
+    void HandleChallengeModeRequestLeaders(WorldPacket& recvData);
+    void HandleChallengeModeRequestMapStats(WorldPacket& recvData);
+
     void SendLfgUpdateStatus(lfg::LfgUpdateData const& updateData, bool party);
     void SendLfgRoleChosen(uint64 guid, uint8 roles);
     void SendLfgRoleCheckUpdate(lfg::LfgRoleCheck const& pRoleCheck);
+    void SendLfgClearStatus();
     void SendLfgLfrList(bool update);
     void SendLfgJoinResult(lfg::LfgJoinResultData const& joinData);
     void SendLfgQueueStatus(lfg::LfgQueueStatusData const& queueData);

@@ -79,6 +79,7 @@ namespace lfg
         void RemoveFromQueue(uint64 guid);
         void AddQueueData(uint64 guid, time_t joinTime, LfgDungeonSet const& dungeons, LfgRolesMap const& rolesMap);
         void RemoveQueueData(uint64 guid);
+        bool HasQueueData(uint64 guid) const;
 
         // Update Timers (when proposal success)
         void UpdateWaitTimeAvg(int32 waitTime, uint32 dungeonId);
@@ -94,7 +95,7 @@ namespace lfg
         uint8 FindGroups();
 
         // Just for debugging purposes
-        std::string DumpQueueInfo() const;
+        std::string DumpQueueInfo(bool full = false) const;
         std::string DumpCompatibleInfo(bool full = false) const;
 
     private:
@@ -117,6 +118,11 @@ namespace lfg
 
         LfgCompatibility FindNewGroups(LfgGuidList& check, LfgGuidList& all);
         LfgCompatibility CheckCompatibility(LfgGuidList check);
+
+        // Raid Finder uses a dedicated accumulator instead of the 5-man combinatorial matcher
+        uint8 FindRaidFinderGroups();
+        uint8 FindRaidFinderBackfill(std::map<uint32, LfgGuidList>& candidatesByDungeon, LfgGuidSet& consumedGuids);
+        bool IsRaidFinderQueueEntry(uint64 guid) const;
 
         // Queue
         LfgQueueDataContainer QueueDataStore;              ///< Queued groups

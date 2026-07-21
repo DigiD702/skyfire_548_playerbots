@@ -29,7 +29,7 @@ namespace lfg
 
     enum LFGMgrEnum
     {
-        LFG_TIME_ROLECHECK = 45 * IN_MILLISECONDS,
+        LFG_TIME_ROLECHECK = 45,
         LFG_TIME_BOOT = 120,
         LFG_TIME_PROPOSAL = 45,
         LFG_QUEUEUPDATE_INTERVAL = 15 * IN_MILLISECONDS,
@@ -84,6 +84,7 @@ namespace lfg
         LFG_TELEPORTERROR_IN_VEHICLE = 3,
         LFG_TELEPORTERROR_FATIGUE = 4,
         LFG_TELEPORTERROR_INVALID_LOCATION = 6,
+        LFG_TELEPORTERROR_IN_COMBAT = 7,
         LFG_TELEPORTERROR_CHARMING = 8       // FIXME - It can be 7 or 8 (Need proper data)
     };
 
@@ -225,7 +226,7 @@ namespace lfg
     struct LfgProposal
     {
         LfgProposal(uint32 dungeon = 0) : id(0), dungeonId(dungeon), state(LFG_PROPOSAL_INITIATING),
-            group(0), leader(0), cancelTime(0), encounters(0), isNew(true)
+            group(0), leader(0), cancelTime(0), encounters(0), isNew(true), autoAccept(false)
         { }
 
         uint32 id;                                             ///< Proposal Id
@@ -236,6 +237,7 @@ namespace lfg
         time_t cancelTime;                                     ///< Time when we will cancel this proposal
         uint32 encounters;                                     ///< Dungeon Encounters
         bool isNew;                                            ///< Determines if it's new group or not
+        bool autoAccept;                                       ///< Raid Finder proposals auto-accept for all players
         LfgGuidList queues;                                    ///< Queue Ids to remove/readd
         LfgGuidList showorder;                                 ///< Show order in update window
         LfgProposalPlayerContainer players;                    ///< Players data
@@ -265,12 +267,12 @@ namespace lfg
     struct LFGDungeonData
     {
         LFGDungeonData() : id(0), name(""), map(0), type(0), expansion(0), group(0), minlevel(0),
-            maxlevel(0), difficulty(DIFFICULTY_NONE), seasonal(false), x(0.0f), y(0.0f), z(0.0f), o(0.0f)
+            maxlevel(0), difficulty(DIFFICULTY_NONE), category(0), requiredItemLevel(0), seasonal(false), x(0.0f), y(0.0f), z(0.0f), o(0.0f)
         { }
         LFGDungeonData(LFGDungeonEntry const* dbc) : id(dbc->m_ID), name(dbc->m_Name), map(dbc->m_ContinentID),
             type(dbc->m_Type), expansion(dbc->m_ExpansionLevel), group(dbc->m_GroupID),
             minlevel(dbc->m_MinLevel), maxlevel(dbc->m_MaxLevel), difficulty(DifficultyID(dbc->m_DifficultyID)),
-            seasonal(dbc->m_Flags& LFG_FLAG_SEASONAL), x(0.0f), y(0.0f), z(0.0f), o(0.0f)
+            category(uint8(dbc->m_SubType)), requiredItemLevel(0), seasonal(dbc->m_Flags& LFG_FLAG_SEASONAL), x(0.0f), y(0.0f), z(0.0f), o(0.0f)
         { }
 
         uint32 id;
@@ -282,6 +284,8 @@ namespace lfg
         uint8 minlevel;
         uint8 maxlevel;
         DifficultyID difficulty;
+        uint8 category;
+        uint32 requiredItemLevel;
         bool seasonal;
         float x, y, z, o;
 
@@ -330,12 +334,37 @@ namespace lfg
         void _LoadFromDB(Field* fields, uint64 guid);
         /// Initializes player data after loading group data from DB
         void SetupGroupMember(uint64 guid, uint64 gguid);
+        /// Restores the active queue id from saved queue data
+        bool RestoreActiveQueue(uint64 guid);
+        /// Resends an active dungeon proposal to a player if one exists
+        bool SendActiveProposal(uint64 guid);
         /// Return Lfg dungeon entry for given dungeon id
         uint32 GetLFGDungeonEntry(uint32 id);
+        /// Return Lfg dungeon category for given dungeon id
+        uint8 GetLFGDungeonCategory(uint32 id);
+        /// Check whether the dungeon id belongs to a Raid Finder queue entry
+        bool IsRaidFinderDungeon(uint32 dungeonId);
+
+        // Raid Finder auto-backfill: track under-strength LFR raids so the queue accumulator can
+        // pull matching queued players into them without a prompt (retail-style silent backfill).
+        /// Mark a Raid Finder raid as needing more players (dungeonId is the LFG dungeon id)
+        void RegisterRaidFinderBackfill(uint64 gguid, uint32 dungeonId);
+        /// Stop backfilling a Raid Finder raid (full, disbanded, or finished)
+        void DeregisterRaidFinderBackfill(uint64 gguid);
+        /// Snapshot of raids awaiting backfill as (group guid -> dungeon id) pairs
+        std::vector<std::pair<uint64, uint32>> GetRaidFinderBackfillGroups() const;
+        /// Player-slots already committed to a raid by pending backfill proposals this Update tick
+        uint32 GetRaidFinderBackfillReserved(uint64 gguid) const;
+        /// Reserve extra player-slots so parallel team queues do not overfill the same raid in one tick
+        void ReserveRaidFinderBackfillSlots(uint64 gguid, uint32 slots);
+        /// Clear all pending reservations (called once per Update before matching runs)
+        void ResetRaidFinderBackfillReservations();
 
         // cs_lfg
         /// Get current player roles
         uint8 GetRoles(uint64 guid);
+        /// Get active LFG queue id
+        uint8 GetActiveQueueId(uint64 guid);
         /// Get current player comment (used for LFR)
         std::string const& GetComment(uint64 gguid);
         /// Gets current lfg options
@@ -348,6 +377,10 @@ namespace lfg
         void Clean();
         /// Dumps the state of the queue - Only for internal testing
         std::string DumpQueueInfo(bool full = false);
+        /// Dumps queue-scoped player state - Only for internal testing
+        std::string DumpPlayerInfo(uint64 guid);
+        /// Dumps queue-scoped group state - Only for internal testing
+        std::string DumpGroupInfo(uint64 guid);
 
         // LFGScripts
         /// Get leader of the group (using internal data)
@@ -362,6 +395,8 @@ namespace lfg
         void SetLeader(uint64 gguid, uint64 leader);
         /// Removes saved group data
         void RemoveGroupData(uint64 guid);
+        /// Clears active dungeon finder state for an LFG dungeon group
+        void ClearDungeonGroupState(uint64 guid, uint32 dbGuid, char const* debugMsg, bool sendUpdate);
         /// Removes a player from a group
         uint8 RemovePlayerFromGroup(uint64 gguid, uint64 guid);
         /// Adds player to group
@@ -379,7 +414,11 @@ namespace lfg
         /// Returns all random and seasonal dungeons for given level and expansion
         LfgDungeonSet GetRandomAndSeasonalDungeons(uint8 level, uint8 expansion);
         /// Teleport a player to/from selected dungeon
-        void TeleportPlayer(Player* player, bool out, bool fromOpcode = false);
+        void TeleportPlayer(Player* player, bool out, bool fromOpcode = false, bool forceChangeInstance = false);
+        /// Teleport online members of an LFG dungeon group back to their saved entry points
+        void TeleportDungeonGroupOut(Group* group);
+        /// Number of agree votes required to boot a player (majority of current members)
+        uint8 GetKickVotesNeeded(uint64 gguid);
         /// Inits new proposal to boot a player
         void InitBoot(uint64 gguid, uint64 kguid, uint64 vguid, std::string const& reason);
         /// Updates player boot proposal with new player answer
@@ -416,6 +455,10 @@ namespace lfg
         time_t GetQueueJoinTime(uint64 guid);
         /// Checks if given roles match, modifies given roles map with new roles
         static bool CheckGroupRoles(LfgRolesMap& groles);
+        /// Assigns queued players to damage roles for role-neutral scenario queues
+        static bool CheckDpsOnlyRoles(LfgRolesMap& groles, uint8 neededDamage);
+        /// Assigns queued players to raid finder role slots (caps on tanks/healers/dps)
+        static bool CheckRaidFinderRoles(LfgRolesMap& groles, uint8 neededTanks, uint8 neededHealers, uint8 neededDamage);
         /// Checks if given players are ignoring each other
         static bool HasIgnore(uint64 guid1, uint64 guid2);
         /// Sends queue status to player
@@ -424,7 +467,11 @@ namespace lfg
     private:
         uint8 GetTeam(uint64 guid);
         void RestoreState(uint64 guid, char const* debugMsg);
+        void RestoreOrClearState(uint64 guid, char const* debugMsg);
         void ClearState(uint64 guid, char const* debugMsg);
+        void ClearQueueState(uint64 guid, char const* debugMsg);
+        void ClearGroupQueueState(uint64 guid, char const* debugMsg, bool sendUpdate);
+        void SetActiveQueueId(uint64 guid, uint8 queueId);
         void SetDungeon(uint64 guid, uint32 dungeon);
         void SetSelectedDungeons(uint64 guid, LfgDungeonSet const& dungeons);
         void DecreaseKicksLeft(uint64 guid);
@@ -437,7 +484,7 @@ namespace lfg
 
         // Proposals
         void RemoveProposal(LfgProposalContainer::iterator itProposal, LfgUpdateType type);
-        void MakeNewGroup(LfgProposal const& proposal);
+        bool MakeNewGroup(LfgProposal const& proposal);
 
         // Generic
         LFGQueue& GetQueue(uint64 guid);
@@ -470,6 +517,14 @@ namespace lfg
         LfgPlayerBootContainer BootsStore;                 ///< Current player kicks
         LfgPlayerDataContainer PlayersStore;               ///< Player data
         LfgGroupDataContainer GroupsStore;                 ///< Group data
+
+        struct RaidFinderBackfillInfo
+        {
+            RaidFinderBackfillInfo() : dungeonId(0), reserved(0) { }
+            uint32 dungeonId;                              ///< LFG dungeon id the raid is running
+            uint32 reserved;                               ///< Player-slots committed by pending proposals this tick
+        };
+        std::map<uint64, RaidFinderBackfillInfo> RaidFinderBackfillStore; ///< Under-strength LFR raids awaiting backfill
     };
 
 } // namespace lfg

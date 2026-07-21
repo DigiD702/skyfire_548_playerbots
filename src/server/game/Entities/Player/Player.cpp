@@ -651,6 +651,8 @@ Player::Player(WorldSession* session) : Unit(true)
 
     m_HomebindTimer = 0;
     m_InstanceValid = true;
+    m_forcedTeleportFar = false;
+    m_forcedTeleportFarSemaphore = false;
     m_dungeonDifficulty = DIFFICULTY_NORMAL;
     m_raidDifficulty = DIFFICULTY_10MAN_NORMAL;
 
@@ -711,6 +713,7 @@ Player::Player(WorldSession* session) : Unit(true)
         m_powerFraction[i] = 0;
 
     isDebugAreaTriggers = false;
+    m_debugLfgRequirementOverride = false;
 
     m_WeeklyQuestChanged = false;
 
@@ -2132,7 +2135,7 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
     if (duel && GetMapId() != mapid && GetMap()->GetGameObject(GetUInt64Value(PLAYER_FIELD_DUEL_ARBITER)))
         DuelComplete(DuelCompleteType::DUEL_FLED);
 
-    if (GetMapId() == mapid)
+    if (GetMapId() == mapid && !IsForcedTeleportFar())
     {
         //lets reset far teleport flag if it wasn't reset during chained teleports
         SetSemaphoreTeleportFar(false);
@@ -15764,6 +15767,8 @@ void Player::Whisper(const std::string& text, Language language, uint64 receiver
         language = Language::LANG_UNIVERSAL; // whispers should always be readable
 
     Player* rPlayer = ObjectAccessor::FindPlayer(receiver);
+    if (!rPlayer || !rPlayer->GetSession())
+        return;
 
     std::string _text(text);
     sScriptMgr->OnPlayerChat(this, ChatMsg::CHAT_MSG_WHISPER, language, _text, rPlayer);
@@ -19980,7 +19985,10 @@ PartyResult Player::CanUninviteFromGroup() const
         if (sLFGMgr->IsVoteKickActive(gguid))
             return PartyResult::ERR_PARTY_LFG_BOOT_IN_PROGRESS;
 
-        if (grp->GetMembersCount() <= lfg::LFG_GROUP_KICK_VOTES_NEEDED)
+        // A boot uses a majority vote (floor(members/2)+1) and the victim auto-denies, so at
+        // least 3 members are required for a vote to be able to pass. This is a fixed floor and
+        // must not scale with raid size, otherwise large Raid Finder groups could never boot.
+        if (grp->GetMembersCount() < 3)
             return PartyResult::ERR_PARTY_LFG_BOOT_TOO_FEW_PLAYERS;
 
         if (state == lfg::LFG_STATE_FINISHED_DUNGEON)
@@ -20013,7 +20021,13 @@ PartyResult Player::CanUninviteFromGroup() const
 
 bool Player::isUsingLfg()
 {
-    return sLFGMgr->GetState(GetGUID()) != lfg::LFG_STATE_NONE;
+    if (sLFGMgr->GetState(GetGUID()) != lfg::LFG_STATE_NONE)
+        return true;
+
+    if (uint64 gguid = sLFGMgr->GetGroup(GetGUID()))
+        return sLFGMgr->GetState(gguid) != lfg::LFG_STATE_NONE;
+
+    return false;
 }
 
 bool Player::inRandomLfgDungeon()

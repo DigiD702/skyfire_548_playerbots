@@ -18,6 +18,14 @@ namespace lfg
         LFG_DPS_NEEDED = 3
     };
 
+    enum LFGRaidFinderEnum
+    {
+        LFG_RF_TANKS_NEEDED = 2,
+        LFG_RF_HEALERS_NEEDED = 6,
+        LFG_RF_DPS_NEEDED = 17,
+        LFG_RF_GROUP_SIZE = 25
+    };
+
     enum LfgRoles
     {
         PLAYER_ROLE_NONE = 0x00,
@@ -25,6 +33,14 @@ namespace lfg
         PLAYER_ROLE_TANK = 0x02,
         PLAYER_ROLE_HEALER = 0x04,
         PLAYER_ROLE_DAMAGE = 0x08
+    };
+
+    enum LfgShortageIndex
+    {
+        LFG_ROLE_SHORTAGE_RARE = 0,
+        LFG_ROLE_SHORTAGE_UNCOMMON = 1,
+        LFG_ROLE_SHORTAGE_PLENTIFUL = 2,
+        LFG_ROLE_SHORTAGE_MAX
     };
 
     enum LfgUpdateType
@@ -86,15 +102,27 @@ namespace lfg
         LFG_ANSWER_AGREE = 1
     };
 
+    struct LfgLockData
+    {
+        LfgLockData(uint32 lock = 0, uint32 currentItemLevel = 0, uint32 requiredItemLevel = 0) :
+            lockStatus(lock), currentItemLevel(currentItemLevel), requiredItemLevel(requiredItemLevel) { }
+
+        uint32 lockStatus;
+        uint32 currentItemLevel;
+        uint32 requiredItemLevel;
+    };
+
     typedef std::set<uint32> LfgDungeonSet;
-    typedef std::map<uint32, uint32> LfgLockMap;
+    typedef std::map<uint32, LfgLockData> LfgLockMap;
     typedef std::map<uint64, LfgLockMap> LfgLockPartyMap;
     typedef std::set<uint64> LfgGuidSet;
     typedef std::list<uint64> LfgGuidList;
     typedef std::map<uint64, uint8> LfgRolesMap;
     typedef std::map<uint64, uint64> LfgGroupsMap;
 
+    std::string ConcatenateGuids(LfgGuidList const& guids);
     std::string ConcatenateDungeons(LfgDungeonSet const& dungeons);
+    bool IsValidPlayerRoles(uint8 roles);
     std::string GetRolesString(uint8 roles);
     std::string GetStateString(LfgState state);
 

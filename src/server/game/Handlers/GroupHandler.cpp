@@ -7,6 +7,7 @@
 #include "DatabaseEnv.h"
 #include "Group.h"
 #include "GroupMgr.h"
+#include "LFGMgr.h"
 #include "Log.h"
 #include "ObjectMgr.h"
 #include "Opcodes.h"
@@ -488,6 +489,23 @@ void WorldSession::HandleGroupDisbandOpcode(WorldPacket& /*recvData*/)
 
     // everything's fine, do it
     SendPartyResult(PartyOperation::PARTY_OP_LEAVE, GetPlayer()->GetName(), PartyResult::ERR_PARTY_RESULT_OK);
+
+    if (grp->isLFGGroup())
+    {
+        lfg::LfgState const state = sLFGMgr->GetState(grp->GetGUID());
+        if (state == lfg::LFG_STATE_DUNGEON || state == lfg::LFG_STATE_FINISHED_DUNGEON)
+        {
+            // Raid Finder: leaving removes only this player and keeps the raid intact for everyone
+            // else (the slot is auto-backfilled); disbanding a 25-man raid over one leaver is wrong.
+            // Non-raid-finder LFG keeps its existing disband-on-leave behavior.
+            uint32 const dungeonId = sLFGMgr->GetDungeon(grp->GetGUID(), true);
+            if (!(grp->isRaidGroup() && sLFGMgr->IsRaidFinderDungeon(dungeonId)))
+            {
+                grp->Disband();
+                return;
+            }
+        }
+    }
 
     GetPlayer()->RemoveFromGroup(GROUP_REMOVEMETHOD_LEAVE);
 }
