@@ -101,10 +101,17 @@ Remaining for later phases:
   priority picker with aura/resource/enemy-count helpers. DPS specs with
   hand-ported MoP Hekili `.simc` priorities: Ret, WW, BM/MM/Survival, Shadow,
   Affliction/Demo/Destro, Elemental/Enhancement, Feral, Arms/Fury, Combat Rogue,
-  Frost Mage, Unholy DK. Other specs keep fillers. Elemental/Balance ranged
+  Frost Mage, Unholy DK. Wave 3: Balance, Guardian, Fire/Arcane, Assassination/
+  Subtlety, Frost/Blood DK, Prot Pala/War, Brewmaster. Elemental/Balance ranged
   stance. `.playerbots init` learns recommended talent spells and accepts
   explicit names (`enhancement`, `feral`, `moonkin`, …). Local `Hekili/` is
   reference-only (gitignored).
+* [DONE] Wave 4 healers + shared combat utilities:
+  * Per-spec heals: Holy Pala, Disc/Holy Priest, Resto Shaman/Druid, Mistweaver
+    (via `SelectNextHeal`, used by `HandleHealing`).
+  * Shared `TryCombatUtilities`: class interrupt when the target is casting,
+    offensive/defensive racials, on-use trinkets — wired into DPS rotation and
+    healer combat.
 * [DONE] World interaction (first pass):
   * Solo bots wander to nearby random ground points so they aren't frozen statues.
   * Bots auto-accept trade windows and duel challenges.
@@ -129,9 +136,8 @@ Remaining for later phases:
 * [DONE] Self-bot mode (`.playerbots self`): attach cast-only AI to a real
   logged-in player. Client keeps movement; AI casts fillers / per-spec rotations.
   `.playerbots init` with no args gears yourself and grouped bots.
-* [TODO] Remaining specs (Balance full list, Rogue Mut/Sub, Fire/Arcane Mage,
-  Frost/Blood DK, tanks/healers), deeper cooldowns/dots/AoE/interrupts,
-  trinkets/racials, glyph-aware lines.
+* [TODO] Deeper cooldowns/DoTs/AoE on existing DPS lines, trinket sync with
+  major CDs, glyph-aware conditional lines.
 * [TODO] Point movement / travel to arbitrary destinations (for questing,
   objectives, and dungeon navigation).
 * [TODO] Port the strategy/action/trigger/value engine on top of `PlayerbotAI`

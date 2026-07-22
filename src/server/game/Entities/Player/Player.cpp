@@ -21008,14 +21008,18 @@ bool Player::LearnTalent(uint16 talentId)
         return false;
 
     // check if we have enough talent points
-    if (talentInfo->Row > maxTalentRow)
+    // CalculateTalentsPoints() = floor(level/15) = number of unlocked tiers (rows 0..N-1).
+    // MoP: rows unlock at 15/30/45/60/75/90.
+    if (talentInfo->Row >= maxTalentRow)
         return false;
 
-    // Check if player doesnt have any spell in selected collumn
+    // Check if player already has a talent in this tier
     for (uint32 i = 0; i < sTalentStore.GetNumRows(); i++)
     {
         if (TalentEntry const* talent = sTalentStore.LookupEntry(i))
         {
+            if (talent->playerClass != getClass())
+                continue;
             if (talentInfo->Row == talent->Row && HasSpell(talent->SpellId))
                 return false;
         }

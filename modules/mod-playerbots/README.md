@@ -80,6 +80,10 @@ created characters are picked up by the random-bot pool automatically.
   the class can wear at that level; weapons/shields/off-hands/ranged are chosen
   per class and role. Re-run it after leveling to pull in level-appropriate
   upgrades (e.g. gear a fresh level-80 bot).
+* Learns remaining **class trainer** spells for the bot's level, plus SkillLine /
+  specialization spells.
+* Teaches **riding** by level (20/40/60/70/80) and one random mount per unlocked
+  tier (normal ground, swift ground, flying, epic flying) from faction pools.
 * Add a role token (`tank`/`healer`/`dps`) to change the bot's spec first, then
   re-gear for the new role - e.g. `.playerbots init Arix tank`.
 

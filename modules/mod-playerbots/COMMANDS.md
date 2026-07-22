@@ -27,6 +27,8 @@ Whisper replies with a short ack. Party/raid orders apply silently (no spam).
 
 Re-gears and re-applies spec spells for the current level. For Wave-1 DPS
 specs it also learns a recommended talent spell set used by the rotation.
+Init also pulls class-trainer spells for the bot's level, riding skills, and
+one random mount per unlocked riding tier (level-gated: 20 / 40 / 60 / 70).
 
 | Args | Effect |
 | --- | --- |
@@ -62,16 +64,31 @@ Frost Mage, Destruction, Demonology, Unholy DK
 **Wave 3:** Balance, Guardian, Fire, Arcane, Assassination, Subtlety, Frost DK,
 Blood DK, Prot Paladin, Prot Warrior, Brewmaster
 
-Healer specs still lean on the group heal AI (below) plus class fillers. Priorities
-were simplified from MoP Hekili/SimC lists (local `Hekili/` reference only; not shipped).
+**Wave 4 (healers):** Holy Paladin, Discipline, Holy Priest, Restoration Shaman,
+Restoration Druid, Mistweaver
+
+Healer specs lean on `SelectNextHeal` plus shared interrupts/racials/trinkets.
+Priorities were simplified from MoP Hekili/SimC lists (local `Hekili/` reference only; not shipped).
 
 ### Tank / healer in groups
 
 - **Tanks** peel mobs attacking party members and taunt when they lose threat.
-- **Healers** prioritize injured group members (below ~90% HP) before dealing damage.
+- **Healers** use per-spec priorities (Holy Pala, Disc/Holy Priest, Resto Sham/Druid,
+  Mistweaver): HoTs/shields, urgency Flash heals, and group AoE when several allies
+  are injured. They still fall back to a simple class heal if the selector finds
+  nothing ready.
 
 Init bots to the right role before queueing: `.playerbots init Botname tank` /
 `healer` / `dps` (or an explicit spec).
+
+### Shared combat utilities
+
+In combat, bots (including healers and `.playerbots self`) will:
+
+- **Interrupt** when their target is casting (class kick / silence).
+- Use **racials** (Blood Fury, Berserking, Arcane Torrent, etc.; defensive racials
+  when low HP).
+- Activate **on-use trinkets** when off cooldown.
 
 ### LFG / LFR party roles
 

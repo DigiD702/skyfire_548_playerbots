@@ -629,6 +629,9 @@ void PlayerbotAI::DoRotation(Unit* target)
     if (_bot->HasUnitState(UNIT_STATE_CASTING))
         return;
 
+    if (BotRotation::TryCombatUtilities(_bot, target))
+        return;
+
     uint32 spellId = BotRotation::SelectNextSpell(_bot, target);
     if (!spellId)
         spellId = GetFillerSpell();
@@ -643,11 +646,29 @@ bool PlayerbotAI::HandleHealing()
     if (_bot->HasUnitState(UNIT_STATE_CASTING))
         return true;
 
+    // Kick / racial / trinket before heals when a hostile is available.
+    Unit* utilityTarget = _bot->GetVictim();
+    if (!utilityTarget || !utilityTarget->IsAlive() || !_bot->IsValidAttackTarget(utilityTarget))
+    {
+        for (Unit* attacker : _bot->getAttackers())
+        {
+            if (attacker && attacker->IsAlive() && _bot->IsValidAttackTarget(attacker))
+            {
+                utilityTarget = attacker;
+                break;
+            }
+        }
+    }
+    if (BotRotation::TryCombatUtilities(_bot, utilityTarget))
+        return true;
+
     Player* ally = SelectHealTarget();
     if (!ally)
         return false;
 
-    uint32 const healId = GetHealSpell();
+    uint32 healId = BotRotation::SelectNextHeal(_bot, ally);
+    if (!healId)
+        healId = GetHealSpell();
     if (!healId || !BotRotation::CanTryCast(_bot, healId))
         return false;
 
@@ -667,7 +688,7 @@ bool PlayerbotAI::HandleHealing()
         _bot->StopMoving();
 
     _bot->SetSelection(ally->GetGUID());
-    _bot->CastSpell(ally, healId, false);
+    BotRotation::CastHealSpell(_bot, ally, healId);
     return true;
 }
 

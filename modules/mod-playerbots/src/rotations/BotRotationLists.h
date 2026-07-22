@@ -42,6 +42,14 @@ namespace BotRotation
     uint32 SelectProtectionPaladin(Context const& ctx);
     uint32 SelectProtectionWarrior(Context const& ctx);
     uint32 SelectBrewmaster(Context const& ctx);
+
+    // Wave 4 - healers
+    uint32 SelectHolyPaladin(HealContext const& ctx);
+    uint32 SelectDiscipline(HealContext const& ctx);
+    uint32 SelectHolyPriest(HealContext const& ctx);
+    uint32 SelectRestorationShaman(HealContext const& ctx);
+    uint32 SelectRestorationDruid(HealContext const& ctx);
+    uint32 SelectMistweaver(HealContext const& ctx);
 }
 
 #endif // _SF_BOT_ROTATION_LISTS_H

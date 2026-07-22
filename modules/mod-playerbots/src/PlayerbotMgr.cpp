@@ -8,6 +8,7 @@
 #include "rotations/BotRotation.h"
 #include "AccountMgr.h"
 #include "Config.h"
+#include "Creature.h"
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
 #include "Group.h"
@@ -20,6 +21,7 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "SharedDefines.h"
+#include "Unit.h"
 #include "World.h"
 #include "WorldSession.h"
 
@@ -28,6 +30,7 @@
 #include <cstdlib>
 #include <iterator>
 #include <sstream>
+#include <unordered_set>
 #include <vector>
 
 PlayerbotMgr* PlayerbotMgr::instance()
@@ -804,6 +807,218 @@ namespace
         return entries;
     }
 
+    // Teach every class-trainer spell the bot qualifies for at its current level
+    // (multi-pass so spell-chain prerequisites can unlock in order).
+    void LearnClassTrainerSpells(Player* bot)
+    {
+        if (!bot)
+            return;
+
+        uint8 const cls = bot->getClass();
+        CreatureTemplateContainer const* templates = sObjectMgr->GetCreatureTemplates();
+        if (!templates)
+            return;
+
+        std::unordered_set<uint32> seen;
+        std::vector<TrainerSpell const*> trainerSpells;
+
+        for (CreatureTemplateContainer::const_iterator itr = templates->begin();
+            itr != templates->end(); ++itr)
+        {
+            CreatureTemplate const& creature = itr->second;
+            if (creature.trainer_type != TRAINER_TYPE_CLASS)
+                continue;
+            if (creature.trainer_class != cls)
+                continue;
+            if (!(creature.npcflag & UNIT_NPC_FLAG_TRAINER))
+                continue;
+
+            TrainerSpellData const* data = sObjectMgr->GetNpcTrainerSpells(creature.Entry);
+            if (!data)
+                continue;
+
+            for (TrainerSpellMap::const_iterator sp = data->spellList.begin();
+                sp != data->spellList.end(); ++sp)
+            {
+                if (!seen.insert(sp->first).second)
+                    continue;
+                trainerSpells.push_back(&sp->second);
+            }
+        }
+
+        for (int pass = 0; pass < 12; ++pass)
+        {
+            bool learnedAny = false;
+            for (TrainerSpell const* ts : trainerSpells)
+            {
+                if (!ts)
+                    continue;
+                // GREEN = can learn now. Skip GRAY (known) and RED (reqs).
+                // GREEN_DISABLED is primary-profession capped - skip those.
+                if (bot->GetTrainerSpellState(ts) != TRAINER_SPELL_GREEN)
+                    continue;
+
+                if (ts->IsCastable())
+                    bot->CastSpell(bot, ts->spell, true);
+                else
+                    bot->learnSpell(ts->spell, false);
+                learnedAny = true;
+            }
+            if (!learnedAny)
+                break;
+        }
+    }
+
+    // Catch SkillLineAbility / specialization spells GiveLevel would grant.
+    void LearnLevelClassSpells(Player* bot, uint32 specId)
+    {
+        if (!bot)
+            return;
+
+        std::list<uint32> const spells = GetSpellsForLevels(
+            bot->getClass(), bot->getRaceMask(), specId, 0, bot->getLevel());
+        for (uint32 spellId : spells)
+            if (spellId && !bot->HasSpell(spellId))
+                bot->learnSpell(spellId, true);
+    }
+
+    uint32 PickRandomSpell(uint32 const* list, size_t count)
+    {
+        if (!list || !count)
+            return 0;
+        return list[static_cast<size_t>(std::rand()) % count];
+    }
+
+    void LearnMountIfMissing(Player* bot, uint32 const* primary, size_t primaryCount,
+        uint32 const* fallback, size_t fallbackCount)
+    {
+        if (!bot)
+            return;
+
+        auto hasAny = [&](uint32 const* list, size_t count) -> bool
+        {
+            for (size_t i = 0; i < count; ++i)
+                if (list[i] && bot->HasSpell(list[i]))
+                    return true;
+            return false;
+        };
+
+        if (hasAny(primary, primaryCount) || hasAny(fallback, fallbackCount))
+            return;
+
+        auto tryLearn = [&](uint32 const* list, size_t count) -> bool
+        {
+            if (!list || !count)
+                return false;
+            for (int attempt = 0; attempt < 8; ++attempt)
+            {
+                uint32 const mount = PickRandomSpell(list, count);
+                if (mount && bot->IsSpellFitByClassAndRace(mount))
+                {
+                    bot->learnSpell(mount, false);
+                    return true;
+                }
+            }
+            for (size_t i = 0; i < count; ++i)
+            {
+                if (list[i] && bot->IsSpellFitByClassAndRace(list[i]))
+                {
+                    bot->learnSpell(list[i], false);
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        if (!tryLearn(primary, primaryCount))
+            tryLearn(fallback, fallbackCount);
+    }
+
+    // Riding skills + one random mount per unlocked tier (level-gated).
+    // Tiers: normal ground (20), swift ground (40), normal flying (60), epic flying (70).
+    void LearnRidingAndMounts(Player* bot)
+    {
+        if (!bot)
+            return;
+
+        uint8 const level = bot->getLevel();
+        auto learnRiding = [&](uint32 spellId)
+        {
+            if (spellId && !bot->HasSpell(spellId))
+                bot->learnSpell(spellId, false);
+        };
+
+        // Faction mount pools (spell IDs taught by the mount items).
+        static uint32 const allianceGround[] = { 458, 470, 472, 6648, 6777, 6898, 6899 };
+        static uint32 const hordeGround[]    = { 580, 6653, 6654, 8395, 10796, 17462, 18989, 34795 };
+        static uint32 const neutralGround[]  = { 43899, 49379 };
+
+        static uint32 const allianceSwiftGround[] = { 23227, 23228, 23229, 23238, 23239, 23240 };
+        static uint32 const hordeSwiftGround[]    = { 23250, 23251, 23252, 23241, 23242, 23243, 35025, 35027 };
+        static uint32 const neutralSwiftGround[]  = { 42777 };
+
+        static uint32 const allianceFlying[] = { 32235, 32239, 32240 };
+        static uint32 const hordeFlying[]    = { 32243, 32244, 32245 };
+        static uint32 const neutralFlying[]  = { 59569, 59570 };
+
+        static uint32 const allianceEpicFlying[] = { 32242, 32289, 32290, 32292 };
+        static uint32 const hordeEpicFlying[]    = { 32246, 32295, 32296, 32297 };
+        static uint32 const neutralEpicFlying[]  = { 60025 };
+
+        bool const alliance = bot->GetTeam() == ALLIANCE;
+
+        if (level >= 20)
+        {
+            learnRiding(33388); // Apprentice Riding
+            if (alliance)
+                LearnMountIfMissing(bot, allianceGround, sizeof(allianceGround) / sizeof(allianceGround[0]),
+                    neutralGround, sizeof(neutralGround) / sizeof(neutralGround[0]));
+            else
+                LearnMountIfMissing(bot, hordeGround, sizeof(hordeGround) / sizeof(hordeGround[0]),
+                    neutralGround, sizeof(neutralGround) / sizeof(neutralGround[0]));
+        }
+
+        if (level >= 40)
+        {
+            learnRiding(33391); // Journeyman Riding
+            if (alliance)
+                LearnMountIfMissing(bot, allianceSwiftGround, sizeof(allianceSwiftGround) / sizeof(allianceSwiftGround[0]),
+                    neutralSwiftGround, sizeof(neutralSwiftGround) / sizeof(neutralSwiftGround[0]));
+            else
+                LearnMountIfMissing(bot, hordeSwiftGround, sizeof(hordeSwiftGround) / sizeof(hordeSwiftGround[0]),
+                    neutralSwiftGround, sizeof(neutralSwiftGround) / sizeof(neutralSwiftGround[0]));
+        }
+
+        if (level >= 60)
+        {
+            learnRiding(34090); // Expert Riding
+            learnRiding(90267); // Flight Master's License
+            if (alliance)
+                LearnMountIfMissing(bot, allianceFlying, sizeof(allianceFlying) / sizeof(allianceFlying[0]),
+                    neutralFlying, sizeof(neutralFlying) / sizeof(neutralFlying[0]));
+            else
+                LearnMountIfMissing(bot, hordeFlying, sizeof(hordeFlying) / sizeof(hordeFlying[0]),
+                    neutralFlying, sizeof(neutralFlying) / sizeof(neutralFlying[0]));
+        }
+
+        if (level >= 68)
+            learnRiding(54197); // Cold Weather Flying
+
+        if (level >= 70)
+        {
+            learnRiding(34091); // Artisan Riding
+            if (alliance)
+                LearnMountIfMissing(bot, allianceEpicFlying, sizeof(allianceEpicFlying) / sizeof(allianceEpicFlying[0]),
+                    neutralEpicFlying, sizeof(neutralEpicFlying) / sizeof(neutralEpicFlying[0]));
+            else
+                LearnMountIfMissing(bot, hordeEpicFlying, sizeof(hordeEpicFlying) / sizeof(hordeEpicFlying[0]),
+                    neutralEpicFlying, sizeof(neutralEpicFlying) / sizeof(neutralEpicFlying[0]));
+        }
+
+        if (level >= 80)
+            learnRiding(90265); // Master Riding
+    }
+
     // Learn cloth/leather/mail/plate proficiency spells the class is allowed to
     // have at its current level (mirrors trainer unlocks / GiveLevel plate).
     // Called on every init so deleveling then re-init does not teach plate early,
@@ -1172,9 +1387,13 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverr
         role = static_cast<BotRole>(roleOverride);
     }
 
-    // Armor/weapon skills for this level, then gear. Re-running init after a
-    // delevel simply skips plate/mail spells the bot is no longer high enough for.
+    // Armor/weapon skills for this level, then trainer spells, riding/mounts,
+    // then gear. Re-running init after a delevel simply skips plate/mail and
+    // higher riding tiers the bot is no longer high enough for.
     LearnArmorProficiencies(bot);
+    LearnClassTrainerSpells(bot);
+    LearnLevelClassSpells(bot, specId);
+    LearnRidingAndMounts(bot);
 
     // Gear the bot for the (possibly newly assigned) role/spec at its level.
     int const qualityCap = std::max(0, std::min(maxItemQuality, int(ITEM_QUALITY_LEGENDARY)));
