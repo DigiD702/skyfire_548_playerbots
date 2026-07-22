@@ -3,6 +3,7 @@
  */
 
 #include "BotRotationLists.h"
+#include "Item.h"
 #include "Player.h"
 #include "Unit.h"
 
@@ -32,6 +33,25 @@ namespace
         EARTH_ELEMENTAL     = 2062,
         THUNDERSTORM        = 51490,
     };
+
+    bool HasMainhandWeaponImbue(Player* bot)
+    {
+        if (!bot)
+            return false;
+        if (Item* mh = bot->GetWeaponForAttack(WeaponAttackType::BASE_ATTACK))
+            return mh->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) != 0;
+        return false;
+    }
+
+    bool HasActiveTotem(Player* bot)
+    {
+        if (!bot)
+            return false;
+        for (uint8 i = SUMMON_SLOT_TOTEM; i < MAX_TOTEM_SLOT; ++i)
+            if (bot->m_SummonSlot[i])
+                return true;
+        return false;
+    }
 }
 
 uint32 SelectElemental(Context const& ctx)
@@ -39,11 +59,16 @@ uint32 SelectElemental(Context const& ctx)
     Player* bot = ctx.bot;
     Unit* target = ctx.target;
 
-    if (!HasAuraUp(bot, LIGHTNING_SHIELD) && CanTryCast(bot, LIGHTNING_SHIELD))
+    // Weapon imbues are temporary enchants, not auras — only refresh when missing.
+    if (!bot->IsInCombat())
+    {
+        if (!HasAuraUp(bot, LIGHTNING_SHIELD) && CanTryCast(bot, LIGHTNING_SHIELD))
+            return LIGHTNING_SHIELD;
+        if (!HasMainhandWeaponImbue(bot) && CanTryCast(bot, FLAMETONGUE_WEAPON))
+            return FLAMETONGUE_WEAPON;
+    }
+    else if (!HasAuraUp(bot, LIGHTNING_SHIELD) && CanTryCast(bot, LIGHTNING_SHIELD))
         return LIGHTNING_SHIELD;
-
-    if (!HasAuraUp(bot, FLAMETONGUE_WEAPON) && CanTryCast(bot, FLAMETONGUE_WEAPON))
-        return FLAMETONGUE_WEAPON;
 
     bool const fsUp = HasAuraUp(target, FLAME_SHOCK);
     float const fsRemains = AuraRemains(target, FLAME_SHOCK);
@@ -62,7 +87,7 @@ uint32 SelectElemental(Context const& ctx)
     // AoE
     if (ctx.enemies >= 3)
     {
-        if (ctx.enemies >= 4 && CanTryCast(bot, MAGMA_TOTEM))
+        if (ctx.enemies >= 4 && !HasActiveTotem(bot) && CanTryCast(bot, MAGMA_TOTEM))
             return MAGMA_TOTEM;
         if (ctx.enemies >= 4 && CanTryCast(bot, EARTHQUAKE))
             return EARTHQUAKE;
@@ -76,8 +101,8 @@ uint32 SelectElemental(Context const& ctx)
             return CHAIN_LIGHTNING;
     }
 
-    // Single target
-    if (CanTryCast(bot, UNLEASH_ELEMENTS) && !ascendance)
+    // Unleash needs a weapon imbue; without one CheckCast always fails.
+    if (HasMainhandWeaponImbue(bot) && CanTryCast(bot, UNLEASH_ELEMENTS) && !ascendance)
         return UNLEASH_ELEMENTS;
 
     if ((!fsUp || fsRemains < 3.0f) && CanTryCast(bot, FLAME_SHOCK))
@@ -89,7 +114,8 @@ uint32 SelectElemental(Context const& ctx)
     if (HasAuraUp(bot, LAVA_SURGE) && CanTryCast(bot, LAVA_BURST))
         return LAVA_BURST;
 
-    if (CanTryCast(bot, SEARING_TOTEM))
+    // Do not refresh totems every GCD — that blocked the entire damage rotation.
+    if (!HasActiveTotem(bot) && CanTryCast(bot, SEARING_TOTEM))
         return SEARING_TOTEM;
 
     if (CanTryCast(bot, ELEMENTAL_BLAST))
@@ -141,12 +167,17 @@ uint32 SelectEnhancement(Context const& ctx)
         FIRE_ELEMENTAL      = 2894,
     };
 
-    if (!HasAuraUp(bot, LIGHTNING_SHIELD) && CanTryCast(bot, LIGHTNING_SHIELD))
+    if (!bot->IsInCombat())
+    {
+        if (!HasAuraUp(bot, LIGHTNING_SHIELD) && CanTryCast(bot, LIGHTNING_SHIELD))
+            return LIGHTNING_SHIELD;
+        if (!HasMainhandWeaponImbue(bot) && CanTryCast(bot, WINDFURY_WEAPON))
+            return WINDFURY_WEAPON;
+        if (!HasMainhandWeaponImbue(bot) && CanTryCast(bot, FLAMETONGUE_WEAPON))
+            return FLAMETONGUE_WEAPON;
+    }
+    else if (!HasAuraUp(bot, LIGHTNING_SHIELD) && CanTryCast(bot, LIGHTNING_SHIELD))
         return LIGHTNING_SHIELD;
-    if (!HasAuraUp(bot, WINDFURY_WEAPON) && CanTryCast(bot, WINDFURY_WEAPON))
-        return WINDFURY_WEAPON;
-    if (!HasAuraUp(bot, FLAMETONGUE_WEAPON) && CanTryCast(bot, FLAMETONGUE_WEAPON))
-        return FLAMETONGUE_WEAPON;
 
     bool const ascendance = HasAuraUp(bot, ASCENDANCE_BUFF) || HasAuraUp(bot, ASCENDANCE);
     uint32 const mw = AuraStacks(bot, MAELSTROM_WEAPON);
@@ -161,9 +192,9 @@ uint32 SelectEnhancement(Context const& ctx)
 
     if (ctx.enemies >= 2)
     {
-        if (ctx.enemies >= 4 && CanTryCast(bot, MAGMA_TOTEM))
+        if (ctx.enemies >= 4 && !HasActiveTotem(bot) && CanTryCast(bot, MAGMA_TOTEM))
             return MAGMA_TOTEM;
-        if (CanTryCast(bot, SEARING_TOTEM))
+        if (!HasActiveTotem(bot) && CanTryCast(bot, SEARING_TOTEM))
             return SEARING_TOTEM;
         if (fsUp && CanTryCast(bot, FIRE_NOVA))
             return FIRE_NOVA;
@@ -181,10 +212,10 @@ uint32 SelectEnhancement(Context const& ctx)
             return EARTH_SHOCK;
     }
 
-    if (CanTryCast(bot, SEARING_TOTEM))
+    if (!HasActiveTotem(bot) && CanTryCast(bot, SEARING_TOTEM))
         return SEARING_TOTEM;
 
-    if (CanTryCast(bot, UNLEASH_ELEMENTS))
+    if (HasMainhandWeaponImbue(bot) && CanTryCast(bot, UNLEASH_ELEMENTS))
         return UNLEASH_ELEMENTS;
 
     if (mw >= 1 && CanTryCast(bot, ELEMENTAL_BLAST))

@@ -84,6 +84,11 @@ void PlayerbotMgr::LoadConfig()
     _autoHealerPct = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.HealerPct", 20));
     _autoLevel = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.Level", 1));
 
+    // Optional numeric thresholds (strategies themselves are runtime co/nc only).
+    _restHealthPct = float(sConfigMgr->GetFloatDefault("Playerbots.Rest.HealthPct", 50.0f));
+    _restManaPct = float(sConfigMgr->GetFloatDefault("Playerbots.Rest.ManaPct", 50.0f));
+    _saveManaThreshold = float(sConfigMgr->GetFloatDefault("Playerbots.SaveMana.Threshold", 60.0f));
+
     // Clamp to sane ranges so bad config can't create invalid characters.
     if (_autoAlliancePct > 100) _autoAlliancePct = 100;
     if (_autoTankPct > 100) _autoTankPct = 100;
@@ -91,6 +96,12 @@ void PlayerbotMgr::LoadConfig()
     if (_autoTankPct + _autoHealerPct > 100) _autoHealerPct = 100 - _autoTankPct;
     if (_autoCharsPerAccount > 11) _autoCharsPerAccount = 11;   // realm cap
     if (_autoLevel < 1) _autoLevel = 1;
+    if (_restHealthPct < 1.0f) _restHealthPct = 1.0f;
+    if (_restHealthPct > 100.0f) _restHealthPct = 100.0f;
+    if (_restManaPct < 1.0f) _restManaPct = 1.0f;
+    if (_restManaPct > 100.0f) _restManaPct = 100.0f;
+    if (_saveManaThreshold < 1.0f) _saveManaThreshold = 1.0f;
+    if (_saveManaThreshold > 100.0f) _saveManaThreshold = 100.0f;
 
     // Force a candidate reload so prefix changes take effect on .reload config.
     _candidatesLoaded = false;
@@ -110,6 +121,20 @@ void PlayerbotMgr::Update(uint32 diff)
 
     // Drop bots whose player has left the world for any reason.
     CleanupDeadBots();
+
+    // LFG role checks + proposal accepts must run on the world thread. Calling
+    // UpdateProposal from Map::Update (via PlayerbotAI::UpdateAI) races the LFG
+    // mgr and can crash in MakeNewGroup / RemoveFromQueue (premade party enter).
+    for (auto const& pair : _ai)
+    {
+        PlayerbotAI* ai = pair.second;
+        if (!ai || ai->IsClientControlled())
+            continue;
+        Player* bot = ai->GetBot();
+        if (!bot || !bot->IsInWorld())
+            continue;
+        ai->HandleLfg();
+    }
 
     // AC-style: when a real player solo-queues LFG, fill with level-matched bots.
     UpdateLfgAutoJoin(diff);
@@ -195,8 +220,8 @@ void PlayerbotMgr::TrySpawnRandomBot()
         std::string error;
         if (SpawnBot(guid, true, &error))
         {
-            SF_LOG_INFO("modules", "[mod-playerbots] Random bot logged in (GUID %u). Random bots: %u/%u.",
-                GUID_LOPART(guid), uint32(_randomBots.size()), _maxRandomBots);
+            SF_LOG_INFO("modules", "[mod-playerbots] Random bot pool: %u/%u online.",
+                uint32(_randomBots.size()), _maxRandomBots);
             return;
         }
 
@@ -385,7 +410,16 @@ bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* er
         _randomBots.insert(characterGuid);
 
     if (Player* bot = botSession->GetPlayer())
+    {
         _ai[characterGuid] = new PlayerbotAI(bot);
+        char const* raceName = GetRaceName(bot->getRace(), LOCALE_enUS);
+        char const* className = GetClassName(bot->getClass(), LOCALE_enUS);
+        SF_LOG_INFO("modules",
+            "[mod-playerbots] Bot '%s' entered the world (GUID %u, level %u %s %s%s).",
+            bot->GetName().c_str(), GUID_LOPART(characterGuid), bot->getLevel(),
+            raceName ? raceName : "?", className ? className : "?",
+            isRandom ? ", random" : "");
+    }
 
     return true;
 }
@@ -443,21 +477,31 @@ void PlayerbotMgr::HandleBotGroupChat(Player* from, Group* group, std::string co
     if (text.empty())
         return;
 
+    // Strategy queries/changes always want a whisper reply from each bot.
+    bool const strategyCmd = (text.size() >= 2
+        && (text.compare(0, 2, "co") == 0 || text.compare(0, 2, "nc") == 0)
+        && (text.size() == 2 || text[2] == ' ' || text[2] == '?'));
+
+    auto deliver = [&](Player* member)
+    {
+        if (!member)
+            return;
+        auto it = _ai.find(member->GetGUID());
+        if (it == _ai.end() || !it->second)
+            return;
+        if (!filter.empty() && !it->second->MatchesRoleFilter(filter))
+            return;
+        // Party orders are silent except co/nc (bots whisper their strategy state).
+        it->second->HandleChatCommand(from, text, strategyCmd);
+    };
+
     for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         Player* member = itr->GetSource();
-        if (!member || member == from)
+        // Socket bots and self-bots (including the issuer for co/nc on yourself).
+        if (!member || !HasBotAI(member->GetGUID()))
             continue;
-        if (!IsBot(member->GetGUID()))
-            continue;
-
-        auto it = _ai.find(member->GetGUID());
-        if (it == _ai.end() || !it->second)
-            continue;
-        if (!filter.empty() && !it->second->MatchesRoleFilter(filter))
-            continue;
-
-        it->second->HandleChatCommand(from, text, false);
+        deliver(member);
     }
 }
 
@@ -580,6 +624,84 @@ void PlayerbotMgr::GetBotGuids(std::vector<uint64>& out) const
 namespace
 {
     enum BotRole { BOT_ROLE_TANK, BOT_ROLE_HEALER, BOT_ROLE_DPS };
+
+    char const* RoleName(BotRole role)
+    {
+        switch (role)
+        {
+            case BOT_ROLE_TANK:   return "tank";
+            case BOT_ROLE_HEALER: return "healer";
+            default:              return "dps";
+        }
+    }
+
+    char const* SpecName(uint32 specId)
+    {
+        switch (specId)
+        {
+            case SPEC_MAGE_ARCANE:            return "Arcane";
+            case SPEC_MAGE_FIRE:              return "Fire";
+            case SPEC_MAGE_FROST:             return "Frost";
+            case SPEC_PALADIN_HOLY:           return "Holy";
+            case SPEC_PALADIN_PROTECTION:     return "Protection";
+            case SPEC_PALADIN_RETRIBUTION:    return "Retribution";
+            case SPEC_WARRIOR_ARMS:           return "Arms";
+            case SPEC_WARRIOR_FURY:           return "Fury";
+            case SPEC_WARRIOR_PROTECTION:     return "Protection";
+            case SPEC_DRUID_BALANCE:          return "Balance";
+            case SPEC_DRUID_FERAL:            return "Feral";
+            case SPEC_DRUID_GUARDIAN:         return "Guardian";
+            case SPEC_DRUID_RESTORATION:      return "Restoration";
+            case SPEC_DEATH_KNIGHT_BLOOD:     return "Blood";
+            case SPEC_DEATH_KNIGHT_FROST:     return "Frost";
+            case SPEC_DEATH_KNIGHT_UNHOLY:    return "Unholy";
+            case SPEC_HUNTER_BEAST_MASTERY:   return "Beast Mastery";
+            case SPEC_HUNTER_MARKSMANSHIP:    return "Marksmanship";
+            case SPEC_HUNTER_SURVIVAL:        return "Survival";
+            case SPEC_PRIEST_DISCIPLINE:      return "Discipline";
+            case SPEC_PRIEST_HOLY:            return "Holy";
+            case SPEC_PRIEST_SHADOW:          return "Shadow";
+            case SPEC_ROGUE_ASSASSINATION:    return "Assassination";
+            case SPEC_ROGUE_COMBAT:           return "Combat";
+            case SPEC_ROGUE_SUBTLETY:         return "Subtlety";
+            case SPEC_SHAMAN_ELEMENTAL:       return "Elemental";
+            case SPEC_SHAMAN_ENHANCEMENT:     return "Enhancement";
+            case SPEC_SHAMAN_RESTORATION:     return "Restoration";
+            case SPEC_WARLOCK_AFFLICTION:     return "Affliction";
+            case SPEC_WARLOCK_DEMONOLOGY:     return "Demonology";
+            case SPEC_WARLOCK_DESTRUCTION:    return "Destruction";
+            case SPEC_MONK_BREWMASTER:        return "Brewmaster";
+            case SPEC_MONK_WINDWALKER:        return "Windwalker";
+            case SPEC_MONK_MISTWEAVER:        return "Mistweaver";
+            default:                         return "None";
+        }
+    }
+
+    char const* QualityName(int quality)
+    {
+        switch (quality)
+        {
+            case ITEM_QUALITY_POOR:      return "poor";
+            case ITEM_QUALITY_NORMAL:    return "common";
+            case ITEM_QUALITY_UNCOMMON:  return "uncommon";
+            case ITEM_QUALITY_RARE:      return "rare";
+            case ITEM_QUALITY_EPIC:      return "epic";
+            case ITEM_QUALITY_LEGENDARY: return "legendary";
+            default:                     return "unknown";
+        }
+    }
+
+    char const* SafeRaceName(uint8 race)
+    {
+        char const* name = GetRaceName(race, LOCALE_enUS);
+        return name ? name : "?";
+    }
+
+    char const* SafeClassName(uint8 cls)
+    {
+        char const* name = GetClassName(cls, LOCALE_enUS);
+        return name ? name : "?";
+    }
 
     // Playable races per faction. Neutral Pandaren are excluded so offline
     // creation never has to resolve the neutral starting faction.
@@ -1184,8 +1306,39 @@ namespace
                     equip(oneH + " AND subclass IN (0,4,7)");
                 break;
             case CLASS_ROGUE:
-                equip(oneH + " AND subclass IN (0,4,7,13,15)");
-                equip(oneH + " AND subclass IN (0,4,7,13,15)"); // off-hand
+                // Assassination (Mutilate) requires Dual Wield + daggers in both hands.
+                if (specId == SPEC_ROGUE_ASSASSINATION)
+                {
+                    if (!bot->HasSpell(674))
+                        bot->learnSpell(674, true); // Dual Wield
+                    bot->SetCanDualWield(true);
+
+                    std::string const dagger =
+                        "class=2 AND subclass=15 AND InventoryType IN (13,21,22)";
+                    uint32 const mh = EquipBestForSlot(bot, dagger, primary, 0, maxQuality);
+                    uint32 oh = 0;
+                    if (mh)
+                        oh = EquipBestForSlot(bot, dagger, primary, mh, maxQuality);
+
+                    // Last resort: any 1H if the dagger pool is empty, but still
+                    // force Dual Wield so an off-hand slot can fill.
+                    if (!mh)
+                        EquipBestForSlot(bot, oneH + " AND subclass IN (0,4,7,13,15)", primary, 0, maxQuality);
+                    if (!oh)
+                        EquipBestForSlot(bot, oneH + " AND subclass IN (0,4,7,13,15)", primary,
+                            bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND)
+                                ? bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND)->GetEntry()
+                                : 0,
+                            maxQuality);
+                }
+                else
+                {
+                    if (!bot->HasSpell(674))
+                        bot->learnSpell(674, true);
+                    bot->SetCanDualWield(true);
+                    equip(oneH + " AND subclass IN (0,4,7,13,15)");
+                    equip(oneH + " AND subclass IN (0,4,7,13,15)"); // off-hand
+                }
                 break;
             case CLASS_SHAMAN:
                 if (specId == SPEC_SHAMAN_ENHANCEMENT)
@@ -1339,6 +1492,10 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverr
     if (!bot || !bot->IsInWorld())
         return;
 
+    SF_LOG_INFO("modules", "[mod-playerbots] Initializing bot '%s' (level %u %s %s)...",
+        bot->GetName().c_str(), bot->getLevel(),
+        SafeRaceName(bot->getRace()), SafeClassName(bot->getClass()));
+
     // Specialization + spells. Explicit specOverride wins; otherwise a role
     // override picks the default tab for that role; otherwise keep current.
     // Below level 10 specs are unavailable.
@@ -1378,28 +1535,52 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverr
         }
 
         if (specId)
+        {
+            SF_LOG_INFO("modules", "[mod-playerbots]   '%s': learning specialization %s (%s)...",
+                bot->GetName().c_str(), SpecName(specId), RoleName(role));
             bot->LearnSpecialization(specId);
+        }
 
+        SF_LOG_INFO("modules", "[mod-playerbots]   '%s': initializing talents...",
+            bot->GetName().c_str());
         BotRotation::ApplyRecommendedTalents(bot);
     }
     else if (roleOverride >= 0)
     {
         role = static_cast<BotRole>(roleOverride);
+        SF_LOG_INFO("modules", "[mod-playerbots]   '%s': below level 10; skipping specialization (role %s).",
+            bot->GetName().c_str(), RoleName(role));
     }
 
     // Armor/weapon skills for this level, then trainer spells, riding/mounts,
     // then gear. Re-running init after a delevel simply skips plate/mail and
     // higher riding tiers the bot is no longer high enough for.
+    SF_LOG_INFO("modules", "[mod-playerbots]   '%s': initializing skills and spells...",
+        bot->GetName().c_str());
     LearnArmorProficiencies(bot);
     LearnClassTrainerSpells(bot);
     LearnLevelClassSpells(bot, specId);
+
+    SF_LOG_INFO("modules", "[mod-playerbots]   '%s': initializing riding and mounts...",
+        bot->GetName().c_str());
     LearnRidingAndMounts(bot);
 
     // Gear the bot for the (possibly newly assigned) role/spec at its level.
     int const qualityCap = std::max(0, std::min(maxItemQuality, int(ITEM_QUALITY_LEGENDARY)));
+    SF_LOG_INFO("modules", "[mod-playerbots]   '%s': initializing equipment (max quality %s)...",
+        bot->GetName().c_str(), QualityName(qualityCap));
     GearBot(bot, role, specId, qualityCap);
 
     bot->SaveToDB();
+
+    if (auto it = _ai.find(bot->GetGUID()); it != _ai.end() && it->second)
+        it->second->ResetStrategiesToRoleDefaults();
+
+    SF_LOG_INFO("modules",
+        "[mod-playerbots] Initialized bot '%s': level %u %s %s, spec %s (%s), gear <= %s.",
+        bot->GetName().c_str(), bot->getLevel(),
+        SafeRaceName(bot->getRace()), SafeClassName(bot->getClass()),
+        SpecName(specId), RoleName(role), QualityName(qualityCap));
 }
 
 uint32 PlayerbotMgr::InitializeAllBots(int roleOverride, uint32 specOverride, int maxItemQuality)

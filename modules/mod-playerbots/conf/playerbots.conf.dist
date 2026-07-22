@@ -144,3 +144,21 @@ Playerbots.AutoCreate.HealerPct = 20
 #        Default:     1
 
 Playerbots.AutoCreate.Level = 1
+
+#
+#    Playerbots.Rest.HealthPct
+#    Playerbots.Rest.ManaPct
+#        Description: With nc +food, bots sit and regenerate when health or mana
+#                     falls below this percent. Enable/disable via chat: nc +food.
+#        Default:     50
+
+Playerbots.Rest.HealthPct = 50
+Playerbots.Rest.ManaPct = 50
+
+#
+#    Playerbots.SaveMana.Threshold
+#        Description: With co +save mana, healers skip expensive heals below this
+#                     mana percent unless the ally is critically low.
+#        Default:     60
+
+Playerbots.SaveMana.Threshold = 60

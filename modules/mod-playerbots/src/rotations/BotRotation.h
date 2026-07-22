@@ -34,13 +34,17 @@ namespace BotRotation
         float lowestAllyHealthPct = 100.0f;
         float manaPct = 100.0f;
         uint32 enemies = 1;
+        bool saveMana = false;
+        float saveManaThreshold = 60.0f;
     };
 
     // First ready spell for the bot's active specialization, or 0.
     uint32 SelectNextSpell(Player* bot, Unit* target);
 
     // First ready heal for healer specs, or 0 (caller may fall back).
-    uint32 SelectNextHeal(Player* bot, Player* ally);
+    // saveMana: skip expensive flashes/surges below saveManaThreshold unless critical.
+    uint32 SelectNextHeal(Player* bot, Player* ally, bool saveMana = false,
+        float saveManaThreshold = 60.0f);
 
     // Cast helper: routes self-buffs to the bot, damage to the enemy.
     bool CastSpell(Player* bot, Unit* enemy, uint32 spellId);

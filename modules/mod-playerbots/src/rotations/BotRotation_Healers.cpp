@@ -8,6 +8,19 @@
 
 namespace BotRotation
 {
+namespace
+{
+    // Expensive triage heals are skipped while save-mana is active and mana is
+    // below threshold, unless the ally is critically low.
+    bool AllowExpensiveHeal(HealContext const& ctx)
+    {
+        if (!ctx.saveMana)
+            return true;
+        if (ctx.manaPct >= ctx.saveManaThreshold)
+            return true;
+        return ctx.healTargetHealthPct < 30.0f;
+    }
+}
 
 uint32 SelectHolyPaladin(HealContext const& ctx)
 {
@@ -61,14 +74,14 @@ uint32 SelectHolyPaladin(HealContext const& ctx)
     if (ctx.injuredAllies >= 3 && CanTryCast(bot, HOLY_RADIANCE))
         return HOLY_RADIANCE;
 
-    if (urgent && CanTryCast(bot, FLASH_OF_LIGHT))
+    if (urgent && AllowExpensiveHeal(ctx) && CanTryCast(bot, FLASH_OF_LIGHT))
         return FLASH_OF_LIGHT;
     if (CanTryCast(bot, HOLY_SHOCK))
         return HOLY_SHOCK;
     if (CanTryCast(bot, HOLY_LIGHT))
         return HOLY_LIGHT;
 
-    return FLASH_OF_LIGHT;
+    return AllowExpensiveHeal(ctx) ? FLASH_OF_LIGHT : HOLY_LIGHT;
 }
 
 uint32 SelectDiscipline(HealContext const& ctx)
@@ -112,14 +125,14 @@ uint32 SelectDiscipline(HealContext const& ctx)
     if (CanTryCast(bot, PENANCE))
         return PENANCE;
 
-    if (urgent && CanTryCast(bot, FLASH_HEAL))
+    if (urgent && AllowExpensiveHeal(ctx) && CanTryCast(bot, FLASH_HEAL))
         return FLASH_HEAL;
     if (!urgent && CanTryCast(bot, GREATER_HEAL))
         return GREATER_HEAL;
     if (!HasAuraUp(ally, RENEW) && CanTryCast(bot, RENEW))
         return RENEW;
 
-    return FLASH_HEAL;
+    return AllowExpensiveHeal(ctx) ? FLASH_HEAL : GREATER_HEAL;
 }
 
 uint32 SelectHolyPriest(HealContext const& ctx)
@@ -170,14 +183,14 @@ uint32 SelectHolyPriest(HealContext const& ctx)
 
     if (CanTryCast(bot, HOLY_WORD_SERENITY))
         return HOLY_WORD_SERENITY;
-    if (urgent && CanTryCast(bot, FLASH_HEAL))
+    if (urgent && AllowExpensiveHeal(ctx) && CanTryCast(bot, FLASH_HEAL))
         return FLASH_HEAL;
     if (urgent && CanTryCast(bot, BINDING_HEAL))
         return BINDING_HEAL;
     if (CanTryCast(bot, HEAL))
         return HEAL;
 
-    return FLASH_HEAL;
+    return AllowExpensiveHeal(ctx) ? FLASH_HEAL : HEAL;
 }
 
 uint32 SelectRestorationShaman(HealContext const& ctx)
@@ -222,14 +235,14 @@ uint32 SelectRestorationShaman(HealContext const& ctx)
             return CHAIN_HEAL;
     }
 
-    if (urgent && CanTryCast(bot, HEALING_SURGE))
+    if (urgent && AllowExpensiveHeal(ctx) && CanTryCast(bot, HEALING_SURGE))
         return HEALING_SURGE;
     if (CanTryCast(bot, GREATER_HEALING_WAVE))
         return GREATER_HEALING_WAVE;
     if (CanTryCast(bot, HEALING_WAVE))
         return HEALING_WAVE;
 
-    return HEALING_SURGE;
+    return AllowExpensiveHeal(ctx) ? HEALING_SURGE : HEALING_WAVE;
 }
 
 uint32 SelectRestorationDruid(HealContext const& ctx)
@@ -271,7 +284,7 @@ uint32 SelectRestorationDruid(HealContext const& ctx)
 
     if (urgent && CanTryCast(bot, NATURES_SWIFTNESS))
         return NATURES_SWIFTNESS;
-    if (urgent && CanTryCast(bot, REGROWTH))
+    if (urgent && AllowExpensiveHeal(ctx) && CanTryCast(bot, REGROWTH))
         return REGROWTH;
     if (CanTryCast(bot, HEALING_TOUCH))
         return HEALING_TOUCH;
@@ -315,14 +328,14 @@ uint32 SelectMistweaver(HealContext const& ctx)
     if (chi >= 2 && ctx.injuredAllies >= 2 && CanTryCast(bot, UPLIFT))
         return UPLIFT;
 
-    if (urgent && CanTryCast(bot, SURGING_MIST))
+    if (urgent && AllowExpensiveHeal(ctx) && CanTryCast(bot, SURGING_MIST))
         return SURGING_MIST;
     if (chi >= 3 && !HasAuraUp(ally, ENVELOPING_MIST) && CanTryCast(bot, ENVELOPING_MIST))
         return ENVELOPING_MIST;
     if (CanTryCast(bot, SOOTHING_MIST))
         return SOOTHING_MIST;
 
-    return SURGING_MIST;
+    return AllowExpensiveHeal(ctx) ? SURGING_MIST : SOOTHING_MIST;
 }
 
 } // namespace BotRotation

@@ -157,6 +157,44 @@ Send these as the message text (case-insensitive).
 | `dps attack` | Same, but only damage-spec bots. |
 | `maintenance` | Re-run init (spec + gear) on that bot. |
 | `autogear` | Same as `maintenance`. |
+| `eat` / `drink` / `food` | Sit and regenerate HP/mana until nearly full. Self-bots: AI never stands you up (so AFK sit and clicked food/drink work); regen only while seated. |
+| `heal` | Healer-only shortcut: strict heal mode (same as `co +heal`). |
+| `healer dps` | Healer-only shortcut: `co +healer dps`. |
+| `save mana` / `save mana off` | Healer-only shortcut: `co +save mana` / `co -save mana`. |
+
+### Combat / non-combat strategies (`co` / `nc`)
+
+Strategies are **role-gated** from the bot's current specialization:
+
+| Role | Combat (`co`) strategies |
+| --- | --- |
+| **Tank** | `tank` (peel + hold threat), `tank assist`, `dps` (tank plays as DPS / low threat) |
+| **Healer** | `heal` (strict heal), `healer dps`, `save mana` |
+| **DPS** | `dps`, `threat` (pause damage at ~80% of tank threat) |
+| **All** | `passive`, `grind` |
+
+| Non-combat (`nc`) | Effect |
+| --- | --- |
+| `food` | Auto sit + regen HP/mana when low (default on) |
+| `follow` / `stay` | Follow leader or hold position |
+| `loot` | Loot corpses |
+| `passive` / `grind` | Same shared flags |
+
+Wrong-role strategies are rejected (`!healer dps(wrong role)`) so `/p co +healer dps` only changes healers.
+
+```
+/w BotName co ?
+/w Yourself co +healer dps
+/p @heal co +healer dps
+/p @tank co +tank
+/p @dps co +threat
+/p nc +food
+```
+
+Bots always whisper their `co:` and `nc:` state back.
+
+Default on attach/init: tanks `+tank +tank assist`, healers `+heal +save mana`, DPS `+dps +threat`, everyone `+food +follow +loot`.
+
 
 ### Party role filters
 
@@ -182,32 +220,30 @@ Examples:
 
 ---
 
-## `co` / `nc` strategies — not implemented
+## `co` / `nc` strategies
 
-AzerothCore playerbots use whisper commands like:
+AzerothCore-style combat (`co`) and non-combat (`nc`) strategy toggles are
+supported for the strategies listed above (`food`, `save mana`, `healer dps`,
+`heal`, `follow`, `stay`, `loot`, `grind`, `passive`).
 
-```
-co +grind,-follow
-nc +loot
-co ?
-```
+Full AC strategy engine features not yet ported (RTSC, raid strats, `ll`, etc.)
+remain tracked in `PORTING.md`.
 
-Those control a full **combat (`co`) / non-combat (`nc`) strategy engine**.
-
-**SkyFire mod-playerbots does not support `co` or `nc` yet.** Whispering them does nothing useful (they are not recognized orders). That engine is tracked as future work in `PORTING.md` (along with RTSC, loot lists, item/vendor chat ops, etc.).
-
-Closest equivalents today:
+Closest equivalents for older one-shot orders:
 
 | AC-style idea | Use instead |
 | --- | --- |
-| Stay put | `stay` |
-| Follow master | `follow` |
+| Stay put | `stay` or `nc +stay` |
+| Follow master | `follow` or `nc +follow` |
 | Attack target | `attack` / `tank attack` / `dps attack` |
-| Attack anything nearby | `grind` |
-| Stop assisting | `passive` |
-| Resume assist | `aggressive` |
+| Attack anything nearby | `grind` or `co +grind` |
+| Stop assisting | `passive` or `co +passive` |
+| Resume assist | `aggressive` or `co -passive` |
 | Clear bot state | `reset` |
 | Re-gear / talents refresh | `autogear` / `maintenance` or `.playerbots init` |
+| Eat / drink | `eat` / `drink` or `nc +food` |
+| Strict healer / healer DPS | `co +heal` / `co +healer dps` |
+| Conserve healer mana | `co +save mana` |
 
 ---
 

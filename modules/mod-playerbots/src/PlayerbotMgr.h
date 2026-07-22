@@ -67,6 +67,10 @@ public:
 
     bool IsAutoCreateOnStartup() const { return _autoCreateOnStartup; }
 
+    float GetRestHealthPct() const { return _restHealthPct; }
+    float GetRestManaPct() const { return _restManaPct; }
+    float GetSaveManaThreshold() const { return _saveManaThreshold; }
+
     // Provisions bot accounts (prefix + n) and fills them with characters using
     // the configured faction/role ratios and start level. Incremental: existing
     // accounts and characters are reused. Returns the number of characters
@@ -130,6 +134,11 @@ private:
     uint32 _autoTankPct = 20;
     uint32 _autoHealerPct = 20;
     uint32 _autoLevel = 1;
+
+    // Rest / save-mana numeric thresholds only (enable/disable is co/nc runtime).
+    float _restHealthPct = 50.0f;
+    float _restManaPct = 50.0f;
+    float _saveManaThreshold = 60.0f;
 
     uint32 _loginTimer = 0;
     bool _candidatesLoaded = false;

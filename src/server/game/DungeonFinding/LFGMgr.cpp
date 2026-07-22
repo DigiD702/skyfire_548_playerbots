@@ -708,6 +708,10 @@ namespace lfg
             }
 
             SetState(gguid, LFG_STATE_ROLECHECK);
+            // Bind every member into LFG group data up front. Proposal accept checks
+            // GetGroup(player) == proposal.players[].group; without this, GetGroup stays 0
+            // (common for premades / bot parties) and the first accept instantly declines.
+            SetLeader(gguid, guid);
             // Send update to player
             LfgUpdateData updateData = LfgUpdateData(LFG_UPDATETYPE_JOIN_QUEUE, dungeons, comment);
             for (GroupReference* itr = grp->GetFirstMember(); itr != NULL; itr = itr->next())
@@ -718,6 +722,8 @@ namespace lfg
                     plrg->GetSession()->SendLfgUpdateStatus(updateData, false);
                     SetActiveQueueId(pguid, queueId);
                     SetState(pguid, LFG_STATE_ROLECHECK);
+                    SetGroup(pguid, gguid);
+                    AddPlayerToGroup(gguid, pguid);
                     if (!isContinue)
                         SetSelectedDungeons(pguid, dungeons);
                     roleCheck.roles[pguid] = grp->GetMemberRole(pguid);
@@ -1231,7 +1237,60 @@ namespace lfg
         bool const isRaidDungeon = IsRaidDungeon(*dungeon);
 
         Group* grp = proposal.group ? sGroupMgr->GetGroupByGUID(GUID_LOPART(proposal.group)) : NULL;
+
+        // Full premade parties are still normal (non-LFG) groups, so proposal.group is 0.
+        // Reuse that World group instead of RemoveMember/Disband into a brand-new one —
+        // tearing the party apart mid-proposal races LFGScripts::OnRemoveMember/OnDisband
+        // and has crashed in SetLfgRoles (ACCESS_VIOLATION).
+        if (!grp && proposal.players.size() > 1)
+        {
+            Group* shared = NULL;
+            bool reusable = true;
+            for (LfgProposalPlayerContainer::const_iterator it = proposal.players.begin(); it != proposal.players.end(); ++it)
+            {
+                Player* member = ObjectAccessor::FindPlayer(it->first);
+                if (!member || !member->GetGroup())
+                {
+                    reusable = false;
+                    break;
+                }
+                if (!shared)
+                    shared = member->GetGroup();
+                else if (member->GetGroup() != shared)
+                {
+                    reusable = false;
+                    break;
+                }
+            }
+
+            if (reusable && shared)
+            {
+                uint32 matched = 0;
+                for (GroupReference* ref = shared->GetFirstMember(); ref; ref = ref->next())
+                {
+                    Player* member = ref->GetSource();
+                    if (member && expectedPlayers.find(member->GetGUID()) != expectedPlayers.end())
+                        ++matched;
+                }
+                if (matched == expectedPlayers.size())
+                    grp = shared;
+            }
+        }
+
         bool const groupAlreadyExisted = grp != NULL;
+
+        // Premade reuse: flip the existing party to LFG before the member loop so we
+        // never RemoveMember anyone who is already in the proposal group.
+        if (grp && !grp->isLFGGroup())
+        {
+            grp->ConvertToLFG();
+            uint64 gguid = grp->GetGUID();
+            SetActiveQueueId(gguid, GetActiveQueueId(preferredLeader ? preferredLeader : proposal.leader));
+            SetState(gguid, LFG_STATE_PROPOSAL);
+            if (isRaidDungeon && !grp->isRaidGroup())
+                grp->ConvertToRaid();
+        }
+
         for (LfgGuidList::const_iterator it = players.begin(); it != players.end(); ++it)
         {
             uint64 pguid = (*it);
@@ -1280,7 +1339,14 @@ namespace lfg
                 }
             }
 
-            grp->SetLfgRoles(pguid, proposal.players.find(pguid)->second.role);
+            LfgProposalPlayerContainer::const_iterator itRoles = proposal.players.find(pguid);
+            if (itRoles == proposal.players.end())
+            {
+                SF_LOG_ERROR("lfg.proposal.group.make", "Proposal %u missing role data for player %u.",
+                    proposal.id, GUID_LOPART(pguid));
+                return false;
+            }
+            grp->SetLfgRoles(pguid, itRoles->second.role);
 
             // Add the cooldown spell if queued for a random dungeon
             if (dungeon->type == LFG_TYPE_RANDOM)
@@ -1419,11 +1485,32 @@ namespace lfg
 
         if (player.group && GetGroup(guid) != player.group)
         {
-            SF_LOG_DEBUG("lfg.proposal.update", "Player %u is no longer in proposal group %u. Removing stale proposal %u.",
-                GUID_LOPART(guid), GUID_LOPART(player.group), proposalId);
-            player.accept = LFG_ANSWER_DENY;
-            RemoveProposal(itProposal, LFG_UPDATETYPE_PROPOSAL_DECLINED);
-            return;
+            // World group still matches the proposal party — LFG PlayersStore was just
+            // missing the binding (seen with bot premades). Re-sync instead of declining.
+            bool resynced = false;
+            if (Player* plr = ObjectAccessor::FindPlayer(guid))
+            {
+                if (Group* worldGroup = plr->GetGroup())
+                {
+                    if (worldGroup->GetGUID() == player.group)
+                    {
+                        SetGroup(guid, player.group);
+                        AddPlayerToGroup(player.group, guid);
+                        resynced = true;
+                        SF_LOG_DEBUG("lfg.proposal.update", "Re-synced LFG group for player %u to proposal group %u.",
+                            GUID_LOPART(guid), GUID_LOPART(player.group));
+                    }
+                }
+            }
+
+            if (!resynced)
+            {
+                SF_LOG_DEBUG("lfg.proposal.update", "Player %u is no longer in proposal group %u. Removing stale proposal %u.",
+                    GUID_LOPART(guid), GUID_LOPART(player.group), proposalId);
+                player.accept = LFG_ANSWER_DENY;
+                RemoveProposal(itProposal, LFG_UPDATETYPE_PROPOSAL_DECLINED);
+                return;
+            }
         }
 
         for (LfgGuidList::const_iterator itQueue = proposal.queues.begin(); itQueue != proposal.queues.end(); ++itQueue)
@@ -1483,11 +1570,28 @@ namespace lfg
 
             if (it->second.group && GetGroup(pguid) != it->second.group)
             {
-                SF_LOG_DEBUG("lfg.proposal.update", "Proposal %u accepted but player %u left proposal group %u.",
-                    proposalId, GUID_LOPART(pguid), GUID_LOPART(it->second.group));
-                it->second.accept = LFG_ANSWER_DENY;
-                RemoveProposal(itProposal, LFG_UPDATETYPE_PROPOSAL_DECLINED);
-                return;
+                bool resynced = false;
+                if (Player* plr = ObjectAccessor::FindPlayer(pguid))
+                {
+                    if (Group* worldGroup = plr->GetGroup())
+                    {
+                        if (worldGroup->GetGUID() == it->second.group)
+                        {
+                            SetGroup(pguid, it->second.group);
+                            AddPlayerToGroup(it->second.group, pguid);
+                            resynced = true;
+                        }
+                    }
+                }
+
+                if (!resynced)
+                {
+                    SF_LOG_DEBUG("lfg.proposal.update", "Proposal %u accepted but player %u left proposal group %u.",
+                        proposalId, GUID_LOPART(pguid), GUID_LOPART(it->second.group));
+                    it->second.accept = LFG_ANSWER_DENY;
+                    RemoveProposal(itProposal, LFG_UPDATETYPE_PROPOSAL_DECLINED);
+                    return;
+                }
             }
         }
 

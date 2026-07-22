@@ -119,6 +119,11 @@ Remaining for later phases:
     loot rules still apply via `isAllowedToLoot`).
   * Bots walk to a nearby repairer and repair for free when equipped durability
     drops below 50%.
+  * Rest: `eat`/`drink` or `nc +food` — sit and regenerate HP/mana (no spell spam);
+    thresholds via `Playerbots.Rest.HealthPct` / `ManaPct`. Self-bots never get
+    stood up by rest AI (AFK sit / clicked food&drink stay intact).
+  * Healer strategies via `co +heal` / `co +healer dps` / `co +save mana`.
+  * Bots whisper back their `co:` / `nc:` state on strategy commands.
 * [DONE] Chat orders via whisper or party/raid chat:
   * `stay` / `follow` (also `come`) - hold position or resume following.
   * `flee` / `summon` - run to / teleport to the issuer.
@@ -140,11 +145,11 @@ Remaining for later phases:
   major CDs, glyph-aware conditional lines.
 * [TODO] Point movement / travel to arbitrary destinations (for questing,
   objectives, and dungeon navigation).
-* [TODO] Port the strategy/action/trigger/value engine on top of `PlayerbotAI`
-  (`co`/`nc` strategies from the AC playerbot wiki).
+* [TODO] Expand the co/nc strategy set further (aoe/boost/cc/avoid aoe, etc.).
+  Role-gated tank/heal/dps strategies, self-whisper, and food regen are live.
 * [TODO] AC wiki backlog (later): RTSC/aedm, loot lists (`ll`), item/vendor
   chat ops, glyphs, raid-specific strats, Multibot addon protocol.
-* [TODO] Non-combat behaviour remaining: sell junk to vendors, rest/eat/drink,
+* [TODO] Non-combat behaviour remaining: sell junk to vendors,
   mounts, gossip/quest NPC interaction.
 
 ## Phase 4 - Feature testing targets (the reason for this port) (IN PROGRESS)

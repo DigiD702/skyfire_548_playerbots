@@ -7,6 +7,7 @@
 #include "PlayerbotMgr.h"
 #include "rotations/BotRotation.h"
 #include "CellImpl.h"
+#include "Chat.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "GridNotifiers.h"
@@ -23,6 +24,8 @@
 #include "PetDefines.h"
 #include "Player.h"
 #include "SharedDefines.h"
+#include "SpellAuraDefines.h"
+#include "ThreatManager.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
 
@@ -66,6 +69,10 @@ namespace
     // Repair when any equipped item is below this fraction of max durability.
     constexpr float BOT_REPAIR_THRESHOLD = 0.50f;
 
+    // Rest / save-mana defaults (override via Playerbots.Rest.* / SaveMana.Threshold).
+    // Strategy enable/disable is runtime co/nc only — not config.
+    constexpr float BOT_REST_REGEN_PCT = 0.15f;
+
     // Matches AELootCreatureCheck / isAllowedToLoot for bot corpse scavenging.
     struct BotLootCreatureCheck
     {
@@ -104,9 +111,49 @@ namespace
 
 PlayerbotAI::PlayerbotAI(Player* bot, bool clientControlled)
     : _bot(bot), _clientControlled(clientControlled), _updateTimer(0), _chaseGuid(0),
-      _followGuid(0), _lootGuid(0), _wanderTimer(0), _stay(false), _passive(false),
-      _grind(false), _forcedTargetGuid(0), _lfgRoleResponded(false), _lfgProposalResponded(false)
+      _followGuid(0), _lootGuid(0), _wanderTimer(0),
+      _stay(false), _food(true), _loot(true),
+      _passive(false), _grind(false),
+      _tankMode(false), _tankAssist(false), _dpsMode(false), _threat(false),
+      _healerDps(false), _saveMana(false),
+      _forceRest(false), _resting(false),
+      _forcedTargetGuid(0), _lfgRoleResponded(false), _lfgProposalResponded(false)
 {
+    ResetStrategiesToRoleDefaults();
+}
+
+void PlayerbotAI::ResetStrategiesToRoleDefaults()
+{
+    _stay = false;
+    _food = true;
+    _loot = true;
+    _passive = false;
+    _grind = false;
+    _forceRest = false;
+
+    _tankMode = false;
+    _tankAssist = false;
+    _dpsMode = false;
+    _threat = false;
+    _healerDps = false;
+    _saveMana = false;
+
+    switch (GetCombatRole())
+    {
+        case CombatRole::Tank:
+            _tankMode = true;
+            _tankAssist = true;
+            break;
+        case CombatRole::Healer:
+            _healerDps = false; // strict heal in dungeons
+            _saveMana = true;
+            break;
+        case CombatRole::Damage:
+        default:
+            _dpsMode = true;
+            _threat = true; // keep threat low vs tank
+            break;
+    }
 }
 
 void PlayerbotAI::UpdateAI(uint32 diff)
@@ -114,10 +161,10 @@ void PlayerbotAI::UpdateAI(uint32 diff)
     if (!_bot || !_bot->IsInWorld())
         return;
 
-    // Invites and LFG must react immediately - role checks time out if bots
-    // only answer on the coarse AI interval.
+    // Invites must react immediately - they time out if bots only answer on
+    // the coarse AI interval. LFG role/proposal responses run from
+    // PlayerbotMgr::Update on the world thread (not here on map workers).
     HandlePendingInvites();
-    HandleLfg();
 
     _updateTimer += diff;
     if (_updateTimer < BOT_AI_UPDATE_INTERVAL)
@@ -132,11 +179,14 @@ void PlayerbotAI::UpdateAI(uint32 diff)
 
     _updateTimer = 0;
 
-    // Self-bot: client owns movement. Only cast in combat.
+    // Self-bot: client owns movement. Cast in combat; allow food regen OOC.
     if (_clientControlled)
     {
-        if (_bot->IsAlive())
-            HandleCombatCastOnly();
+        if (!_bot->IsAlive())
+            return;
+        if (HandleCombatCastOnly())
+            return;
+        HandleRest();
         return;
     }
 
@@ -148,6 +198,10 @@ void PlayerbotAI::UpdateAI(uint32 diff)
     if (HandleCombat())
         return; // engaged: combat drives movement
 
+    // Out of combat: eat/drink before follow/wander when ordered or low resources.
+    if (HandleRest())
+        return;
+
     if (_stay)
     {
         HandleStay();
@@ -155,19 +209,23 @@ void PlayerbotAI::UpdateAI(uint32 diff)
         return;
     }
 
-    if (HandleLoot())
-        return; // walking to / looting a corpse
-
-    // Grouped bots stick with the leader; solo bots wander the local area so
-    // the world feels populated instead of frozen statues.
+    // Grouped non-leaders stick with the leader. Solo / group-leader bots wander.
+    // Loot and repair walks are solo-only — otherwise they cancel MoveFollow and
+    // look like leftover random movement after the bot was invited.
     Group* group = _bot->GetGroup();
     uint64 leaderGuid = group ? group->GetLeaderGUID() : 0;
-    if (leaderGuid && leaderGuid != _bot->GetGUID())
+    bool const followLeader = leaderGuid && leaderGuid != _bot->GetGUID();
+
+    if (!followLeader && HandleLoot())
+        return;
+
+    if (followLeader)
         HandleFollow();
     else
+    {
         HandleWander();
-
-    HandleVendor();
+        HandleVendor();
+    }
 }
 
 // Auto-accept party/raid invitations so bots can be pulled into groups (and thus
@@ -208,8 +266,9 @@ void PlayerbotAI::HandlePendingInvites()
 }
 
 // Auto-respond to the dungeon finder so a master can queue a party of bots: the
-// bot answers the group role check and accepts the join proposal. The rest of
-// the LFG flow (teleport in/out, boot votes, etc.) is handled by the core.
+// bot answers the group role check and accepts the join proposal. Called from
+// PlayerbotMgr::Update on the world thread (not from map AI ticks) because
+// UpdateProposal mutates shared LFG/group state and teleports players.
 void PlayerbotAI::HandleLfg()
 {
     uint64 const guid = _bot->GetGUID();
@@ -251,7 +310,11 @@ void PlayerbotAI::HandleLfg()
             // Only submit when unset or mismatched (avoid packet spam every tick).
             if ((current & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE)) == 0
                 || (current & roles) != roles)
+            {
+                SF_LOG_INFO("modules", "[mod-playerbots] Bot '%s' answering LFG role check as %u.",
+                    _bot->GetName().c_str(), uint32(roles));
                 sLFGMgr->UpdateRoleCheck(gguid, guid, roles);
+            }
             _lfgRoleResponded = true;
         }
         else if (_lfgRoleResponded)
@@ -266,10 +329,17 @@ void PlayerbotAI::HandleLfg()
     bool const inProposal = (pstate == lfg::LFG_STATE_PROPOSAL) || (gstate == lfg::LFG_STATE_PROPOSAL);
     if (inProposal || sLFGMgr->GetActiveProposalIdForPlayer(guid))
     {
-        if (uint32 proposalId = sLFGMgr->GetActiveProposalIdForPlayer(guid))
+        // Only accept once per proposal; GetActiveProposalIdForPlayer already
+        // skips AGREE, but guard against re-entry while state is still PROPOSAL.
+        if (!_lfgProposalResponded)
         {
-            sLFGMgr->UpdateProposal(proposalId, guid, true);
-            _lfgProposalResponded = true;
+            if (uint32 proposalId = sLFGMgr->GetActiveProposalIdForPlayer(guid))
+            {
+                SF_LOG_INFO("modules", "[mod-playerbots] Bot '%s' accepting LFG proposal %u (role %u).",
+                    _bot->GetName().c_str(), proposalId, uint32(roles));
+                sLFGMgr->UpdateProposal(proposalId, guid, true);
+                _lfgProposalResponded = true;
+            }
         }
     }
     else
@@ -289,14 +359,28 @@ uint8 PlayerbotAI::ComputeLfgRole()
     }
 }
 
-// Combat: acquire a target (own attacker, or assist the group leader), position
-// for the class (melee closes in, ranged holds at distance), and run a basic
-// class rotation on top of auto-attack.
+// Combat: acquire a target from group threats (not the master's mouseover),
+// position for the class, and run the rotation.
 bool PlayerbotAI::HandleCombat()
 {
-    // Healers prioritize keeping the party alive before dealing damage.
-    if (GetCombatRole() == CombatRole::Healer && HandleHealing())
-        return true;
+    StopResting();
+
+    if (GetCombatRole() == CombatRole::Healer)
+    {
+        if (SelectHealTarget() && HandleHealing())
+            return true;
+        // Strict heal: hold with the group, never spend GCDs on damage.
+        if (!_healerDps)
+        {
+            if (GroupInCombat() || !_bot->getAttackers().empty())
+            {
+                if (!_clientControlled && !_stay)
+                    HandleFollow();
+                return true;
+            }
+            return false;
+        }
+    }
 
     Unit* target = SelectTarget();
     if (!target)
@@ -341,9 +425,18 @@ bool PlayerbotAI::HandleCombat()
 
         if (inMelee)
         {
-            if (GetCombatRole() == CombatRole::Tank)
+            if (!_bot->HasInArc(static_cast<float>(M_PI), target))
+                _bot->SetInFront(target);
+            if (GetCombatRole() == CombatRole::Tank && _tankMode)
                 DoTankExtras(target);
             DoRotation(target);
+        }
+        else if (GetCombatRole() == CombatRole::Tank && _tankMode)
+        {
+            // Tanks can throw a taunt / ranged threat while closing.
+            if (!_bot->HasInArc(static_cast<float>(M_PI), target))
+                _bot->SetInFront(target);
+            DoTankExtras(target);
         }
 
         return true;
@@ -365,12 +458,15 @@ bool PlayerbotAI::HandleCombat()
 
     if (inRange && hasLos)
     {
+        if (!_bot->IsStopped())
+            _bot->StopMoving();
         if (_bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
         {
             _bot->GetMotionMaster()->Clear();
             _bot->GetMotionMaster()->MoveIdle();
         }
-        if (!_bot->HasInArc(static_cast<float>(M_PI) / 3.0f, target))
+        _bot->SetSelection(target->GetGUID());
+        if (!_bot->HasInArc(static_cast<float>(M_PI), target))
             _bot->SetInFront(target);
 
         _chaseGuid = target->GetGUID();
@@ -406,8 +502,16 @@ bool PlayerbotAI::HandleCombat()
 // range with LoS; they steer into position themselves.
 bool PlayerbotAI::HandleCombatCastOnly()
 {
-    if (GetCombatRole() == CombatRole::Healer && HandleHealing())
-        return true;
+    StopResting();
+
+    // Heal only when someone is actually injured; otherwise healer-dps may attack.
+    if (GetCombatRole() == CombatRole::Healer)
+    {
+        if (SelectHealTarget() && HandleHealing())
+            return true;
+        if (!_healerDps)
+            return GroupInCombat() || !_bot->getAttackers().empty();
+    }
 
     Unit* target = SelectTarget();
     if (!target)
@@ -435,28 +539,29 @@ bool PlayerbotAI::HandleCombatCastOnly()
         if (!_bot->IsWithinMeleeRange(target))
             return true;
         _bot->Attack(target, true);
-        if (GetCombatRole() == CombatRole::Tank)
+        if (GetCombatRole() == CombatRole::Tank && _tankMode)
             DoTankExtras(target);
         DoRotation(target);
     }
     return true;
 }
 
-// Target priority: a forced "attack" target, then a unit already attacking us,
-// otherwise (when not passive) assist the group leader's target.
+// Target priority (player mouseover is NOT used — only "attack"/"tank attack"
+// forced targets come from chat commands):
+//   1) Forced command target
+//   2) Tanks: peel mobs off healers/party, then hold the pack
+//   3) Own attackers
+//   4) Group combat: prefer the tank's target, else lowest-HP mob on the party
+//   5) Grind (explicit) / self-bot selected unit
 Unit* PlayerbotAI::SelectTarget()
 {
     if (Unit* forced = GetForcedTarget())
         return forced;
 
-    // Tanks peel mobs off party members first.
-    if (GetCombatRole() == CombatRole::Tank)
+    // Tanks in tank-mode own peel / pack selection.
+    if (GetCombatRole() == CombatRole::Tank && _tankMode)
         if (Unit* tankTarget = SelectTankTarget())
             return tankTarget;
-
-    Unit* victim = _bot->GetVictim();
-    if (victim && victim->IsAlive() && _bot->IsValidAttackTarget(victim))
-        return victim;
 
     for (Unit* attacker : _bot->getAttackers())
         if (attacker && attacker->IsAlive() && _bot->IsValidAttackTarget(attacker))
@@ -466,34 +571,23 @@ Unit* PlayerbotAI::SelectTarget()
     if (_passive)
         return nullptr;
 
+    // Party fight: stick with the tank's target when possible, otherwise burn
+    // the lowest-HP mob already attacking someone in the group.
+    if (Unit* tankAssist = SelectAssistTankTarget())
+        return tankAssist;
+
+    if (Unit* groupThreat = SelectGroupThreatTarget())
+        return groupThreat;
+
+    if (Unit* execute = SelectLowestHpGroupEnemy())
+        return execute;
+
     if (_grind)
         if (Unit* grind = SelectGrindTarget())
             return grind;
 
-    // Assist the group leader: prefer whoever the leader is fighting, otherwise
-    // whatever they currently have selected (so "target a mob" pulls the bots in
-    // even before the leader lands a hit).
-    Group* group = _bot->GetGroup();
-    uint64 leaderGuid = group ? group->GetLeaderGUID() : 0;
-    if (leaderGuid && leaderGuid != _bot->GetGUID())
-    {
-        if (Player* leader = ObjectAccessor::FindPlayer(leaderGuid))
-        {
-            Unit* assist = leader->GetVictim();
-            if (!assist)
-                assist = leader->GetSelectedUnit();
-
-            if (assist && assist->IsAlive() &&
-                _bot->IsValidAttackTarget(assist) &&
-                leader->IsInCombat() &&
-                _bot->IsWithinDistInMap(assist, 60.0f))
-                return assist;
-        }
-    }
-
-    // Self-bot with no forced target: attack whatever the player has selected
-    // while in combat, or any attacker already handled above.
-    if (_clientControlled)
+    // Self-bot only: the real player's selected unit while they are in combat.
+    if (_clientControlled && _bot->IsInCombat())
     {
         if (Unit* selected = _bot->GetSelectedUnit())
             if (selected->IsAlive() && _bot->IsValidAttackTarget(selected))
@@ -611,7 +705,24 @@ uint32 PlayerbotAI::GetFillerSpell() const
     {
         case CLASS_PALADIN: return 35395; // Crusader Strike
         case CLASS_HUNTER:  return 3044;  // Arcane Shot
-        case CLASS_ROGUE:   return 1752;  // Sinister Strike
+        case CLASS_ROGUE:
+        {
+            // Only prefer Mutilate when both daggers are equipped.
+            Item* mh = _bot->GetWeaponForAttack(WeaponAttackType::BASE_ATTACK, true);
+            Item* oh = _bot->GetWeaponForAttack(WeaponAttackType::OFF_ATTACK, true);
+            bool const daggers = mh && oh
+                && mh->GetTemplate() && oh->GetTemplate()
+                && mh->GetTemplate()->SubClass == ITEM_SUBCLASS_WEAPON_DAGGER
+                && oh->GetTemplate()->SubClass == ITEM_SUBCLASS_WEAPON_DAGGER;
+            if (daggers && _bot->HasSpell(1329))
+                return 1329;   // Mutilate
+            if (mh && mh->GetTemplate() && mh->GetTemplate()->SubClass == ITEM_SUBCLASS_WEAPON_DAGGER
+                && _bot->HasSpell(111240))
+                return 111240; // Dispatch
+            if (_bot->HasSpell(16511))
+                return 16511;  // Hemorrhage
+            return 1752;       // Sinister Strike
+        }
         case CLASS_PRIEST:  return 585;   // Smite
         case CLASS_MAGE:    return 116;   // Frostbolt
         case CLASS_WARLOCK: return 686;   // Shadow Bolt
@@ -629,16 +740,41 @@ void PlayerbotAI::DoRotation(Unit* target)
     if (_bot->HasUnitState(UNIT_STATE_CASTING))
         return;
 
+    // DPS threat strategy: pause damage if we are about to rip aggro from the tank.
+    if (ShouldThrottleThreat(target))
+        return;
+
     if (BotRotation::TryCombatUtilities(_bot, target))
         return;
 
-    uint32 spellId = BotRotation::SelectNextSpell(_bot, target);
-    if (!spellId)
-        spellId = GetFillerSpell();
-    if (!spellId)
-        return;
+    // Prefer the priority list. If CheckCast rejects a pick, fall through to filler.
+    if (uint32 spellId = BotRotation::SelectNextSpell(_bot, target))
+        if (BotRotation::CastSpell(_bot, target, spellId))
+            return;
 
-    BotRotation::CastSpell(_bot, target, spellId);
+    if (uint32 filler = GetFillerSpell())
+        BotRotation::CastSpell(_bot, target, filler);
+}
+
+bool PlayerbotAI::ShouldThrottleThreat(Unit* target) const
+{
+    if (!_threat || !_bot || !target)
+        return false;
+    if (GetCombatRole() == CombatRole::Tank && _tankMode)
+        return false;
+    if (!target->CanHaveThreatList())
+        return false;
+
+    float const myThreat = target->getThreatManager().getThreat(_bot);
+    HostileReference* cur = target->getThreatManager().getCurrentVictim();
+    if (!cur)
+        return false;
+    float const topThreat = cur->getThreat();
+    if (topThreat <= 0.0f)
+        return false;
+
+    // Stop damaging when we hold ~80%+ of the current top threat.
+    return myThreat >= topThreat * 0.80f;
 }
 
 bool PlayerbotAI::HandleHealing()
@@ -666,7 +802,8 @@ bool PlayerbotAI::HandleHealing()
     if (!ally)
         return false;
 
-    uint32 healId = BotRotation::SelectNextHeal(_bot, ally);
+    uint32 healId = BotRotation::SelectNextHeal(_bot, ally, _saveMana,
+        sPlayerbotMgr->GetSaveManaThreshold());
     if (!healId)
         healId = GetHealSpell();
     if (!healId || !BotRotation::CanTryCast(_bot, healId))
@@ -694,12 +831,103 @@ bool PlayerbotAI::HandleHealing()
 
 Unit* PlayerbotAI::SelectTankTarget()
 {
+    // Without tank assist, only fight what is already on us.
+    if (!_tankAssist)
+    {
+        for (Unit* attacker : _bot->getAttackers())
+            if (attacker && attacker->IsAlive() && _bot->IsValidAttackTarget(attacker))
+                return attacker;
+        return nullptr;
+    }
+
+    Group* group = _bot->GetGroup();
+    if (!group)
+    {
+        for (Unit* attacker : _bot->getAttackers())
+            if (attacker && attacker->IsAlive() && _bot->IsValidAttackTarget(attacker))
+                return attacker;
+        return nullptr;
+    }
+
+    Unit* best = nullptr;
+    int bestScore = -1;
+
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || !member->IsAlive() || !_bot->IsInMap(member))
+            continue;
+
+        // Score the member's role so peels off healers beat peels off DPS.
+        int memberPriority = 1;
+        {
+            // Cheap role guess from our own GetCombatRole mapping isn't available
+            // for other players' AI; use class/spec heuristics via specialization.
+            uint32 specId = member->GetTalentSpecialization(member->GetActiveSpec());
+            uint8 cls = member->getClass();
+            uint32 const* specs = GetClassSpecializations(cls);
+            bool isHeal = false;
+            bool isTank = false;
+            if (specs)
+            {
+                switch (cls)
+                {
+                    case CLASS_PALADIN: isTank = (specId == specs[1]); isHeal = (specId == specs[0]); break;
+                    case CLASS_WARRIOR: isTank = (specId == specs[2]); break;
+                    case CLASS_DEATH_KNIGHT: isTank = (specId == specs[0]); break;
+                    case CLASS_DRUID: isTank = (specId == specs[2]); isHeal = (specId == specs[3]); break;
+                    case CLASS_MONK: isTank = (specId == specs[0]); isHeal = (specId == specs[1]); break;
+                    case CLASS_PRIEST: isHeal = (specId != specs[2]); break;
+                    case CLASS_SHAMAN: isHeal = (specId == specs[2]); break;
+                    default: break;
+                }
+            }
+            if (isHeal)
+                memberPriority = 3;
+            else if (!isTank)
+                memberPriority = 2;
+            else
+                memberPriority = 0; // already on us / another tank
+        }
+
+        for (Unit* attacker : member->getAttackers())
+        {
+            if (!attacker || !attacker->IsAlive() || !_bot->IsValidAttackTarget(attacker))
+                continue;
+            if (!_bot->IsWithinDistInMap(attacker, 60.0f))
+                continue;
+
+            Unit* victim = attacker->GetVictim();
+            int score = 0;
+            if (victim && victim != _bot)
+                score += 1000 + memberPriority * 100;
+            else if (victim == _bot)
+                score += 100; // already on us — still a candidate for multi-target
+            else
+                score += 50;
+
+            // Prefer closer when scores tie.
+            score -= int(_bot->GetDistance(attacker));
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                best = attacker;
+            }
+        }
+    }
+
+    return best;
+}
+
+Unit* PlayerbotAI::SelectGroupThreatTarget()
+{
     Group* group = _bot->GetGroup();
     if (!group)
         return nullptr;
 
     Unit* best = nullptr;
-    float bestDist = 60.0f;
+    float bestHp = 2.0f; // fraction
 
     for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
     {
@@ -714,21 +942,66 @@ Unit* PlayerbotAI::SelectTankTarget()
             if (!_bot->IsWithinDistInMap(attacker, 60.0f))
                 continue;
 
-            // Prefer mobs hitting someone other than us (need a taunt / peel).
-            Unit* victim = attacker->GetVictim();
-            bool const peeling = victim && victim != _bot;
-            float const dist = _bot->GetDistance(attacker);
-            if (!best
-                || (peeling && (!best->GetVictim() || best->GetVictim() == _bot))
-                || dist < bestDist)
+            float const hp = attacker->GetMaxHealth()
+                ? float(attacker->GetHealth()) / float(attacker->GetMaxHealth())
+                : 1.0f;
+            if (!best || hp < bestHp)
             {
                 best = attacker;
-                bestDist = dist;
+                bestHp = hp;
             }
         }
     }
 
     return best;
+}
+
+Unit* PlayerbotAI::SelectAssistTankTarget()
+{
+    Group* group = _bot->GetGroup();
+    if (!group)
+        return nullptr;
+
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || !member->IsAlive() || member == _bot || !_bot->IsInMap(member))
+            continue;
+
+        // Detect tank the same way GetCombatRole does for us.
+        uint32 specId = member->GetTalentSpecialization(member->GetActiveSpec());
+        uint8 cls = member->getClass();
+        uint32 const* specs = GetClassSpecializations(cls);
+        bool isTank = false;
+        if (specs)
+        {
+            switch (cls)
+            {
+                case CLASS_WARRIOR: isTank = (specId == specs[2]); break;
+                case CLASS_PALADIN: isTank = (specId == specs[1]); break;
+                case CLASS_DEATH_KNIGHT: isTank = (specId == specs[0]); break;
+                case CLASS_DRUID: isTank = (specId == specs[2]); break;
+                case CLASS_MONK: isTank = (specId == specs[0]); break;
+                default: break;
+            }
+        }
+        if (!isTank)
+            continue;
+
+        Unit* victim = member->GetVictim();
+        if (victim && victim->IsAlive() && _bot->IsValidAttackTarget(victim) &&
+            _bot->IsWithinDistInMap(victim, 60.0f))
+            return victim;
+    }
+
+    return nullptr;
+}
+
+Unit* PlayerbotAI::SelectLowestHpGroupEnemy()
+{
+    // Alias of SelectGroupThreatTarget — kept separate so SelectTarget's priority
+    // list stays readable if we later weight them differently.
+    return SelectGroupThreatTarget();
 }
 
 Player* PlayerbotAI::SelectHealTarget()
@@ -766,15 +1039,72 @@ Player* PlayerbotAI::SelectHealTarget()
 
 uint32 PlayerbotAI::GetTauntSpell() const
 {
+    // Prefer a known, off-cooldown taunt. MoP DBC names 62124 "Reckoning"
+    // (Hand of Reckoning in the spellbook).
+    uint32 candidates[3] = { 0, 0, 0 };
     switch (_bot->getClass())
     {
-        case CLASS_WARRIOR:      return 355;     // Taunt
-        case CLASS_PALADIN:      return 62124;   // Hand of Reckoning
-        case CLASS_DEATH_KNIGHT: return 56222;   // Dark Command
-        case CLASS_DRUID:        return 6795;    // Growl
-        case CLASS_MONK:         return 115546;  // Provoke
-        default:                 return 0;
+        case CLASS_WARRIOR:
+            candidates[0] = 355;      // Taunt
+            break;
+        case CLASS_PALADIN:
+            candidates[0] = 62124;    // Reckoning / Hand of Reckoning
+            candidates[1] = 31789;    // Righteous Defense (multi, needs ally)
+            break;
+        case CLASS_DEATH_KNIGHT:
+            candidates[0] = 56222;    // Dark Command
+            candidates[1] = 49576;    // Death Grip
+            break;
+        case CLASS_DRUID:
+            candidates[0] = 6795;     // Growl
+            break;
+        case CLASS_MONK:
+            candidates[0] = 115546;   // Provoke
+            break;
+        default:
+            return 0;
     }
+
+    for (uint32 id : candidates)
+        if (id && _bot->HasSpell(id) && !_bot->HasSpellCooldown(id))
+            return id;
+    return 0;
+}
+
+uint32 PlayerbotAI::GetAoeThreatSpell() const
+{
+    uint32 candidates[3] = { 0, 0, 0 };
+    switch (_bot->getClass())
+    {
+        case CLASS_WARRIOR:
+            candidates[0] = 6343;     // Thunder Clap
+            candidates[1] = 1680;     // Whirlwind
+            break;
+        case CLASS_PALADIN:
+            candidates[0] = 31935;    // Avenger's Shield (ranged)
+            candidates[1] = 53595;    // Hammer of the Righteous
+            candidates[2] = 26573;    // Consecration
+            break;
+        case CLASS_DEATH_KNIGHT:
+            candidates[0] = 48721;    // Blood Boil
+            candidates[1] = 43265;    // Death and Decay
+            break;
+        case CLASS_DRUID:
+            candidates[0] = 77758;    // Thrash
+            candidates[1] = 106785;   // Swipe
+            break;
+        case CLASS_MONK:
+            candidates[0] = 121253;   // Keg Smash
+            candidates[1] = 115181;   // Breath of Fire
+            break;
+        default:
+            return 0;
+    }
+
+    for (uint32 id : candidates)
+        if (id && _bot->HasSpell(id) && !_bot->HasSpellCooldown(id))
+            return id;
+    return 0;
 }
 
 uint32 PlayerbotAI::GetHealSpell() const
@@ -837,13 +1167,31 @@ void PlayerbotAI::DoTankExtras(Unit* target)
     if (!target || _bot->HasUnitState(UNIT_STATE_CASTING))
         return;
 
-    // Taunt when the mob is hitting someone else.
+    // Taunt when the current focus mob is hitting someone else.
     Unit* victim = target->GetVictim();
     if (victim && victim != _bot)
     {
-        if (uint32 taunt = GetTauntSpell())
-            if (BotRotation::CanTryCast(_bot, taunt))
-                BotRotation::CastSpell(_bot, target, taunt);
+        uint32 taunt = GetTauntSpell();
+        // Righteous Defense is cast on the ally being attacked, not the mob.
+        if (taunt == 31789)
+        {
+            if (Player* ally = victim->ToPlayer())
+                if (BotRotation::CanTryCast(_bot, taunt) && BotRotation::CastSpell(_bot, ally, taunt))
+                    return;
+        }
+        else if (taunt && BotRotation::CanTryCast(_bot, taunt))
+        {
+            if (BotRotation::CastSpell(_bot, target, taunt))
+                return;
+        }
+    }
+
+    // Multi-target: drop an AoE / ranged threat ability when 2+ hostiles are nearby.
+    if (BotRotation::CountNearbyEnemies(_bot, 10.0f) >= 2)
+    {
+        if (uint32 aoe = GetAoeThreatSpell())
+            if (BotRotation::CanTryCast(_bot, aoe) && BotRotation::CastSpell(_bot, target, aoe))
+                return;
     }
 }
 
@@ -881,6 +1229,9 @@ void PlayerbotAI::HandleInteractions()
 // while the bot is busy with loot so follow/wander don't yank it away mid-run.
 bool PlayerbotAI::HandleLoot()
 {
+    if (!_loot)
+        return false;
+
     // Still pathing toward a corpse we already picked.
     if (_lootGuid)
     {
@@ -967,6 +1318,10 @@ void PlayerbotAI::HandleFollow()
     if (leaderGuid && leaderGuid != _bot->GetGUID())
         leader = ObjectAccessor::FindPlayer(leaderGuid);
 
+    // Cancel solo wander state so a mid-walk / pause never resumes after invite.
+    _wanderTimer = 0;
+    _lootGuid = 0;
+
     if (!leader || !leader->IsInWorld() || !leader->IsAlive())
     {
         if (_followGuid)
@@ -986,15 +1341,16 @@ void PlayerbotAI::HandleFollow()
         return;
     }
 
-    if (_followGuid != leaderGuid ||
-        _bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+    MovementGeneratorType const moveType = _bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    if (_followGuid != leaderGuid || moveType != FOLLOW_MOTION_TYPE)
     {
-        // Spread bots around the leader by deriving a stable angle from the GUID.
+        // Clear first so an in-progress wander MovePoint/spline is fully stopped
+        // before Follow takes over (Mutate alone left bots mid-wander visually).
+        _bot->GetMotionMaster()->Clear();
         float angle = float(_bot->GetGUIDLow() % 16) / 16.0f * TWO_PI;
         _bot->GetMotionMaster()->MoveFollow(leader, BOT_FOLLOW_DIST, angle);
         _followGuid = leaderGuid;
         _chaseGuid = 0;
-        _lootGuid = 0;
     }
 }
 
@@ -1119,7 +1475,463 @@ void PlayerbotAI::ReplyTo(Player* from, std::string const& text)
 {
     if (!from || !_bot)
         return;
+
+    // Self-bot whispering to yourself re-enters OnChat. If the reply looks like
+    // a co/nc command (e.g. "co +healer dps"), that recurses until stack overflow.
+    if (from->GetGUID() == _bot->GetGUID())
+    {
+        if (WorldSession* session = from->GetSession())
+            ChatHandler(session).SendSysMessage(text.c_str());
+        return;
+    }
+
     _bot->Whisper(text, Language::LANG_UNIVERSAL, from->GetGUID());
+}
+
+float PlayerbotAI::HealthPct() const
+{
+    if (!_bot || !_bot->GetMaxHealth())
+        return 100.0f;
+    return 100.0f * float(_bot->GetHealth()) / float(_bot->GetMaxHealth());
+}
+
+float PlayerbotAI::ManaPct() const
+{
+    if (!_bot || !UsesMana() || !_bot->GetMaxPower(POWER_MANA))
+        return 100.0f;
+    return 100.0f * float(_bot->GetPower(POWER_MANA)) / float(_bot->GetMaxPower(POWER_MANA));
+}
+
+bool PlayerbotAI::UsesMana() const
+{
+    return _bot && _bot->GetMaxPower(POWER_MANA) > 0;
+}
+
+bool PlayerbotAI::GroupInCombat() const
+{
+    if (!_bot)
+        return false;
+    if (_bot->IsInCombat())
+        return true;
+    Group* group = _bot->GetGroup();
+    if (!group)
+        return false;
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (member && member->IsAlive() && member->IsInCombat() && _bot->IsInMap(member))
+            return true;
+    }
+    return false;
+}
+
+void PlayerbotAI::StopResting()
+{
+    _forceRest = false;
+    _resting = false;
+    if (!_bot)
+        return;
+    // Self-bot owns stand/sit (AFK sit, manual food/drink). Never yank them up.
+    if (_clientControlled)
+        return;
+    if (_bot->getStandState() != UNIT_STAND_STATE_STAND)
+        _bot->SetStandState(UNIT_STAND_STATE_STAND);
+}
+
+bool PlayerbotAI::StartRefreshment()
+{
+    if (!_bot)
+        return false;
+
+    // Self-bot: only regen while the player is already sitting (they own movement).
+    // Never force sit/stand here — that interrupted AFK sit and clicked drinks.
+    if (_clientControlled)
+    {
+        if (_bot->getStandState() != UNIT_STAND_STATE_SIT)
+            return false;
+    }
+    else if (_bot->getStandState() != UNIT_STAND_STATE_SIT)
+        _bot->SetStandState(UNIT_STAND_STATE_SIT);
+
+    if (!_clientControlled)
+    {
+        _bot->GetMotionMaster()->Clear();
+        _bot->GetMotionMaster()->MoveIdle();
+        _followGuid = 0;
+        _chaseGuid = 0;
+    }
+    _resting = true;
+
+    // Direct regen — no spells (avoids Refreshment cast spam).
+    if (uint32 const maxHp = _bot->GetMaxHealth())
+    {
+        uint32 const cur = _bot->GetHealth();
+        if (cur < maxHp)
+        {
+            uint32 const gain = std::max<uint32>(1, uint32(float(maxHp) * BOT_REST_REGEN_PCT));
+            _bot->SetHealth(std::min(maxHp, cur + gain));
+        }
+    }
+    if (UsesMana())
+    {
+        int32 const maxMana = _bot->GetMaxPower(POWER_MANA);
+        int32 const cur = _bot->GetPower(POWER_MANA);
+        if (maxMana > 0 && cur < maxMana)
+        {
+            int32 const gain = std::max(1, int32(float(maxMana) * BOT_REST_REGEN_PCT));
+            _bot->SetPower(POWER_MANA, std::min(maxMana, cur + gain));
+        }
+    }
+    return true;
+}
+
+bool PlayerbotAI::HandleRest()
+{
+    if (!_bot)
+        return false;
+    // Only block on *this* bot's combat — party combat must not stop drinking.
+    if (_bot->IsInCombat())
+    {
+        StopResting();
+        return false;
+    }
+
+    float const hpPct = HealthPct();
+    float const manaPct = ManaPct();
+    bool const needHp = hpPct < sPlayerbotMgr->GetRestHealthPct();
+    bool const needMana = UsesMana() && manaPct < sPlayerbotMgr->GetRestManaPct();
+    bool const lowResources = needHp || needMana;
+    bool const nearlyFull = hpPct >= 98.0f && (!UsesMana() || manaPct >= 98.0f);
+
+    // Once we start resting, keep going until nearly full (not just above the
+    // start threshold — that used to stand bots up mid-drink at 50%).
+    bool const shouldRest = _forceRest || _resting || (_food && lowResources);
+
+    if (!shouldRest)
+        return false;
+
+    if (nearlyFull)
+    {
+        StopResting();
+        return false;
+    }
+
+    return StartRefreshment();
+}
+
+std::string PlayerbotAI::FormatStrategies(bool combat) const
+{
+    std::string out;
+    auto add = [&](char const* name, bool on)
+    {
+        if (!out.empty())
+            out += ", ";
+        out += on ? "+" : "-";
+        out += name;
+    };
+
+    CombatRole const role = GetCombatRole();
+
+    if (combat)
+    {
+        add("passive", _passive);
+        add("grind", _grind);
+        switch (role)
+        {
+            case CombatRole::Tank:
+                add("tank", _tankMode);
+                add("tank assist", _tankAssist);
+                add("dps", !_tankMode);
+                break;
+            case CombatRole::Healer:
+                add("heal", !_healerDps);
+                add("healer dps", _healerDps);
+                add("save mana", _saveMana);
+                break;
+            case CombatRole::Damage:
+            default:
+                add("dps", _dpsMode);
+                add("threat", _threat);
+                break;
+        }
+    }
+    else
+    {
+        add("food", _food);
+        add("follow", !_stay);
+        add("stay", _stay);
+        add("loot", _loot);
+        add("passive", _passive);
+        add("grind", _grind);
+    }
+    return out;
+}
+
+bool PlayerbotAI::StrategyAllowed(bool combat, std::string const& name) const
+{
+    if (name == "passive" || name == "grind")
+        return true;
+
+    if (!combat)
+        return name == "food" || name == "follow" || name == "stay" || name == "loot";
+
+    switch (GetCombatRole())
+    {
+        case CombatRole::Tank:
+            return name == "tank" || name == "tank assist" || name == "tankassist" || name == "dps";
+        case CombatRole::Healer:
+            return name == "heal" || name == "healer dps" || name == "healdps"
+                || name == "heal dps" || name == "save mana" || name == "savemana";
+        case CombatRole::Damage:
+        default:
+            return name == "dps" || name == "threat";
+    }
+}
+
+bool PlayerbotAI::ApplyStrategyChange(bool combat, char op, std::string const& name, std::string& report)
+{
+    if (name.empty())
+        return false;
+
+    if (!StrategyAllowed(combat, name))
+    {
+        report += (report.empty() ? "" : ", ");
+        report += "!" + name + "(wrong role)";
+        return true;
+    }
+
+    bool enable = (op == '+');
+
+    auto setFlag = [&](bool& flag, char const* label)
+    {
+        if (op == '~')
+            flag = !flag;
+        else
+            flag = enable;
+        report += (report.empty() ? "" : ", ");
+        report += flag ? "+" : "-";
+        report += label;
+    };
+
+    if (!combat)
+    {
+        if (name == "food")
+        {
+            setFlag(_food, "food");
+            if (!_food)
+                StopResting();
+            return true;
+        }
+        if (name == "follow")
+        {
+            if (op == '~')
+                _stay = !_stay;
+            else
+                _stay = !enable;
+            if (!_stay)
+            {
+                _forceRest = false;
+                if (_bot->getStandState() != UNIT_STAND_STATE_STAND)
+                    _bot->SetStandState(UNIT_STAND_STATE_STAND);
+                _followGuid = 0;
+            }
+            report += (report.empty() ? "" : ", ");
+            report += (!_stay ? "+follow" : "+stay");
+            return true;
+        }
+        if (name == "stay")
+        {
+            setFlag(_stay, "stay");
+            if (_stay)
+            {
+                _grind = false;
+                ClearForcedTarget();
+                if (!_clientControlled)
+                {
+                    _bot->GetMotionMaster()->Clear();
+                    _bot->GetMotionMaster()->MoveIdle();
+                }
+                _followGuid = 0;
+                _chaseGuid = 0;
+            }
+            return true;
+        }
+        if (name == "loot")
+        {
+            setFlag(_loot, "loot");
+            if (!_loot)
+                _lootGuid = 0;
+            return true;
+        }
+        if (name == "passive")
+        {
+            setFlag(_passive, "passive");
+            return true;
+        }
+        if (name == "grind")
+        {
+            setFlag(_grind, "grind");
+            if (_grind) { _passive = false; _stay = false; }
+            return true;
+        }
+        return false;
+    }
+
+    if (name == "passive")
+    {
+        setFlag(_passive, "passive");
+        if (_passive) { _grind = false; ClearForcedTarget(); }
+        return true;
+    }
+    if (name == "grind")
+    {
+        setFlag(_grind, "grind");
+        if (_grind) { _passive = false; _stay = false; }
+        return true;
+    }
+    if (name == "tank")
+    {
+        setFlag(_tankMode, "tank");
+        _dpsMode = !_tankMode;
+        return true;
+    }
+    if (name == "tank assist" || name == "tankassist")
+    {
+        setFlag(_tankAssist, "tank assist");
+        return true;
+    }
+    if (name == "dps")
+    {
+        if (GetCombatRole() == CombatRole::Tank)
+        {
+            if (op == '~')
+                _tankMode = !_tankMode;
+            else
+                _tankMode = !enable;
+            _dpsMode = !_tankMode;
+            report += (report.empty() ? "" : ", ");
+            report += _tankMode ? "+tank" : "+dps";
+            return true;
+        }
+        setFlag(_dpsMode, "dps");
+        return true;
+    }
+    if (name == "threat")
+    {
+        setFlag(_threat, "threat");
+        return true;
+    }
+    if (name == "heal")
+    {
+        if (op == '~')
+            _healerDps = !_healerDps;
+        else
+            _healerDps = !enable;
+        report += (report.empty() ? "" : ", ");
+        report += !_healerDps ? "+heal" : "+healer dps";
+        return true;
+    }
+    if (name == "healer dps" || name == "healdps" || name == "heal dps")
+    {
+        setFlag(_healerDps, "healer dps");
+        return true;
+    }
+    if (name == "save mana" || name == "savemana")
+    {
+        setFlag(_saveMana, "save mana");
+        return true;
+    }
+    return false;
+}
+
+bool PlayerbotAI::HandleStrategyCommand(Player* from, std::string const& cmd, bool /*acknowledge*/)
+{
+    bool combat = false;
+    std::string body;
+    if (cmd == "co" || cmd == "co?" || cmd == "co ?")
+    {
+        combat = true;
+        body = "?";
+    }
+    else if (cmd == "nc" || cmd == "nc?" || cmd == "nc ?")
+    {
+        combat = false;
+        body = "?";
+    }
+    else if (cmd.rfind("co ", 0) == 0)
+    {
+        combat = true;
+        body = cmd.substr(3);
+    }
+    else if (cmd.rfind("nc ", 0) == 0)
+    {
+        combat = false;
+        body = cmd.substr(3);
+    }
+    else
+        return false;
+
+    while (!body.empty() && body.front() == ' ')
+        body.erase(body.begin());
+    while (!body.empty() && body.back() == ' ')
+        body.pop_back();
+
+    // Always whisper strategy info back (party orders used to be silent).
+    auto reply = [&](std::string const& msg)
+    {
+        ReplyTo(from, msg);
+    };
+
+    if (body.empty() || body == "?")
+    {
+        reply(std::string(combat ? "co: " : "nc: ") + FormatStrategies(combat));
+        // Also show the other bucket so players see full state in one ask.
+        reply(std::string(combat ? "nc: " : "co: ") + FormatStrategies(!combat));
+        return true;
+    }
+
+    std::string report;
+    std::string unknown;
+    size_t pos = 0;
+    while (pos < body.size())
+    {
+        size_t comma = body.find(',', pos);
+        std::string token = body.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+        pos = (comma == std::string::npos) ? body.size() : comma + 1;
+
+        while (!token.empty() && token.front() == ' ')
+            token.erase(token.begin());
+        while (!token.empty() && token.back() == ' ')
+            token.pop_back();
+        if (token.empty())
+            continue;
+
+        char op = token[0];
+        if (op != '+' && op != '-' && op != '~')
+        {
+            unknown += (unknown.empty() ? "" : ", ") + token;
+            continue;
+        }
+
+        std::string name = token.substr(1);
+        while (!name.empty() && name.front() == ' ')
+            name.erase(name.begin());
+        while (!name.empty() && name.back() == ' ')
+            name.pop_back();
+
+        if (!ApplyStrategyChange(combat, op, name, report))
+            unknown += (unknown.empty() ? "" : ", ") + token;
+    }
+
+    // Use "co:" / "nc:" (no space) so status replies never re-parse as commands
+    // if they somehow re-enter OnChat (e.g. self-whisper before ReplyTo was fixed).
+    if (!report.empty())
+        reply(std::string(combat ? "co:" : "nc:") + report);
+    if (!unknown.empty())
+        reply(std::string("unknown: ") + unknown);
+
+    reply(std::string(combat ? "co: " : "nc: ") + FormatStrategies(combat));
+    return true;
 }
 
 bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool acknowledge)
@@ -1151,6 +1963,10 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
     if (cmd.empty())
         return false;
 
+    // AC-style combat / non-combat strategy engine: "co +save mana", "nc -food", "co ?"
+    if (HandleStrategyCommand(from, cmd, acknowledge))
+        return true;
+
     auto ack = [&](char const* msg)
     {
         if (acknowledge)
@@ -1159,7 +1975,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
 
     if (cmd == "help")
     {
-        ack("Orders: stay, follow, flee, leave, summon, grind, reset, passive, aggressive, attack, tank attack, dps attack, maintenance, autogear. Party filters: @tank/@dps/@heal/@ranged <order>.");
+        ack("Orders: stay, follow, flee, leave, summon, grind, reset, passive, aggressive, attack, tank/dps attack, eat/drink, maintenance. Strategies: co/nc +name,-name,~name or co?/nc?. Filters: @tank/@dps/@heal/@ranged.");
         return true;
     }
 
@@ -1211,7 +2027,10 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
         }
         _stay = false;
         _grind = false;
+        _forceRest = false;
         ClearForcedTarget();
+        if (_bot->getStandState() != UNIT_STAND_STATE_STAND)
+            _bot->SetStandState(UNIT_STAND_STATE_STAND);
         _followGuid = 0;
         ack("Following.");
         return true;
@@ -1267,6 +2086,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
         _stay = false;
         _passive = false;
         _grind = false;
+        _forceRest = false;
         ClearForcedTarget();
         if (_bot->GetVictim())
             _bot->AttackStop();
@@ -1279,6 +2099,8 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
         }
         if (_bot->IsNonMeleeSpellCasted(false))
             _bot->InterruptNonMeleeSpells(false);
+        if (_bot->getStandState() != UNIT_STAND_STATE_STAND)
+            _bot->SetStandState(UNIT_STAND_STATE_STAND);
         ack("Reset.");
         return true;
     }
@@ -1287,6 +2109,62 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
     {
         sPlayerbotMgr->InitializeBot(_bot);
         ack(cmd == "autogear" ? "Autogear applied." : "Maintenance applied.");
+        return true;
+    }
+
+    if (cmd == "eat" || cmd == "drink" || cmd == "food")
+    {
+        if (_bot->IsInCombat())
+        {
+            ack("In combat — cannot eat/drink.");
+            return true;
+        }
+        _forceRest = true;
+        _food = true;
+        _grind = false;
+        ClearForcedTarget();
+        if (_bot->GetVictim())
+            _bot->AttackStop();
+        // Socket bots sit via StartRefreshment. Self-bot: sit only if standing so
+        // an explicit eat/drink order can start; never fight an already-sitting player.
+        if (_clientControlled && _bot->getStandState() != UNIT_STAND_STATE_SIT)
+            _bot->SetStandState(UNIT_STAND_STATE_SIT);
+        StartRefreshment();
+        ack(_clientControlled
+            ? "Eating/drinking (stay seated until full, or use your food/drink)."
+            : "Eating/drinking.");
+        return true;
+    }
+
+    if (cmd == "heal")
+    {
+        std::string report;
+        ApplyStrategyChange(true, '+', "heal", report);
+        ack(report.empty() ? "heal not available for this role." : report.c_str());
+        return true;
+    }
+
+    if (cmd == "healer dps" || cmd == "healdps" || cmd == "heal dps")
+    {
+        std::string report;
+        ApplyStrategyChange(true, '+', "healer dps", report);
+        ack(report.empty() ? "healer dps not available for this role." : report.c_str());
+        return true;
+    }
+
+    if (cmd == "save mana" || cmd == "savemana" || cmd == "save mana on")
+    {
+        std::string report;
+        ApplyStrategyChange(true, '+', "save mana", report);
+        ack(report.empty() ? "save mana not available for this role." : report.c_str());
+        return true;
+    }
+
+    if (cmd == "save mana off" || cmd == "savemana off")
+    {
+        std::string report;
+        ApplyStrategyChange(true, '-', "save mana", report);
+        ack(report.empty() ? "save mana not available for this role." : report.c_str());
         return true;
     }
 

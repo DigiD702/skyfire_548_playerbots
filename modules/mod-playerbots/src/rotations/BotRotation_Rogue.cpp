@@ -3,7 +3,10 @@
  */
 
 #include "BotRotationLists.h"
+#include "Item.h"
+#include "ItemPrototype.h"
 #include "Player.h"
+#include "SharedDefines.h"
 #include "Unit.h"
 
 namespace BotRotation
@@ -95,7 +98,17 @@ uint32 SelectAssassination(Context const& ctx)
         FAN_OF_KNIVES       = 51723,
         CRIMSON_TEMPEST     = 121411,
         SHADOW_BLADES       = 121471,
+        SINISTER_STRIKE     = 1752,
+        HEMORRHAGE          = 16511,
     };
+
+    auto hasDagger = [](Player* p, WeaponAttackType at) -> bool
+    {
+        Item* item = p->GetWeaponForAttack(at, true);
+        return item && item->GetTemplate() && item->GetTemplate()->SubClass == ITEM_SUBCLASS_WEAPON_DAGGER;
+    };
+    bool const canMutilate = hasDagger(bot, WeaponAttackType::BASE_ATTACK)
+        && hasDagger(bot, WeaponAttackType::OFF_ATTACK);
 
     if (CanTryCast(bot, VENDETTA))
         return VENDETTA;
@@ -120,15 +133,27 @@ uint32 SelectAssassination(Context const& ctx)
     if (ctx.enemies >= 4 && CanTryCast(bot, FAN_OF_KNIVES))
         return FAN_OF_KNIVES;
 
-    if ((!HasAuraUp(target, GARROTE) || AuraRemains(target, GARROTE) <= 3.0f)
+    // Garrote requires stealth — never pick it in open combat or we stall the GCD.
+    if (bot->HasStealthAura()
+        && (!HasAuraUp(target, GARROTE) || AuraRemains(target, GARROTE) <= 3.0f)
         && CanTryCast(bot, GARROTE))
         return GARROTE;
 
-    if ((ctx.targetHealthPct < 35.0f || HasAuraUp(bot, BLINDSIDE)) && CanTryCast(bot, DISPATCH))
+    if ((ctx.targetHealthPct < 35.0f || HasAuraUp(bot, BLINDSIDE))
+        && hasDagger(bot, WeaponAttackType::BASE_ATTACK)
+        && CanTryCast(bot, DISPATCH))
         return DISPATCH;
 
-    if (CanTryCast(bot, MUTILATE))
+    if (canMutilate && CanTryCast(bot, MUTILATE))
         return MUTILATE;
+
+    // Wrong weapons / missing Dual Wield: fall back to any known builder.
+    if (CanTryCast(bot, HEMORRHAGE))
+        return HEMORRHAGE;
+    if (CanTryCast(bot, SINISTER_STRIKE))
+        return SINISTER_STRIKE;
+    if (CanTryCast(bot, FAN_OF_KNIVES))
+        return FAN_OF_KNIVES;
 
     return 0;
 }

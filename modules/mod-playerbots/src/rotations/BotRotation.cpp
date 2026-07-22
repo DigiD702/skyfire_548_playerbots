@@ -60,6 +60,7 @@ namespace
             case 79206:  // Spiritwalker's Grace
             case 8024:   // Flametongue Weapon
             case 8232:   // Windfury Weapon
+            case 26573:  // Consecration
             case 768:    // Cat Form
             case 52610:  // Savage Roar
             case 5217:   // Tiger's Fury
@@ -227,7 +228,46 @@ bool CanTryCast(Player* bot, uint32 spellId)
         return false;
     if (bot->HasUnitState(UNIT_STATE_CASTING))
         return false;
+
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    if (!info)
+        return false;
+    if (bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
+        return false;
     return true;
+}
+
+// Face + stop so SPELL_FAILED_UNIT_NOT_INFRONT / moving-cast failures don't
+// silently no-op (bots previously called CastSpell and assumed success).
+void PrepareHostileCast(Player* bot, Unit* castTarget)
+{
+    if (!bot || !castTarget || castTarget == bot)
+        return;
+
+    if (!bot->IsStopped())
+        bot->StopMoving();
+
+    bot->SetSelection(castTarget->GetGUID());
+    if (!bot->HasInArc(static_cast<float>(M_PI), castTarget))
+        bot->SetInFront(castTarget);
+}
+
+// True only if the cast actually started (GCD / spell CD / cast state).
+// Returning true on CheckCast failure used to stall whole rotations on spells
+// like Garrote (needs stealth) or Unleash Elements (needs weapon imbue).
+bool CastStarted(Player* bot, SpellInfo const* info, uint32 spellId)
+{
+    if (!bot || !info)
+        return false;
+    if (bot->FindCurrentSpellBySpellId(spellId))
+        return true;
+    if (bot->HasUnitState(UNIT_STATE_CASTING))
+        return true;
+    if (bot->HasSpellCooldown(spellId) || bot->GetSpellCooldownDelay(spellId) > 0)
+        return true;
+    if (bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
+        return true;
+    return false;
 }
 
 bool CastSpell(Player* bot, Unit* enemy, uint32 spellId)
@@ -239,16 +279,18 @@ bool CastSpell(Player* bot, Unit* enemy, uint32 spellId)
     if (!info)
         return false;
 
-    // Self-buffs / stances / shouts / ground AoE around the caster must not be
-    // forced onto the enemy (that path has crashed for prot warrior Shield Block).
-    Unit* castTarget = enemy;
-    if (IsSelfCast(spellId) || !info->NeedsExplicitUnitTarget())
-        castTarget = bot;
+    // Only force self for known self-buffs / ground AoE. Do NOT use
+    // !NeedsExplicitUnitTarget() — that redirected many damage spells onto the
+    // caster and made every cast fail (no abilities on recount).
+    Unit* castTarget = IsSelfCast(spellId) ? static_cast<Unit*>(bot) : enemy;
     if (!castTarget)
         return false;
 
+    if (castTarget != bot)
+        PrepareHostileCast(bot, castTarget);
+
     bot->CastSpell(castTarget, spellId, false);
-    return true;
+    return CastStarted(bot, info, spellId);
 }
 
 bool CastHealSpell(Player* bot, Player* ally, uint32 spellId)
@@ -260,14 +302,21 @@ bool CastHealSpell(Player* bot, Player* ally, uint32 spellId)
     if (!info)
         return false;
 
-    Unit* castTarget = ally;
-    if (IsSelfCast(spellId) || !info->NeedsExplicitUnitTarget())
-        castTarget = bot;
+    Unit* castTarget = IsSelfCast(spellId) ? static_cast<Unit*>(bot) : static_cast<Unit*>(ally);
     if (!castTarget)
         return false;
 
+    if (castTarget != bot)
+    {
+        if (!bot->IsStopped())
+            bot->StopMoving();
+        bot->SetSelection(castTarget->GetGUID());
+        if (!bot->HasInArc(static_cast<float>(M_PI), castTarget))
+            bot->SetInFront(castTarget);
+    }
+
     bot->CastSpell(castTarget, spellId, false);
-    return true;
+    return CastStarted(bot, info, spellId);
 }
 
 bool TryInterrupt(Player* bot, Unit* target)
@@ -288,8 +337,7 @@ bool TryInterrupt(Player* bot, Unit* target)
     if (!CanTryCast(bot, interruptId))
         return false;
 
-    bot->CastSpell(target, interruptId, false);
-    return true;
+    return CastSpell(bot, target, interruptId);
 }
 
 bool TryRacial(Player* bot, Unit* /*targetOrSelf*/)
@@ -298,6 +346,13 @@ bool TryRacial(Player* bot, Unit* /*targetOrSelf*/)
         return false;
 
     float const hpPct = UnitHealthPct(bot);
+
+    auto trySelf = [&](uint32 id) -> bool
+    {
+        if (!CanTryCast(bot, id))
+            return false;
+        return CastSpell(bot, bot, id);
+    };
 
     // Defensive / escape racials when low.
     if (hpPct < 35.0f)
@@ -309,11 +364,8 @@ bool TryRacial(Player* bot, Unit* /*targetOrSelf*/)
             20589, // Escape Artist
         };
         for (uint32 id : defensive)
-            if (CanTryCast(bot, id))
-            {
-                bot->CastSpell(bot, id, false);
+            if (trySelf(id))
                 return true;
-            }
     }
 
     if (!bot->IsInCombat())
@@ -334,17 +386,11 @@ bool TryRacial(Player* bot, Unit* /*targetOrSelf*/)
         129597, // Arcane Torrent (chi)
     };
     for (uint32 id : offensive)
-        if (CanTryCast(bot, id))
-        {
-            bot->CastSpell(bot, id, false);
+        if (trySelf(id))
             return true;
-        }
 
-    if (CountNearbyEnemies(bot, 8.0f) >= 2 && CanTryCast(bot, 20549)) // War Stomp
-    {
-        bot->CastSpell(bot, 20549, false);
+    if (CountNearbyEnemies(bot, 8.0f) >= 2 && trySelf(20549)) // War Stomp
         return true;
-    }
 
     return false;
 }
@@ -373,6 +419,11 @@ bool TryTrinkets(Player* bot)
             if (bot->HasSpellCooldown(data.SpellId) || bot->GetSpellCooldownDelay(data.SpellId) > 0)
                 continue;
 
+            // Item must actually be usable — otherwise we used to return true here
+            // and block the entire rotation forever (bots cast no abilities).
+            if (bot->CanUseItem(item) != InventoryResult::EQUIP_ERR_OK)
+                continue;
+
             SpellInfo const* info = sSpellMgr->GetSpellInfo(data.SpellId);
             if (!info)
                 continue;
@@ -385,7 +436,9 @@ bool TryTrinkets(Player* bot)
                 targets.SetUnitTarget(bot);
 
             bot->CastItemUseSpell(item, targets, 0, 0);
-            return true;
+            // Only claim success if the item spell went on cooldown (actually used).
+            if (bot->HasSpellCooldown(data.SpellId) || bot->GetSpellCooldownDelay(data.SpellId) > 0)
+                return true;
         }
     }
     return false;
@@ -454,7 +507,7 @@ uint32 SelectNextSpell(Player* bot, Unit* target)
     }
 }
 
-uint32 SelectNextHeal(Player* bot, Player* ally)
+uint32 SelectNextHeal(Player* bot, Player* ally, bool saveMana, float saveManaThreshold)
 {
     if (!bot || !ally || !ally->IsAlive())
         return 0;
@@ -469,6 +522,8 @@ uint32 SelectNextHeal(Player* bot, Player* ally)
     ctx.manaPct = bot->GetMaxPower(POWER_MANA)
         ? (100.0f * float(bot->GetPower(POWER_MANA)) / float(bot->GetMaxPower(POWER_MANA)))
         : 100.0f;
+    ctx.saveMana = saveMana;
+    ctx.saveManaThreshold = saveManaThreshold;
 
     if (Group* group = bot->GetGroup())
     {

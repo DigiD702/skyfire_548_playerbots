@@ -8,6 +8,9 @@
 * from PlayerScript::OnUpdate. Chat orders (whisper / party / raid) set
 * movement and combat modes; combat and follow build on top of those.
 * Self-bots keep client movement and only run cast-only combat.
+*
+* Strategies (AC-style co/nc) are role-gated: tanks never take healer flags,
+* healers never take tank flags, etc. Class rotations still run underneath.
 */
 
 #ifndef _SF_PLAYERBOT_AI_H
@@ -39,48 +42,71 @@ public:
     // LFG role mask (tank/healer/damage) from the bot's active specialization.
     uint8 ComputeLfgRole();
 
+    // Auto-respond to LFG role checks and proposals. Must run on the world
+    // thread (PlayerbotMgr::Update) — UpdateProposal creates groups/teleports
+    // and is not safe from Map::Update worker threads.
+    void HandleLfg();
+
     Player* GetBot() const { return _bot; }
     bool IsClientControlled() const { return _clientControlled; }
 
+    // Re-apply role-default strategies (after init/spec change).
+    void ResetStrategiesToRoleDefaults();
+
 private:
-    // Coarse combat role used by "tank attack" / "dps attack" filters.
+    // Coarse combat role used by filters and strategy gating.
     enum class CombatRole { Tank, Healer, Damage };
 
-    // Behaviour steps (kept small and independent so strategies can be added).
+    // Behaviour steps.
     void HandlePendingInvites();
-    void HandleLfg();      // auto-respond to LFG role checks and proposals
-    void HandleInteractions(); // trade / duel accept
-    bool HandleCombat();   // returns true if the bot is engaged (chasing a target)
-    bool HandleCombatCastOnly(); // self-bot: target + cast, no MotionMaster
-    bool HandleHealing();  // healer specs: heal injured group members; true if busy
-    bool HandleLoot();     // walk to / loot nearby corpses; true while busy
-    void HandleFollow();   // out of combat: stick with the group leader
-    void HandleWander();   // solo idle: walk to a nearby random point
-    void HandleStay();     // hold current position when ordered to stay
-    void HandleVendor();   // repair when near a repair NPC
+    void HandleInteractions();
+    bool HandleCombat();
+    bool HandleCombatCastOnly();
+    bool HandleHealing();
+    bool HandleRest();
+    bool HandleLoot();
+    void HandleFollow();
+    void HandleWander();
+    void HandleStay();
+    void HandleVendor();
     void TeleportToLeader(Player* leader);
     void TeleportToPlayer(Player* master);
+    void StopResting();
+    bool StartRefreshment();
+
+    // AC-style co / nc strategy engine (role-gated).
+    bool HandleStrategyCommand(Player* from, std::string const& cmd, bool acknowledge);
+    bool ApplyStrategyChange(bool combat, char op, std::string const& name, std::string& report);
+    std::string FormatStrategies(bool combat) const;
+    bool StrategyAllowed(bool combat, std::string const& name) const;
 
     // Combat helpers.
-    Unit* SelectTarget();          // forced / grind / own attacker / assist leader
-    Unit* SelectGrindTarget();     // nearest attackable in range
-    Unit* SelectTankTarget();      // prefer mobs attacking party members
-    Player* SelectHealTarget();    // lowest-HP injured ally in group
+    Unit* SelectTarget();
+    Unit* SelectGrindTarget();
+    Unit* SelectTankTarget();
+    Unit* SelectGroupThreatTarget();
+    Unit* SelectAssistTankTarget();
+    Unit* SelectLowestHpGroupEnemy();
+    Player* SelectHealTarget();
     Unit* GetForcedTarget() const;
     void SetForcedTarget(Unit* target);
     void ClearForcedTarget();
     CombatRole GetCombatRole() const;
-    bool IsRangedClass() const;    // caster/ranged stance (spec-aware for hybrids)
-    uint32 GetFillerSpell() const;              // fallback filler when no spec list
-    uint32 GetTauntSpell() const;               // tank taunt, or 0
-    uint32 GetHealSpell() const;                // simple single-target heal, or 0
-    void DoRotation(Unit* target);              // pick + cast next rotation / filler spell
-    void DoTankExtras(Unit* target);            // taunt if threat is lost
+    bool IsRangedClass() const;
+    bool GroupInCombat() const;
+    float HealthPct() const;
+    float ManaPct() const;
+    bool UsesMana() const;
+    bool ShouldThrottleThreat(Unit* target) const;
+    uint32 GetFillerSpell() const;
+    uint32 GetTauntSpell() const;
+    uint32 GetAoeThreatSpell() const;
+    uint32 GetHealSpell() const;
+    void DoRotation(Unit* target);
+    void DoTankExtras(Unit* target);
 
-    // Chat-order helpers.
     void ReplyTo(Player* from, std::string const& text);
 
-    // World-interaction helpers.
     Creature* FindNearbyLoot();
     Creature* FindNearbyRepairer();
     bool NeedsRepair() const;
@@ -90,20 +116,32 @@ private:
     bool _clientControlled;
     uint32 _updateTimer;
 
-    // Movement state, used to avoid re-issuing the same generator every tick
-    // (which would restart the movement and cause stutter).
     uint64 _chaseGuid;
     uint64 _followGuid;
     uint64 _lootGuid;
     uint32 _wanderTimer;
 
-    // Chat-order state.
-    bool _stay;                 // hold position instead of follow/wander
-    bool _passive;              // do not assist / initiate; still retaliate
-    bool _grind;                // attack nearest hostiles when not forced
-    uint64 _forcedTargetGuid;   // from "attack" / "tank attack" / "dps attack"
+    // --- Non-combat (nc) ---
+    bool _stay;          // nc stay (implies not follow)
+    bool _food;          // nc food
+    bool _loot;          // nc loot
 
-    // LFG state, so we only answer a role check / proposal once each.
+    // --- Shared ---
+    bool _passive;       // co/nc passive
+    bool _grind;         // co/nc grind
+
+    // --- Combat (co), role-gated ---
+    bool _tankMode;      // tank role: peel + hold threat (off = play as DPS)
+    bool _tankAssist;    // tank role: peel allies
+    bool _dpsMode;       // damage role marker / tank-as-dps
+    bool _threat;        // damage: throttle when high on threat
+    bool _healerDps;     // healer: damage when nobody needs heals
+    bool _saveMana;      // healer: efficient heals when low mana
+
+    bool _forceRest;
+    bool _resting;
+    uint64 _forcedTargetGuid;
+
     bool _lfgRoleResponded;
     bool _lfgProposalResponded;
 };

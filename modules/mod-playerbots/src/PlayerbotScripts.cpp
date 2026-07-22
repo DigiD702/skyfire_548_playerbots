@@ -42,14 +42,20 @@ public:
             sPlayerbotMgr->UpdateBotAI(player, diff);
     }
 
-    // Whisper directed at a bot.
+    // Whisper directed at a bot or self-bot (including whispering yourself).
     void OnChat(Player* player, ChatMsg /*type*/, Language /*lang*/, std::string& msg, Player* receiver) override
     {
         if (!sPlayerbotMgr->IsEnabled() || !player || !receiver)
             return;
         if (player->GetSession() && player->GetSession()->IsBot())
             return;
-        if (!sPlayerbotMgr->IsBot(receiver->GetGUID()))
+        // Socket bots and self-bots both have AI. Allow from == receiver so a
+        // self-bot can /w Themselves co ? and get a reply.
+        if (!sPlayerbotMgr->HasBotAI(receiver->GetGUID()))
+            return;
+        // Ignore status-style replies ("co: ..." / "nc: ...") so a self-whisper
+        // ack can never re-enter strategy handling.
+        if (msg.size() >= 3 && (msg.compare(0, 3, "co:") == 0 || msg.compare(0, 3, "nc:") == 0))
             return;
 
         sPlayerbotMgr->HandleBotWhisper(player, receiver, msg);
