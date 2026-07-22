@@ -7,7 +7,12 @@
 #include "PlayerbotAI.h"
 #include "AccountMgr.h"
 #include "Config.h"
+#include "DBCStores.h"
 #include "DatabaseEnv.h"
+#include "Group.h"
+#include "GroupReference.h"
+#include "Item.h"
+#include "ItemPrototype.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -269,6 +274,132 @@ void PlayerbotMgr::UpdateBotAI(Player* bot, uint32 diff)
         it->second->UpdateAI(diff);
 }
 
+void PlayerbotMgr::HandleBotWhisper(Player* from, Player* bot, std::string const& msg)
+{
+    if (!_enabled || !from || !bot)
+        return;
+    if (from->GetSession() && from->GetSession()->IsBot())
+        return;
+
+    auto it = _ai.find(bot->GetGUID());
+    if (it == _ai.end() || !it->second)
+        return;
+
+    it->second->HandleChatCommand(from, msg);
+}
+
+void PlayerbotMgr::HandleBotGroupChat(Player* from, Group* group, std::string const& msg)
+{
+    if (!_enabled || !from || !group)
+        return;
+    if (from->GetSession() && from->GetSession()->IsBot())
+        return;
+
+    // Optional "@tank "/ "@dps "/ "@heal "/ "@ranged " prefix filters who hears the order.
+    std::string text = msg;
+    std::string filter;
+    if (!text.empty() && text[0] == '@')
+    {
+        std::string::size_type space = text.find(' ');
+        if (space != std::string::npos)
+        {
+            filter = text.substr(1, space - 1);
+            text = text.substr(space + 1);
+            while (!text.empty() && text[0] == ' ')
+                text.erase(text.begin());
+            std::transform(filter.begin(), filter.end(), filter.begin(),
+                [](unsigned char c) { return char(std::tolower(c)); });
+            if (filter == "healer")
+                filter = "heal";
+        }
+    }
+
+    if (text.empty())
+        return;
+
+    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || member == from)
+            continue;
+        if (!IsBot(member->GetGUID()))
+            continue;
+
+        auto it = _ai.find(member->GetGUID());
+        if (it == _ai.end() || !it->second)
+            continue;
+        if (!filter.empty() && !it->second->MatchesRoleFilter(filter))
+            continue;
+
+        it->second->HandleChatCommand(from, text, false);
+    }
+}
+
+bool PlayerbotMgr::AttachSelfBot(Player* player, std::string* errorOut)
+{
+    auto fail = [&](char const* msg) -> bool
+    {
+        if (errorOut)
+            *errorOut = msg;
+        return false;
+    };
+
+    if (!_enabled)
+        return fail("Playerbots module is disabled.");
+    if (!player || !player->IsInWorld())
+        return fail("You must be in the world.");
+    if (IsBot(player->GetGUID()))
+        return fail("This character is already a full bot session.");
+    if (IsSelfBot(player->GetGUID()))
+        return fail("Self-bot AI is already attached.");
+
+    uint64 guid = player->GetGUID();
+    DestroyBotAI(guid); // safety if a stale AI pointer lingered
+    _ai[guid] = new PlayerbotAI(player, true);
+    _selfBots.insert(guid);
+    return true;
+}
+
+bool PlayerbotMgr::DetachSelfBot(Player* player)
+{
+    if (!player)
+        return false;
+
+    uint64 guid = player->GetGUID();
+    if (!IsSelfBot(guid))
+        return false;
+
+    _selfBots.erase(guid);
+    DestroyBotAI(guid);
+    return true;
+}
+
+bool PlayerbotMgr::ToggleSelfBot(Player* player, std::string* report)
+{
+    if (!player)
+        return false;
+
+    if (IsSelfBot(player->GetGUID()))
+    {
+        DetachSelfBot(player);
+        if (report)
+            *report = "Self-bot AI detached. You control combat again.";
+        return true;
+    }
+
+    std::string error;
+    if (!AttachSelfBot(player, &error))
+    {
+        if (report)
+            *report = error;
+        return false;
+    }
+
+    if (report)
+        *report = "Self-bot AI attached. You move; the AI casts in combat. Use .playerbots self again to detach.";
+    return true;
+}
+
 bool PlayerbotMgr::RemoveBot(uint64 characterGuid)
 {
     auto it = _bots.find(characterGuid);
@@ -296,6 +427,7 @@ void PlayerbotMgr::LogoutAllBots()
 
     _bots.clear();
     _randomBots.clear();
+    _selfBots.clear();
 }
 
 void PlayerbotMgr::DestroyBotAI(uint64 characterGuid)
@@ -350,6 +482,36 @@ namespace
         }
     }
 
+    // Specialization tab index (matches the in-game spec order) for a class in a
+    // given role. Classes that cannot fill the role fall back to a damage spec.
+    uint8 SpecTabForRole(uint8 cls, BotRole role)
+    {
+        switch (cls)
+        {
+            case CLASS_WARRIOR:      return role == BOT_ROLE_TANK ? 2 : 0;                       // Prot / Arms
+            case CLASS_PALADIN:      return role == BOT_ROLE_TANK ? 1 : (role == BOT_ROLE_HEALER ? 0 : 2); // Prot / Holy / Ret
+            case CLASS_DEATH_KNIGHT: return role == BOT_ROLE_TANK ? 0 : 1;                       // Blood / Frost
+            case CLASS_PRIEST:       return role == BOT_ROLE_HEALER ? 0 : 2;                     // Disc / Shadow
+            case CLASS_SHAMAN:       return role == BOT_ROLE_HEALER ? 2 : 0;                     // Resto / Elemental
+            case CLASS_MONK:         return role == BOT_ROLE_TANK ? 0 : (role == BOT_ROLE_HEALER ? 1 : 2); // Brewmaster / Mistweaver / Windwalker
+            case CLASS_DRUID:        return role == BOT_ROLE_TANK ? 2 : (role == BOT_ROLE_HEALER ? 3 : 0); // Guardian / Resto / Balance
+            case CLASS_HUNTER:       return 0;                                                   // Beast Mastery
+            case CLASS_ROGUE:        return 0;                                                   // Assassination
+            case CLASS_MAGE:         return 2;                                                   // Frost
+            case CLASS_WARLOCK:      return 0;                                                   // Affliction
+            default:                 return 0;
+        }
+    }
+
+    // ChrSpecialization id for a class/role pair (0 if unavailable).
+    uint32 SpecIdForRole(uint8 cls, BotRole role)
+    {
+        uint32 const* specs = GetClassSpecializations(cls);
+        if (!specs)
+            return 0;
+        return specs[SpecTabForRole(cls, role)];
+    }
+
     // Returns a race that forms a valid race/class pair for the faction, or 0.
     uint8 PickRaceForClassFaction(uint8 cls, bool alliance)
     {
@@ -384,6 +546,283 @@ namespace
         }
         name[0] = char(std::toupper(static_cast<unsigned char>(name[0])));
         return name;
+    }
+
+    // -----------------------------------------------------------------------
+    // Gear selection
+    // -----------------------------------------------------------------------
+
+    // Heaviest armor type the class can wear. Armor slots query the whole range
+    // 1..armorType and prefer the heaviest available, so low-level plate/mail
+    // classes automatically fall back to lighter armor until upgrades exist.
+    uint8 ArmorTypeForClass(uint8 cls)
+    {
+        switch (cls)
+        {
+            case CLASS_WARRIOR:
+            case CLASS_PALADIN:
+            case CLASS_DEATH_KNIGHT: return ITEM_SUBCLASS_ARMOR_PLATE;
+            case CLASS_HUNTER:
+            case CLASS_SHAMAN:       return ITEM_SUBCLASS_ARMOR_MAIL;
+            case CLASS_ROGUE:
+            case CLASS_DRUID:
+            case CLASS_MONK:         return ITEM_SUBCLASS_ARMOR_LEATHER;
+            default:                 return ITEM_SUBCLASS_ARMOR_CLOTH; // priest/mage/warlock
+        }
+    }
+
+    // Primary stat the spec wants, used to bias item picks toward useful gear.
+    uint32 PrimaryStatForClassRole(uint8 cls, BotRole role)
+    {
+        switch (cls)
+        {
+            case CLASS_WARRIOR:
+            case CLASS_DEATH_KNIGHT: return ITEM_MOD_STRENGTH;
+            case CLASS_PALADIN:      return role == BOT_ROLE_HEALER ? ITEM_MOD_INTELLECT : ITEM_MOD_STRENGTH;
+            case CLASS_HUNTER:
+            case CLASS_ROGUE:        return ITEM_MOD_AGILITY;
+            case CLASS_MONK:         return role == BOT_ROLE_HEALER ? ITEM_MOD_INTELLECT : ITEM_MOD_AGILITY;
+            case CLASS_DRUID:        return role == BOT_ROLE_TANK ? ITEM_MOD_AGILITY : ITEM_MOD_INTELLECT;
+            default:                 return ITEM_MOD_INTELLECT; // shaman/priest/mage/warlock
+        }
+    }
+
+    // Maps a specialization back to a coarse role, but only for classes that can
+    // actually fill the tank/healer role; everything else counts as damage.
+    BotRole RoleFromSpec(uint8 cls, uint32 specId)
+    {
+        if (specId)
+        {
+            for (uint8 c : TankClasses)
+                if (c == cls && specId == SpecIdForRole(cls, BOT_ROLE_TANK))
+                    return BOT_ROLE_TANK;
+            for (uint8 c : HealerClasses)
+                if (c == cls && specId == SpecIdForRole(cls, BOT_ROLE_HEALER))
+                    return BOT_ROLE_HEALER;
+        }
+        return BOT_ROLE_DPS;
+    }
+
+    // Returns candidate item entries (highest item level first) matching the
+    // WHERE clause for this bot. When primaryStat is set the search is
+    // restricted to items carrying that stat. More than one row is returned so
+    // callers can skip items the bot cannot actually equip yet (e.g. a low-level
+    // plate class that only has armor proficiency for mail/leather).
+    std::vector<uint32> QueryItemEntries(Player* bot, std::string const& where, uint32 primaryStat, uint32 exclude)
+    {
+        uint32 const level    = bot->getLevel();
+        uint32 const classBit = 1u << (bot->getClass() - 1);
+        uint32 const raceBit  = 1u << (bot->getRace() - 1);
+
+        std::ostringstream q;
+        q << "SELECT entry FROM item_template WHERE " << where
+          << " AND RequiredLevel <= " << level
+          << " AND ItemLevel <= " << (level + 25)
+          << " AND Quality BETWEEN 2 AND 4"
+          << " AND duration = 0 AND startquest = 0"
+          << " AND (AllowableClass = -1 OR (AllowableClass & " << classBit << "))"
+          << " AND (AllowableRace = -1 OR (AllowableRace & " << raceBit << "))";
+
+        if (exclude)
+            q << " AND entry <> " << exclude;
+
+        if (primaryStat)
+            q << " AND (stat_type1=" << primaryStat << " OR stat_type2=" << primaryStat
+              << " OR stat_type3=" << primaryStat << " OR stat_type4=" << primaryStat
+              << " OR stat_type5=" << primaryStat << " OR stat_type6=" << primaryStat
+              << " OR stat_type7=" << primaryStat << " OR stat_type8=" << primaryStat
+              << " OR stat_type9=" << primaryStat << " OR stat_type10=" << primaryStat << ")";
+
+        q << " ORDER BY ItemLevel DESC, RequiredLevel DESC LIMIT 25";
+
+        std::vector<uint32> entries;
+        if (QueryResult result = WorldDatabase.Query(q.str().c_str()))
+        {
+            do
+            {
+                entries.push_back(result->Fetch()[0].GetUInt32());
+            } while (result->NextRow());
+        }
+        return entries;
+    }
+
+    // Equips a fresh copy of the item into whichever slot the core picks.
+    bool EquipItemEntry(Player* bot, uint32 entry)
+    {
+        if (!entry)
+            return false;
+
+        uint16 dest = 0;
+        if (bot->CanEquipNewItem(NULL_SLOT, dest, entry, false) != EQUIP_ERR_OK)
+            return false;
+
+        return bot->EquipNewItem(dest, entry, true) != nullptr;
+    }
+
+    // Equips the best item matching the WHERE clause that the bot can actually
+    // use, walking the candidate list so a slot is only left empty when nothing
+    // is equippable. Prefers items with the spec's primary stat, then any. The
+    // exclude entry keeps paired slots (rings/trinkets) distinct. Returns the
+    // equipped entry, or 0.
+    uint32 EquipBestForSlot(Player* bot, std::string const& where, uint32 primaryStat, uint32 exclude)
+    {
+        uint32 const passStats[2] = { primaryStat, 0 };
+        int const passes = primaryStat ? 2 : 1;
+
+        for (int p = 0; p < passes; ++p)
+        {
+            std::vector<uint32> const entries = QueryItemEntries(bot, where, passStats[p], exclude);
+            for (uint32 entry : entries)
+                if (EquipItemEntry(bot, entry))
+                    return entry;
+        }
+        return 0;
+    }
+
+    // Removes everything currently equipped except the cosmetic shirt/tabard so
+    // a re-gear starts from a clean set of slots.
+    void ClearEquipment(Player* bot)
+    {
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        {
+            if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
+                continue;
+            if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                bot->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
+        }
+    }
+
+    // Picks class/role-appropriate weapons (and shield/offhand/ranged).
+    void GearWeapons(Player* bot, BotRole role)
+    {
+        uint8 const cls = bot->getClass();
+        uint32 const primary = PrimaryStatForClassRole(cls, role);
+
+        auto equip = [&](std::string const& where) -> bool
+        {
+            return EquipBestForSlot(bot, where, primary, 0) != 0;
+        };
+
+        std::string const oneH   = "class=2 AND InventoryType IN (13,21)";
+        std::string const twoH   = "class=2 AND InventoryType=17";
+        std::string const shield = "class=4 AND subclass=6 AND InventoryType=14";
+        std::string const held   = "class=4 AND InventoryType=23";
+        std::string const ranged = "class=2 AND InventoryType IN (15,26) AND subclass IN (2,3,18)";
+
+        switch (cls)
+        {
+            case CLASS_HUNTER:
+                equip(ranged);
+                break;
+            case CLASS_WARRIOR:
+                if (role == BOT_ROLE_TANK)
+                {
+                    if (!equip(oneH + " AND subclass IN (0,4,7)"))
+                        equip(twoH + " AND subclass IN (1,5,6,8)");
+                    equip(shield);
+                }
+                else if (!equip(twoH + " AND subclass IN (1,5,6,8)"))
+                {
+                    equip(oneH + " AND subclass IN (0,4,7)");
+                    equip(shield);
+                }
+                break;
+            case CLASS_PALADIN:
+                if (role == BOT_ROLE_DPS)
+                {
+                    if (!equip(twoH + " AND subclass IN (1,5,6,8)"))
+                    {
+                        equip(oneH + " AND subclass IN (0,4,7)");
+                        equip(shield);
+                    }
+                }
+                else
+                {
+                    equip(oneH + " AND subclass IN (0,4,7)");
+                    equip(shield);
+                }
+                break;
+            case CLASS_DEATH_KNIGHT:
+                if (!equip(twoH + " AND subclass IN (1,5,6,8)"))
+                    equip(oneH + " AND subclass IN (0,4,7)");
+                break;
+            case CLASS_ROGUE:
+                equip(oneH + " AND subclass IN (0,4,7,13,15)");
+                equip(oneH + " AND subclass IN (0,4,7,13,15)"); // off-hand
+                break;
+            case CLASS_SHAMAN:
+                equip(oneH + " AND subclass IN (0,4,13,15)");
+                equip(shield);
+                break;
+            case CLASS_MONK:
+                if (!equip(twoH + " AND subclass IN (6,10)"))
+                {
+                    equip(oneH + " AND subclass IN (0,4,7,13)");
+                    equip(held);
+                }
+                break;
+            case CLASS_DRUID:
+                if (!equip(twoH + " AND subclass IN (6,10)"))
+                {
+                    equip(oneH + " AND subclass IN (4,13,15)");
+                    equip(held);
+                }
+                break;
+            case CLASS_PRIEST:
+                if (!equip(twoH + " AND subclass=10"))
+                {
+                    equip(oneH + " AND subclass IN (4,15)");
+                    equip(held);
+                }
+                break;
+            case CLASS_MAGE:
+            case CLASS_WARLOCK:
+                if (!equip(twoH + " AND subclass=10"))
+                {
+                    equip(oneH + " AND subclass IN (7,15)");
+                    equip(held);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    // Fills every gear slot with the best level/class/spec-appropriate items.
+    void GearBot(Player* bot, BotRole role)
+    {
+        uint8 const cls = bot->getClass();
+        uint32 const primary = PrimaryStatForClassRole(cls, role);
+        std::string const armorRange =
+            "class=4 AND subclass BETWEEN 1 AND " + std::to_string(uint32(ArmorTypeForClass(cls)));
+
+        ClearEquipment(bot);
+
+        // Best equippable item for a slot, optionally excluding an already-picked
+        // entry (used to place two distinct rings/trinkets).
+        auto equipOne = [&](std::string const& where, uint32 exclude) -> uint32
+        {
+            return EquipBestForSlot(bot, where, primary, exclude);
+        };
+
+        equipOne(armorRange + " AND InventoryType=1", 0);        // head
+        equipOne(armorRange + " AND InventoryType=3", 0);        // shoulders
+        equipOne(armorRange + " AND InventoryType IN (5,20)", 0);// chest
+        equipOne(armorRange + " AND InventoryType=6", 0);        // waist
+        equipOne(armorRange + " AND InventoryType=7", 0);        // legs
+        equipOne(armorRange + " AND InventoryType=8", 0);        // feet
+        equipOne(armorRange + " AND InventoryType=9", 0);        // wrists
+        equipOne(armorRange + " AND InventoryType=10", 0);       // hands
+
+        equipOne("class=4 AND InventoryType=2", 0);              // neck
+        equipOne("class=4 AND InventoryType=16", 0);             // cloak
+
+        uint32 ring1 = equipOne("class=4 AND InventoryType=11", 0);
+        equipOne("class=4 AND InventoryType=11", ring1);
+        uint32 trinket1 = equipOne("class=4 AND InventoryType=12", 0);
+        equipOne("class=4 AND InventoryType=12", trinket1);
+
+        GearWeapons(bot, role);
     }
 }
 
@@ -447,6 +886,61 @@ uint32 PlayerbotMgr::CreateBotPopulation(std::string* report)
     }
 
     return charsCreated;
+}
+
+void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride)
+{
+    if (!bot || !bot->IsInWorld())
+        return;
+
+    // Specialization + spells. With a role override, switch the bot to that
+    // role's spec; otherwise keep its current spec (defaulting to damage if it
+    // somehow has none). Below level 10 specs are unavailable.
+    BotRole role = BOT_ROLE_DPS;
+    if (bot->getLevel() >= 10)
+    {
+        uint32 specId;
+        if (roleOverride >= 0)
+        {
+            role = static_cast<BotRole>(roleOverride);
+            specId = SpecIdForRole(bot->getClass(), role);
+        }
+        else
+        {
+            specId = bot->GetTalentSpecialization(bot->GetActiveSpec());
+            if (!specId)
+                specId = SpecIdForRole(bot->getClass(), BOT_ROLE_DPS);
+            role = RoleFromSpec(bot->getClass(), specId);
+        }
+
+        if (specId)
+            bot->LearnSpecialization(specId);
+    }
+    else if (roleOverride >= 0)
+    {
+        role = static_cast<BotRole>(roleOverride);
+    }
+
+    // Gear the bot for the (possibly newly assigned) role at its current level.
+    GearBot(bot, role);
+
+    bot->SaveToDB();
+}
+
+uint32 PlayerbotMgr::InitializeAllBots(int roleOverride)
+{
+    uint32 count = 0;
+    for (auto const& pair : _bots)
+    {
+        WorldSession* session = pair.second;
+        Player* bot = session ? session->GetPlayer() : nullptr;
+        if (bot && bot->IsInWorld())
+        {
+            InitializeBot(bot, roleOverride);
+            ++count;
+        }
+    }
+    return count;
 }
 
 uint32 PlayerbotMgr::PopulateAccount(uint32 accountId)
@@ -519,7 +1013,8 @@ bool PlayerbotMgr::CreateOneCharacter(uint32 accountId)
     // resolves for other clients (name query / who list use the realm id).
     sess->SetVirtualRealmID(realmID);
 
-    uint32 guid = sess->CreateBotCharacter(name, race, cls, gender, 0, 0, 0, 0, 0, level);
+    uint32 specId = SpecIdForRole(cls, role);
+    uint32 guid = sess->CreateBotCharacter(name, race, cls, gender, 0, 0, 0, 0, 0, level, specId);
 
     delete sess;
 

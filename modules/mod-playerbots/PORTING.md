@@ -54,6 +54,16 @@ Remaining for later phases:
   and cleans up bots whose player left the world.
 * [DONE] `.playerbots reload` (re-reads config + candidate pool) and richer
   `.playerbots status` (random/active/candidate counts).
+* [DONE] Bot auto-creator (`Playerbots.AutoCreate.*` / `.playerbots create`):
+  provisions bot accounts and characters by faction and tank/healer/dps ratio at
+  a configured start level, with unique generated names and correct realm id.
+* [DONE] Specialization assignment: created/init bots (level >= 10) get the spec
+  matching their role and learn its spells (`Player::LearnSpecialization`).
+* [DONE] Gear initialisation via `.playerbots init`: clears and refills every
+  slot with the best level/class/spec-appropriate item (armor type + primary
+  stat aware; per-class weapon/shield/off-hand/ranged selection).
+* [DONE] Role change via `.playerbots init <name> <tank|healer|dps>`: switches
+  the bot's spec and re-gears it for the new role.
 * [TODO] Per-master "alt bots" (a real player summoning their own alts).
 * [TODO] Async login path for the pool (current logins reuse the synchronous
   `LoginBotCharacter`, throttled to one per interval to keep world-thread
@@ -87,15 +97,43 @@ Remaining for later phases:
   mage, warlock) hold at ~25y and spam a single filler spell. Bots only cast
   spells they actually know; casts go through the normal path so GCD/power/range/
   LoS are validated by the core.
+* [DONE] World interaction (first pass):
+  * Solo bots wander to nearby random ground points so they aren't frozen statues.
+  * Bots auto-accept trade windows and duel challenges.
+  * Bots walk to and loot nearby corpses they are allowed to take from (group
+    loot rules still apply via `isAllowedToLoot`).
+  * Bots walk to a nearby repairer and repair for free when equipped durability
+    drops below 50%.
+* [DONE] Chat orders via whisper or party/raid chat:
+  * `stay` / `follow` (also `come`) - hold position or resume following.
+  * `flee` / `summon` - run to / teleport to the issuer.
+  * `leave` - leave the current group.
+  * `grind` - attack nearest hostiles; `reset` clears orders/casts.
+  * `passive` / `aggressive` - stop assisting (still retaliate) or resume normal
+    assist behaviour.
+  * `attack` - all bots attack the issuer's current target.
+  * `tank attack` / `dps attack` - same, filtered by the bot's combat role
+    (from its active specialization).
+  * `maintenance` / `autogear` - re-run `InitializeBot` (spec + gear).
+  * Party filters: `@tank` / `@dps` / `@heal` / `@ranged` before an order.
+  * `help` - list orders (whisper reply). Whisper commands get a short ack;
+    party/raid orders apply silently to avoid spam.
+* [DONE] Self-bot mode (`.playerbots self`): attach cast-only AI to a real
+  logged-in player. Client keeps movement; AI casts fillers. `.playerbots init`
+  with no args gears yourself and grouped bots.
 * [TODO] Per-spec rotations: cooldowns, dots/procs, AoE, interrupts, dispels,
   healing, tanking, resource management (the large, iterative piece). Warrior,
   DK, shaman, monk, druid are melee-only auto-attack until their specs land.
 * [TODO] Point movement / travel to arbitrary destinations (for questing,
   objectives, and dungeon navigation).
-* [TODO] Port the strategy/action/trigger/value engine on top of `PlayerbotAI`.
+* [TODO] Port the strategy/action/trigger/value engine on top of `PlayerbotAI`
+  (`co`/`nc` strategies from the AC playerbot wiki).
+* [TODO] AC wiki backlog (later): RTSC/aedm, loot lists (`ll`), item/vendor
+  chat ops, glyphs, raid-specific strats, Multibot addon protocol.
 * [TODO] Targeting + combat rotations per class/spec (rebuilt for 5.4.8 spells
   and talents - the largest single piece).
-* [TODO] Non-combat behaviour: loot, vendor, repair, rest, travel.
+* [TODO] Non-combat behaviour remaining: sell junk to vendors, rest/eat/drink,
+  mounts, gossip/quest NPC interaction.
 
 ## Phase 4 - Feature testing targets (the reason for this port) (IN PROGRESS)
 

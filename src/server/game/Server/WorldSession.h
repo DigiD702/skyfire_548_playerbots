@@ -314,10 +314,13 @@ public:
     // Returns true if a teleport was finalized.
     bool FinalizeBotTeleport();
     // Creates a character on this session's account and saves it to the DB.
-    // Used by the playerbots module to auto-populate bot characters. Returns the
-    // new character's low GUID, or 0 on failure.
+    // Used by the playerbots module to auto-populate bot characters. When
+    // specializationId is non-zero and the level allows it, the character is
+    // given that specialization and its spells. Returns the new character's low
+    // GUID, or 0 on failure.
     uint32 CreateBotCharacter(std::string const& name, uint8 race, uint8 cls, uint8 gender,
-        uint8 skin, uint8 face, uint8 hairStyle, uint8 hairColor, uint8 facialHair, uint8 level);
+        uint8 skin, uint8 face, uint8 hairStyle, uint8 hairColor, uint8 facialHair, uint8 level,
+        uint32 specializationId = 0);
 
     void InitWarden(SessionKey const&, std::string const& os);
 

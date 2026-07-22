@@ -3258,6 +3258,25 @@ void Player::GiveLevel(uint8 level)
     sScriptMgr->OnPlayerLevelChanged(this, oldLevel);
 }
 
+void Player::LearnSpecialization(uint32 specializationId)
+{
+    if (!specializationId)
+        return;
+
+    SetTalentSpecialization(GetActiveSpec(), specializationId);
+    SetUInt32Value(PLAYER_FIELD_CURRENT_SPEC_ID, specializationId);
+    UpdateTalentSpecializationManaBonus();
+
+    // Learn every spell this spec grants up to the current level (mirrors the
+    // in-game specialization-selection handler).
+    std::list<uint32> learnList = GetSpellsForLevels(0, getRaceMask(), specializationId, 0, getLevel());
+    for (std::list<uint32>::const_iterator iter = learnList.begin(); iter != learnList.end(); ++iter)
+        if (!HasSpell(*iter))
+            learnSpell(*iter, true);
+
+    SendTalentsInfoData();
+}
+
 void Player::InitTalentForLevel()
 {
     uint8 level = getLevel();

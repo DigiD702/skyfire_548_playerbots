@@ -10,6 +10,7 @@
 #include "GroupReference.h"
 #include "Log.h"
 #include "MotionMaster.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotMgr.h"
@@ -17,9 +18,13 @@
 #include "ScriptMgr.h"
 #include "WorldSession.h"
 
+#include <algorithm>
+#include <cctype>
+#include <sstream>
 #include <vector>
 
-// Routes per-tick AI updates to the PlayerbotMgr for bot-controlled players.
+// Routes per-tick AI updates and chat orders to the PlayerbotMgr for
+// bot-controlled players.
 class playerbot_player_script : public PlayerScript
 {
 public:
@@ -27,8 +32,36 @@ public:
 
     void OnUpdate(Player* player, uint32 diff) override
     {
-        if (player && player->GetSession() && player->GetSession()->IsBot())
+        if (!player || !player->GetSession())
+            return;
+
+        // Socket bots and self-bots both have an attached PlayerbotAI.
+        if (player->GetSession()->IsBot() || sPlayerbotMgr->HasBotAI(player->GetGUID()))
             sPlayerbotMgr->UpdateBotAI(player, diff);
+    }
+
+    // Whisper directed at a bot.
+    void OnChat(Player* player, ChatMsg /*type*/, Language /*lang*/, std::string& msg, Player* receiver) override
+    {
+        if (!sPlayerbotMgr->IsEnabled() || !player || !receiver)
+            return;
+        if (player->GetSession() && player->GetSession()->IsBot())
+            return;
+        if (!sPlayerbotMgr->IsBot(receiver->GetGUID()))
+            return;
+
+        sPlayerbotMgr->HandleBotWhisper(player, receiver, msg);
+    }
+
+    // Party / raid chat: every bot in the group hears the order.
+    void OnChat(Player* player, ChatMsg /*type*/, Language /*lang*/, std::string& msg, Group* group) override
+    {
+        if (!sPlayerbotMgr->IsEnabled() || !player || !group)
+            return;
+        if (player->GetSession() && player->GetSession()->IsBot())
+            return;
+
+        sPlayerbotMgr->HandleBotGroupChat(player, group, msg);
     }
 };
 
@@ -84,6 +117,8 @@ public:
             { "list",   rbac::RBAC_PERM_COMMAND_GM, true, &HandlePlayerbotListCommand,   "", },
             { "reload", rbac::RBAC_PERM_COMMAND_GM, true, &HandlePlayerbotReloadCommand, "", },
             { "create", rbac::RBAC_PERM_COMMAND_GM, true, &HandlePlayerbotCreateCommand, "", },
+            { "init",   rbac::RBAC_PERM_COMMAND_GM, true, &HandlePlayerbotInitCommand,   "", },
+            { "self",   rbac::RBAC_PERM_COMMAND_GM, false, &HandlePlayerbotSelfCommand,  "", },
         };
 
         static std::vector<ChatCommand> commandTable =
@@ -227,6 +262,190 @@ public:
         std::string report;
         sPlayerbotMgr->CreateBotPopulation(&report);
         handler->PSendSysMessage("%s", report.c_str());
+        return true;
+    }
+
+    // .playerbots self [on|off]
+    // Attach cast-only AI to your logged-in character (you keep WASD movement).
+    static bool HandlePlayerbotSelfCommand(ChatHandler* handler, char const* args)
+    {
+        Player* player = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
+        if (!player)
+        {
+            handler->SendSysMessage("This command must be used in-game.");
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        if (!sPlayerbotMgr->IsEnabled())
+        {
+            handler->SendSysMessage("Playerbots module is disabled (set Playerbots.Enable = 1).");
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        std::string arg = args ? args : "";
+        std::transform(arg.begin(), arg.end(), arg.begin(),
+            [](unsigned char c) { return char(std::tolower(c)); });
+
+        std::string report;
+        if (arg == "off" || arg == "detach" || arg == "disable")
+        {
+            if (!sPlayerbotMgr->DetachSelfBot(player))
+            {
+                handler->SendSysMessage("Self-bot AI is not attached.");
+                handler->SetSentErrorMessage(true);
+                return false;
+            }
+            handler->SendSysMessage("Self-bot AI detached. You control combat again.");
+            return true;
+        }
+
+        if (arg == "on" || arg == "attach" || arg == "enable")
+        {
+            if (!sPlayerbotMgr->AttachSelfBot(player, &report))
+            {
+                handler->PSendSysMessage("%s", report.c_str());
+                handler->SetSentErrorMessage(true);
+                return false;
+            }
+            handler->SendSysMessage("Self-bot AI attached. You move; the AI casts in combat.");
+            return true;
+        }
+
+        if (!sPlayerbotMgr->ToggleSelfBot(player, &report))
+        {
+            handler->PSendSysMessage("%s", report.c_str());
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+        handler->PSendSysMessage("%s", report.c_str());
+        return true;
+    }
+
+    // Parses a role token into the InitializeBot override value
+    // (-1 keep, 0 tank, 1 healer, 2 damage). Returns false on an unknown token.
+    static bool ParseRoleToken(std::string token, int& roleOut)
+    {
+        std::transform(token.begin(), token.end(), token.begin(),
+            [](unsigned char c) { return char(std::tolower(c)); });
+
+        if (token == "tank")
+            roleOut = 0;
+        else if (token == "healer" || token == "heal" || token == "heals")
+            roleOut = 1;
+        else if (token == "dps" || token == "damage" || token == "dd")
+            roleOut = 2;
+        else
+            return false;
+        return true;
+    }
+
+    // .playerbots init [<charname>|all|self] [tank|healer|dps]
+    // Re-applies specialization/spells and gear. With no name, initializes you
+    // and any bots in your group.
+    static bool HandlePlayerbotInitCommand(ChatHandler* handler, char const* args)
+    {
+        std::string first;
+        std::string second;
+        if (args)
+        {
+            std::istringstream stream(args);
+            stream >> first >> second;
+        }
+
+        int roleOverride = -1;
+        bool haveRole = false;
+        if (!second.empty())
+        {
+            if (!ParseRoleToken(second, roleOverride))
+            {
+                handler->PSendSysMessage("Unknown role '%s'. Use tank, healer, or dps.", second.c_str());
+                handler->SetSentErrorMessage(true);
+                return false;
+            }
+            haveRole = true;
+        }
+        else if (!first.empty() && ParseRoleToken(first, roleOverride))
+        {
+            haveRole = true;
+            first.clear();
+        }
+
+        Player* master = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
+
+        if (first == "all")
+        {
+            uint32 count = sPlayerbotMgr->InitializeAllBots(haveRole ? roleOverride : -1);
+            handler->PSendSysMessage("Initialized %u active bot(s)%s.", count,
+                haveRole ? " with the requested role" : "");
+            return true;
+        }
+
+        if (first == "self" || (!first.empty() && master && first == master->GetName()))
+        {
+            if (!master)
+            {
+                handler->SendSysMessage("This command must be used in-game.");
+                handler->SetSentErrorMessage(true);
+                return false;
+            }
+            sPlayerbotMgr->InitializeBot(master, roleOverride);
+            handler->PSendSysMessage("Initialized yourself%s.",
+                haveRole ? " with the requested role" : "");
+            return true;
+        }
+
+        if (!first.empty())
+        {
+            std::string name = first;
+            if (!normalizePlayerName(name))
+            {
+                handler->SendSysMessage("Invalid character name.");
+                handler->SetSentErrorMessage(true);
+                return false;
+            }
+
+            uint64 guid = sObjectMgr->GetPlayerGUIDByName(name);
+            Player* bot = guid ? ObjectAccessor::FindPlayer(guid) : nullptr;
+            if (!bot || (!sPlayerbotMgr->IsBot(bot->GetGUID()) && !sPlayerbotMgr->IsSelfBot(bot->GetGUID())))
+            {
+                handler->PSendSysMessage("'%s' is not an active bot.", name.c_str());
+                handler->SetSentErrorMessage(true);
+                return false;
+            }
+
+            sPlayerbotMgr->InitializeBot(bot, roleOverride);
+            handler->PSendSysMessage("Initialized bot '%s'%s.", name.c_str(),
+                haveRole ? " with the requested role" : "");
+            return true;
+        }
+
+        if (!master)
+        {
+            handler->SendSysMessage("Usage: .playerbots init [<charname>|all|self] [tank|healer|dps].");
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        sPlayerbotMgr->InitializeBot(master, roleOverride);
+        uint32 count = 1;
+
+        if (Group* group = master->GetGroup())
+        {
+            for (GroupReference* itr = group->GetFirstMember(); itr != NULL; itr = itr->next())
+            {
+                Player* member = itr->GetSource();
+                if (member && member != master && sPlayerbotMgr->IsBot(member->GetGUID()))
+                {
+                    sPlayerbotMgr->InitializeBot(member, roleOverride);
+                    ++count;
+                }
+            }
+        }
+
+        handler->PSendSysMessage("Initialized yourself and %u grouped bot(s)%s.",
+            count - 1, haveRole ? " with the requested role" : "");
         return true;
     }
 

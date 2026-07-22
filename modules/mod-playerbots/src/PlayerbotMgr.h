@@ -21,6 +21,7 @@
 class WorldSession;
 class Player;
 class PlayerbotAI;
+class Group;
 
 class PlayerbotMgr
 {
@@ -36,6 +37,10 @@ public:
     // Ticks a single bot's AI (from PlayerScript::OnUpdate).
     void UpdateBotAI(Player* bot, uint32 diff);
 
+    // Routes a chat order to one bot (whisper) or every bot in a group (party/raid).
+    void HandleBotWhisper(Player* from, Player* bot, std::string const& msg);
+    void HandleBotGroupChat(Player* from, Group* group, std::string const& msg);
+
     bool IsEnabled() const { return _enabled; }
     bool IsRandomBotsEnabled() const { return _randomBotsEnabled; }
     uint32 GetMaxRandomBots() const { return _maxRandomBots; }
@@ -45,6 +50,14 @@ public:
     // Logs the given bot character out of the world and frees its session.
     bool RemoveBot(uint64 characterGuid);
     bool IsBot(uint64 characterGuid) const { return _bots.find(characterGuid) != _bots.end(); }
+    // True if this GUID has an attached PlayerbotAI (socket bot or self-bot).
+    bool HasBotAI(uint64 characterGuid) const { return _ai.find(characterGuid) != _ai.end(); }
+    bool IsSelfBot(uint64 characterGuid) const { return _selfBots.find(characterGuid) != _selfBots.end(); }
+
+    // Attach/detach AI to a real logged-in player (client keeps movement).
+    bool AttachSelfBot(Player* player, std::string* errorOut = nullptr);
+    bool DetachSelfBot(Player* player);
+    bool ToggleSelfBot(Player* player, std::string* report = nullptr);
 
     // Logs out and frees every managed bot (used on world shutdown).
     void LogoutAllBots();
@@ -59,6 +72,14 @@ public:
     // accounts and characters are reused. Returns the number of characters
     // created; a human-readable summary is appended to *report when provided.
     uint32 CreateBotPopulation(std::string* report = nullptr);
+
+    // Re-applies derived state (specialization/spells, gear) to a single active
+    // bot. Safe to call repeatedly. roleOverride: -1 keeps the bot's current
+    // spec, otherwise 0 = tank, 1 = healer, 2 = damage (matches BotRole order).
+    void InitializeBot(Player* bot, int roleOverride = -1);
+    // Initializes every active bot; returns the number processed. roleOverride
+    // is forwarded to InitializeBot (-1 keeps each bot's current spec).
+    uint32 InitializeAllBots(int roleOverride = -1);
 
     uint32 GetActiveBotCount() const { return uint32(_bots.size()); }
     uint32 GetRandomBotCount() const { return uint32(_randomBots.size()); }
@@ -105,6 +126,7 @@ private:
     std::unordered_map<uint64 /*characterGuid*/, WorldSession*> _bots;
     std::unordered_map<uint64 /*characterGuid*/, PlayerbotAI*> _ai;
     std::unordered_set<uint64 /*characterGuid*/> _randomBots; // subset managed by the pool
+    std::unordered_set<uint64 /*characterGuid*/> _selfBots;   // real players with cast-only AI
 };
 
 #define sPlayerbotMgr PlayerbotMgr::instance()

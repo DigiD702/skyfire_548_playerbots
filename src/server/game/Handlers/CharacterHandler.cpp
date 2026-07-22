@@ -1812,7 +1812,8 @@ bool WorldSession::LoginBotCharacter(uint64 playerGuid)
 }
 
 uint32 WorldSession::CreateBotCharacter(std::string const& name, uint8 race, uint8 cls, uint8 gender,
-    uint8 skin, uint8 face, uint8 hairStyle, uint8 hairColor, uint8 facialHair, uint8 level)
+    uint8 skin, uint8 face, uint8 hairStyle, uint8 hairColor, uint8 facialHair, uint8 level,
+    uint32 specializationId)
 {
     if (GetPlayer())
         return 0;
@@ -1832,6 +1833,11 @@ uint32 WorldSession::CreateBotCharacter(std::string const& name, uint8 race, uin
 
     if (level > newChar.getLevel())
         newChar.GiveLevel(level);
+
+    // Specializations unlock at level 10; apply the requested one and learn its
+    // spells so the bot fills a real tank/healer/damage role.
+    if (specializationId && newChar.getLevel() >= 10)
+        newChar.LearnSpecialization(specializationId);
 
     newChar.SaveToDB(true);
 

@@ -5,10 +5,15 @@ A port of the AzerothCore playerbots system to SkyFire (World of Warcraft
 so features such as LFG, LFR, random battlegrounds, arenas and open-world
 activity can be exercised without a large human population.
 
+**Command reference:** see [COMMANDS.md](COMMANDS.md) for every GM slash
+command and whisper/party order (including what is *not* ported yet, such as
+`co` / `nc`).
+
 Upstream references:
 
 * Core fork:  https://github.com/mod-playerbots/azerothcore-wotlk/tree/Playerbot
 * Module:     https://github.com/mod-playerbots/mod-playerbots
+* AC command wiki: https://github.com/mod-playerbots/mod-playerbots/wiki/Playerbot-Commands
 
 ## Status
 
@@ -18,14 +23,24 @@ This module is being ported in phases. What is present today:
 * Configuration (`playerbots.conf.dist`) and a `PlayerbotMgr` that reads it.
 * Phase 1 core hooks: socketless bot `WorldSession`, synchronous character
   login, and a per-player tick hook (`PlayerScript::OnUpdate`).
-* Commands (GM level):
-  * `.playerbots status` - report module state and active bot count.
-  * `.playerbots add <charname>` - log an existing character in as a bot.
-  * `.playerbots remove <charname>` - log a bot out.
-  * `.playerbots summon` - teleport all of your grouped bots to you (in-game).
-  * `.playerbots list` - list active bots.
-  * `.playerbots reload` - reload config and the candidate bot pool.
-  * `.playerbots create` - run the bot auto-creator (see below).
+* GM commands and chat orders — full tables in [COMMANDS.md](COMMANDS.md).
+* Basic bot AI: follow/assist when grouped, combat fillers, LFG role/proposal
+  answers, solo wander, auto-accept trade/duel, corpse loot, and opportunistic
+  free repair near repair NPCs.
+* Self-bot mode (`.playerbots self`): you move, AI casts.
+
+### Self-bot mode
+
+`.playerbots self` attaches AI to **your** character without replacing the
+client session:
+
+* You move and jump as normal.
+* In combat the AI picks a target (selection / attackers / `attack` order) and
+  casts the class filler when you are in range with LoS.
+* `.playerbots init` (or whisper `autogear` / `maintenance` to a bot) refreshes
+  gear and spec. On yourself: `.playerbots init` or `.playerbots init self`.
+
+Toggle again or `.playerbots self off` to detach.
 
 ### Bot auto-creation
 
@@ -43,16 +58,34 @@ ones are created.
   by `TankPct` / `HealerPct` (remainder become DPS), and a class capable of that
   role plus a valid race for the faction are selected. Characters are created at
   `Playerbots.AutoCreate.Level`. Death Knights and neutral Pandaren are skipped.
+* If the start level is at least 10, the character is given the specialization
+  matching its rolled role (e.g. a tank Warrior gets Protection) and learns the
+  spells that spec grants for its level, so it can actually fill the role. Use
+  `.playerbots init` to re-apply this later (after leveling, respec, etc.).
 
 Run it on demand with `.playerbots create`, or set
 `Playerbots.AutoCreate.OnStartup = 1` to run it once when the world boots. Newly
 created characters are picked up by the random-bot pool automatically.
 
+### Gear and role changes (`.playerbots init`)
+
+`.playerbots init` re-gears an active bot for its current level and spec:
+
+* Existing equipment (except shirt/tabard) is cleared and each slot is refilled
+  with the best uncommon-to-epic item the bot can equip, biased toward the
+  spec's primary stat (STR/AGI/INT). Armor slots prefer the heaviest armor type
+  the class can wear at that level; weapons/shields/off-hands/ranged are chosen
+  per class and role. Re-run it after leveling to pull in level-appropriate
+  upgrades (e.g. gear a fresh level-80 bot).
+* Add a role token (`tank`/`healer`/`dps`) to change the bot's spec first, then
+  re-gear for the new role - e.g. `.playerbots init Arix tank`.
+
 What is **not** implemented yet (tracked in `PORTING.md`):
 
-* Talent/specialization and gear initialisation for created bots (they are
-  created blank at the configured level for now).
-* Bot AI strategies, actions and triggers beyond follow/assist/basic combat.
+* Mounts (learn/use a default ground/flying mount).
+* Vendor sell-junk, rest/eat/drink, gossip/quest NPC interaction.
+* Deeper per-spec combat rotations.
+* Full AC-style `co`/`nc` strategy engine, RTSC, loot-lists, item/vendor chat ops.
 * The automated LFG/LFR/RBG queue behaviour.
 
 To try it: set `Playerbots.Enable = 1`, then `.playerbots add <charname>` for a

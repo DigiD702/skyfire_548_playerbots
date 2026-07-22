@@ -1,0 +1,142 @@
+# Playerbot Commands
+
+Reference for SkyFire `mod-playerbots`. Commands fall into two groups:
+
+1. **GM slash commands** — typed in chat as `.playerbots …` (require GM permission).
+2. **Chat orders** — whisper a bot, or say them in party/raid chat so every grouped bot hears them.
+
+Whisper replies with a short ack. Party/raid orders apply silently (no spam).
+
+---
+
+## GM slash commands (`.playerbots …`)
+
+| Command | What it does |
+| --- | --- |
+| `.playerbots status` | Module on/off, random-bot counts, active bot count. |
+| `.playerbots list` | Names/GUIDs of active (socket) bots. |
+| `.playerbots add <name>` | Log an offline character in as a full bot session. |
+| `.playerbots remove <name>` | Log that bot out and free its session. |
+| `.playerbots summon` | Teleport all bots in your group to you. |
+| `.playerbots reload` | Reload `playerbots.conf` and the random-bot candidate pool. |
+| `.playerbots create` | Run the auto-creator (accounts + characters from config). |
+| `.playerbots init [<name>\|all\|self] [tank\|healer\|dps]` | Re-apply specialization spells and gear. See below. |
+| `.playerbots self [on\|off]` | Attach/detach cast-only AI on **your** character. See Self-bot. |
+
+### `.playerbots init`
+
+Re-gears and re-applies spec spells for the current level.
+
+| Args | Effect |
+| --- | --- |
+| *(none)* | Initialize **yourself**, then every bot in your group. |
+| `self` | Initialize only yourself. |
+| `<charname>` | Initialize that active bot (or self-bot). |
+| `all` | Initialize every active socket bot. |
+| `… tank` / `healer` / `dps` | Switch to that role’s spec first, then gear for it. |
+
+Examples:
+
+```
+.playerbots init
+.playerbots init self tank
+.playerbots init Arix healer
+.playerbots init all dps
+```
+
+### `.playerbots self`
+
+Attaches AI to your logged-in character **without** replacing the client session:
+
+- You keep WASD / jump / camera.
+- AI picks combat targets and casts class filler spells when you are in range with LoS.
+- Toggle again, or `.playerbots self off`, to detach.
+
+Useful for testing rotations and for `.playerbots init` gearing yourself.
+
+---
+
+## Chat orders (whisper or party/raid)
+
+Send these as the message text (case-insensitive).
+
+| Order | What it does |
+| --- | --- |
+| `help` | Whisper back the order list. |
+| `stay` | Hold position (no follow/wander). Self-bot: no-op (you move). |
+| `follow` / `come` | Resume following the group leader. Self-bot: no-op. |
+| `flee` | Clear combat orders and teleport to the issuer. Self-bot: no-op. |
+| `leave` | Leave the current group. Self-bot: ignored. |
+| `summon` | Teleport the bot to the issuer. Self-bot: ignored. |
+| `grind` | Aggressive; pick nearest attackable hostiles. |
+| `reset` | Clear stay/passive/grind/forced target, stop attack/casts. |
+| `passive` | Do not assist or pull; still fight back if attacked. |
+| `aggressive` / `aggro` | Resume normal assist behaviour. |
+| `attack` | Attack the **issuer’s** current target. |
+| `tank attack` | Same, but only bots whose active spec is a tank role. |
+| `dps attack` | Same, but only damage-spec bots. |
+| `maintenance` | Re-run init (spec + gear) on that bot. |
+| `autogear` | Same as `maintenance`. |
+
+### Party role filters
+
+Prefix an order with a filter so only matching bots react (party/raid):
+
+| Filter | Who reacts |
+| --- | --- |
+| `@tank …` | Tank-spec bots |
+| `@dps …` | Damage-spec bots |
+| `@heal …` / `@healer …` | Healer-spec bots |
+| `@ranged …` | Hunter / priest / mage / warlock (non-tank) |
+
+Examples:
+
+```
+/w BotName stay
+/p follow
+/p attack
+/p @tank attack
+/p @dps follow
+/r grind
+```
+
+---
+
+## `co` / `nc` strategies — not implemented
+
+AzerothCore playerbots use whisper commands like:
+
+```
+co +grind,-follow
+nc +loot
+co ?
+```
+
+Those control a full **combat (`co`) / non-combat (`nc`) strategy engine**.
+
+**SkyFire mod-playerbots does not support `co` or `nc` yet.** Whispering them does nothing useful (they are not recognized orders). That engine is tracked as future work in `PORTING.md` (along with RTSC, loot lists, item/vendor chat ops, etc.).
+
+Closest equivalents today:
+
+| AC-style idea | Use instead |
+| --- | --- |
+| Stay put | `stay` |
+| Follow master | `follow` |
+| Attack target | `attack` / `tank attack` / `dps attack` |
+| Attack anything nearby | `grind` |
+| Stop assisting | `passive` |
+| Resume assist | `aggressive` |
+| Clear bot state | `reset` |
+| Re-gear / talents refresh | `autogear` / `maintenance` or `.playerbots init` |
+
+---
+
+## Quick start
+
+1. Enable the module in `playerbots.conf` (`Playerbots.Enable = 1`).
+2. `.playerbots add SomeOfflineChar` — or let random bots spawn from config.
+3. Invite bots, then `/p follow` or `/p attack` with a mob selected.
+4. Optional: `.playerbots self` on your own character to test casting while you move.
+5. `.playerbots init` after leveling to refresh gear/spec.
+
+See `README.md` for build/config and `PORTING.md` for port status and backlog.
