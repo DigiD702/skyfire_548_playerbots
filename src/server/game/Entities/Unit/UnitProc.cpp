@@ -2131,7 +2131,7 @@ bool Unit::HandleProcTriggerSpell(Unit* victim, uint32 damage, AuraEffect* trigg
         case 65081:
         {
             // Proc only from PW:S cast
-            if (!(procSpell->SpellFamilyFlags[0] & 0x00000001))
+            if (!procSpell || !(procSpell->SpellFamilyFlags[0] & 0x00000001))
                 return false;
             break;
         }
@@ -2139,7 +2139,7 @@ bool Unit::HandleProcTriggerSpell(Unit* victim, uint32 damage, AuraEffect* trigg
         case 70893:
         {
             // check if we're doing a critical hit
-            if (!(procSpell->SpellFamilyFlags[1] & 0x10000000) && (procEx != PROC_EX_CRITICAL_HIT))
+            if (!procSpell || (!(procSpell->SpellFamilyFlags[1] & 0x10000000) && (procEx != PROC_EX_CRITICAL_HIT)))
                 return false;
             // check if we're procced by Claw, Bite or Smack (need to use the spell icon ID to detect it)
             if (!(procSpell->SpellIconID == 262 || procSpell->SpellIconID == 1680 || procSpell->SpellIconID == 473))
@@ -2148,7 +2148,7 @@ bool Unit::HandleProcTriggerSpell(Unit* victim, uint32 damage, AuraEffect* trigg
         }
         case 91021:
         {
-            if (!(procSpell->SpellFamilyName == SPELLFAMILY_ROGUE))
+            if (!procSpell || !(procSpell->SpellFamilyName == SPELLFAMILY_ROGUE))
                 return false;
             if (!(procSpell->SpellIconID == 856 || procSpell->SpellIconID == 498 || procSpell->SpellIconID == 244))
                 return false;
@@ -2156,7 +2156,7 @@ bool Unit::HandleProcTriggerSpell(Unit* victim, uint32 damage, AuraEffect* trigg
         }
         case 55021:
         {
-            if (!(procSpell->SpellFamilyName == SPELLFAMILY_MAGE))
+            if (!procSpell || !(procSpell->SpellFamilyName == SPELLFAMILY_MAGE))
                 return false;
             if (!(procSpell->SpellIconID == 17))
                 return false;
@@ -2164,6 +2164,11 @@ bool Unit::HandleProcTriggerSpell(Unit* victim, uint32 damage, AuraEffect* trigg
         }
         case 12880: // Enrage
         {
+            // White-hit melee has no procSpell. Still allow Enrage to apply, but
+            // only grant Raging Blow! from matching ability criticals.
+            if (!procSpell)
+                break;
+
             if (!(procSpell->SpellFamilyName == SPELLFAMILY_WARRIOR))
                 return false;
 
