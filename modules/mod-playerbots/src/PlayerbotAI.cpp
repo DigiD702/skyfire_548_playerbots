@@ -5,6 +5,7 @@
 
 #include "PlayerbotAI.h"
 #include "PlayerbotMgr.h"
+#include "rotations/BotRotation.h"
 #include "CellImpl.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -343,14 +344,7 @@ bool PlayerbotAI::HandleCombat()
         return false;
     }
 
-    uint32 spellId = GetFillerSpell();
-    bool hasFiller = spellId && _bot->HasSpell(spellId);
-
-    // Class decides stance, not whether the filler is known. A mage without its
-    // filler must still stay at range - otherwise MoveChase(0) + _reachTarget
-    // forces fist-fighting in melee.
-    // Cloth casters/hunters stay ranged; tanks always melee. Hybrid healers
-    // (resto shaman/monk/druid/pala) melee for now; priests are ranged.
+    // Spec decides stance (e.g. Elemental ranged, Enhancement melee). Tanks always melee.
     bool const ranged = IsRangedClass() && GetCombatRole() != CombatRole::Tank;
     bool const inMelee = _bot->IsWithinMeleeRange(target);
 
@@ -377,8 +371,8 @@ bool PlayerbotAI::HandleCombat()
         else
             _chaseGuid = target->GetGUID();
 
-        if (hasFiller && inMelee)
-            DoRotation(target, spellId);
+        if (inMelee)
+            DoRotation(target);
 
         return true;
     }
@@ -408,8 +402,7 @@ bool PlayerbotAI::HandleCombat()
             _bot->SetInFront(target);
 
         _chaseGuid = target->GetGUID();
-        if (hasFiller)
-            DoRotation(target, spellId);
+        DoRotation(target);
         return true;
     }
 
@@ -449,10 +442,6 @@ bool PlayerbotAI::HandleCombatCastOnly()
         return false;
     }
 
-    uint32 spellId = GetFillerSpell();
-    if (!spellId || !_bot->HasSpell(spellId))
-        return true;
-
     bool const ranged = IsRangedClass() && GetCombatRole() != CombatRole::Tank;
     if (ranged)
     {
@@ -464,14 +453,14 @@ bool PlayerbotAI::HandleCombatCastOnly()
             _bot->SendMeleeAttackStop(target);
         }
         _bot->Attack(target, false);
-        DoRotation(target, spellId);
+        DoRotation(target);
     }
     else
     {
         if (!_bot->IsWithinMeleeRange(target))
             return true;
         _bot->Attack(target, true);
-        DoRotation(target, spellId);
+        DoRotation(target);
     }
     return true;
 }
@@ -605,21 +594,35 @@ bool PlayerbotAI::MatchesRoleFilter(std::string const& filter) const
 
 bool PlayerbotAI::IsRangedClass() const
 {
-    switch (_bot->getClass())
+    uint32 specId = _bot->GetTalentSpecialization(_bot->GetActiveSpec());
+    uint8 cls = _bot->getClass();
+
+    auto isSpec = [&](uint8 tab) -> bool
+    {
+        uint32 const* specs = GetClassSpecializations(cls);
+        return specs && specs[tab] == specId;
+    };
+
+    switch (cls)
     {
         case CLASS_HUNTER:
         case CLASS_PRIEST:
         case CLASS_MAGE:
         case CLASS_WARLOCK:
             return true;
+        case CLASS_SHAMAN:
+            // Elemental = tab 0; Enhancement/Resto melee for now.
+            return isSpec(0);
+        case CLASS_DRUID:
+            // Balance = tab 0.
+            return isSpec(0);
         default:
             return false;
     }
 }
 
-// One iconic, low-level "filler" attack per class. Conservative on purpose: bots
-// only cast what they actually know, so an unknown/wrong id simply no-ops.
-// Per-spec rotations are layered on later.
+// One iconic, low-level "filler" attack per class. Used when no Wave-1
+// per-spec priority list returns a spell.
 uint32 PlayerbotAI::GetFillerSpell() const
 {
     switch (_bot->getClass())
@@ -630,24 +633,27 @@ uint32 PlayerbotAI::GetFillerSpell() const
         case CLASS_PRIEST:  return 585;   // Smite
         case CLASS_MAGE:    return 116;   // Frostbolt
         case CLASS_WARLOCK: return 686;   // Shadow Bolt
-        default:            return 0;     // melee-only for now
+        case CLASS_SHAMAN:  return 403;   // Lightning Bolt (ranged) / melee still auto-attacks
+        case CLASS_MONK:    return 100780; // Jab
+        default:            return 0;
     }
 }
 
-void PlayerbotAI::DoRotation(Unit* target, uint32 spellId)
+void PlayerbotAI::DoRotation(Unit* target)
 {
-    if (!spellId)
+    if (!target)
         return;
 
     if (_bot->HasUnitState(UNIT_STATE_CASTING))
-        return; // don't interrupt our own cast
-
-    if (_bot->HasSpellCooldown(spellId))
         return;
 
-    // triggered=false: normal cast, so GCD/power/range/LoS are all validated by
-    // the core and a bad cast just fails cleanly.
-    _bot->CastSpell(target, spellId, false);
+    uint32 spellId = BotRotation::SelectNextSpell(_bot, target);
+    if (!spellId)
+        spellId = GetFillerSpell();
+    if (!spellId)
+        return;
+
+    BotRotation::CastSpell(_bot, target, spellId);
 }
 
 // Auto-accept trades and duels. Trades use the real accept opcode path so a

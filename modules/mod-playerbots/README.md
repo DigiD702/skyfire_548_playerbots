@@ -27,7 +27,10 @@ This module is being ported in phases. What is present today:
 * Basic bot AI: follow/assist when grouped, combat fillers, LFG role/proposal
   answers, solo wander, auto-accept trade/duel, corpse loot, and opportunistic
   free repair near repair NPCs.
-* Self-bot mode (`.playerbots self`): you move, AI casts.
+* Self-bot mode (`.playerbots self`): you move, AI casts fillers / Wave-1
+  per-spec rotations (Ret, WW, BM, Shadow, Affliction, Elemental).
+* Per-spec rotation framework under `src/rotations/` (Hekili `.simc` as offline
+  reference).
 
 ### Self-bot mode
 

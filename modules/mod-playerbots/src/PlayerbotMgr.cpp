@@ -5,6 +5,7 @@
 
 #include "PlayerbotMgr.h"
 #include "PlayerbotAI.h"
+#include "rotations/BotRotation.h"
 #include "AccountMgr.h"
 #include "Config.h"
 #include "DBCStores.h"
@@ -572,8 +573,33 @@ namespace
     }
 
     // Primary stat the spec wants, used to bias item picks toward useful gear.
-    uint32 PrimaryStatForClassRole(uint8 cls, BotRole role)
+    uint32 PrimaryStatForClassRole(uint8 cls, BotRole role, uint32 specId = 0)
     {
+        // Spec-aware overrides for hybrids with multiple DPS trees.
+        switch (specId)
+        {
+            case SPEC_SHAMAN_ENHANCEMENT:
+            case SPEC_DRUID_FERAL:
+            case SPEC_DRUID_GUARDIAN:
+            case SPEC_HUNTER_BEAST_MASTERY:
+            case SPEC_HUNTER_MARKSMANSHIP:
+            case SPEC_HUNTER_SURVIVAL:
+            case SPEC_ROGUE_ASSASSINATION:
+            case SPEC_ROGUE_COMBAT:
+            case SPEC_ROGUE_SUBTLETY:
+            case SPEC_MONK_WINDWALKER:
+            case SPEC_MONK_BREWMASTER:
+                return ITEM_MOD_AGILITY;
+            case SPEC_SHAMAN_ELEMENTAL:
+            case SPEC_SHAMAN_RESTORATION:
+            case SPEC_DRUID_BALANCE:
+            case SPEC_DRUID_RESTORATION:
+            case SPEC_MONK_MISTWEAVER:
+                return ITEM_MOD_INTELLECT;
+            default:
+                break;
+        }
+
         switch (cls)
         {
             case CLASS_WARRIOR:
@@ -582,8 +608,10 @@ namespace
             case CLASS_HUNTER:
             case CLASS_ROGUE:        return ITEM_MOD_AGILITY;
             case CLASS_MONK:         return role == BOT_ROLE_HEALER ? ITEM_MOD_INTELLECT : ITEM_MOD_AGILITY;
-            case CLASS_DRUID:        return role == BOT_ROLE_TANK ? ITEM_MOD_AGILITY : ITEM_MOD_INTELLECT;
-            default:                 return ITEM_MOD_INTELLECT; // shaman/priest/mage/warlock
+            case CLASS_DRUID:        return role == BOT_ROLE_TANK ? ITEM_MOD_AGILITY
+                                         : (role == BOT_ROLE_DPS ? ITEM_MOD_INTELLECT : ITEM_MOD_INTELLECT);
+            case CLASS_SHAMAN:       return role == BOT_ROLE_DPS ? ITEM_MOD_INTELLECT : ITEM_MOD_INTELLECT;
+            default:                 return ITEM_MOD_INTELLECT; // priest/mage/warlock
         }
     }
 
@@ -693,10 +721,10 @@ namespace
     }
 
     // Picks class/role-appropriate weapons (and shield/offhand/ranged).
-    void GearWeapons(Player* bot, BotRole role)
+    void GearWeapons(Player* bot, BotRole role, uint32 specId = 0)
     {
         uint8 const cls = bot->getClass();
-        uint32 const primary = PrimaryStatForClassRole(cls, role);
+        uint32 const primary = PrimaryStatForClassRole(cls, role, specId);
 
         auto equip = [&](std::string const& where) -> bool
         {
@@ -751,8 +779,17 @@ namespace
                 equip(oneH + " AND subclass IN (0,4,7,13,15)"); // off-hand
                 break;
             case CLASS_SHAMAN:
-                equip(oneH + " AND subclass IN (0,4,13,15)");
-                equip(shield);
+                if (specId == SPEC_SHAMAN_ENHANCEMENT)
+                {
+                    // Enhancement: dual-wield 1H.
+                    equip(oneH + " AND subclass IN (0,4,13,15)");
+                    equip(oneH + " AND subclass IN (0,4,13,15)");
+                }
+                else
+                {
+                    equip(oneH + " AND subclass IN (0,4,13,15)");
+                    equip(shield);
+                }
                 break;
             case CLASS_MONK:
                 if (!equip(twoH + " AND subclass IN (6,10)"))
@@ -789,10 +826,10 @@ namespace
     }
 
     // Fills every gear slot with the best level/class/spec-appropriate items.
-    void GearBot(Player* bot, BotRole role)
+    void GearBot(Player* bot, BotRole role, uint32 specId = 0)
     {
         uint8 const cls = bot->getClass();
-        uint32 const primary = PrimaryStatForClassRole(cls, role);
+        uint32 const primary = PrimaryStatForClassRole(cls, role, specId);
         std::string const armorRange =
             "class=4 AND subclass BETWEEN 1 AND " + std::to_string(uint32(ArmorTypeForClass(cls)));
 
@@ -822,7 +859,7 @@ namespace
         uint32 trinket1 = equipOne("class=4 AND InventoryType=12", 0);
         equipOne("class=4 AND InventoryType=12", trinket1);
 
-        GearWeapons(bot, role);
+        GearWeapons(bot, role, specId);
     }
 }
 
@@ -888,19 +925,37 @@ uint32 PlayerbotMgr::CreateBotPopulation(std::string* report)
     return charsCreated;
 }
 
-void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride)
+void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverride)
 {
     if (!bot || !bot->IsInWorld())
         return;
 
-    // Specialization + spells. With a role override, switch the bot to that
-    // role's spec; otherwise keep its current spec (defaulting to damage if it
-    // somehow has none). Below level 10 specs are unavailable.
+    // Specialization + spells. Explicit specOverride wins; otherwise a role
+    // override picks the default tab for that role; otherwise keep current.
+    // Below level 10 specs are unavailable.
     BotRole role = BOT_ROLE_DPS;
+    uint32 specId = 0;
     if (bot->getLevel() >= 10)
     {
-        uint32 specId;
-        if (roleOverride >= 0)
+        if (specOverride)
+        {
+            if (ChrSpecializationEntry const* entry = sChrSpecializationStore.LookupEntry(specOverride))
+            {
+                if (entry->classId == bot->getClass())
+                    specId = specOverride;
+            }
+            if (!specId)
+            {
+                // Unknown or wrong-class spec id; keep existing state.
+                specId = bot->GetTalentSpecialization(bot->GetActiveSpec());
+                if (!specId)
+                    specId = SpecIdForRole(bot->getClass(), BOT_ROLE_DPS);
+                role = RoleFromSpec(bot->getClass(), specId);
+            }
+            else
+                role = RoleFromSpec(bot->getClass(), specId);
+        }
+        else if (roleOverride >= 0)
         {
             role = static_cast<BotRole>(roleOverride);
             specId = SpecIdForRole(bot->getClass(), role);
@@ -915,19 +970,21 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride)
 
         if (specId)
             bot->LearnSpecialization(specId);
+
+        BotRotation::ApplyRecommendedTalents(bot);
     }
     else if (roleOverride >= 0)
     {
         role = static_cast<BotRole>(roleOverride);
     }
 
-    // Gear the bot for the (possibly newly assigned) role at its current level.
-    GearBot(bot, role);
+    // Gear the bot for the (possibly newly assigned) role/spec at its level.
+    GearBot(bot, role, specId);
 
     bot->SaveToDB();
 }
 
-uint32 PlayerbotMgr::InitializeAllBots(int roleOverride)
+uint32 PlayerbotMgr::InitializeAllBots(int roleOverride, uint32 specOverride)
 {
     uint32 count = 0;
     for (auto const& pair : _bots)
@@ -936,7 +993,14 @@ uint32 PlayerbotMgr::InitializeAllBots(int roleOverride)
         Player* bot = session ? session->GetPlayer() : nullptr;
         if (bot && bot->IsInWorld())
         {
-            InitializeBot(bot, roleOverride);
+            // Skip bots whose class cannot use an explicit spec override.
+            if (specOverride)
+            {
+                ChrSpecializationEntry const* entry = sChrSpecializationStore.LookupEntry(specOverride);
+                if (!entry || entry->classId != bot->getClass())
+                    continue;
+            }
+            InitializeBot(bot, roleOverride, specOverride);
             ++count;
         }
     }

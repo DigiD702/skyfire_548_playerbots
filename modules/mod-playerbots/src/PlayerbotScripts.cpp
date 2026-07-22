@@ -6,6 +6,7 @@
 */
 
 #include "Chat.h"
+#include "DBCStores.h"
 #include "Group.h"
 #include "GroupReference.h"
 #include "Log.h"
@@ -16,6 +17,7 @@
 #include "PlayerbotMgr.h"
 #include "RBAC.h"
 #include "ScriptMgr.h"
+#include "SharedDefines.h"
 #include "WorldSession.h"
 
 #include <algorithm>
@@ -323,25 +325,122 @@ public:
         return true;
     }
 
-    // Parses a role token into the InitializeBot override value
-    // (-1 keep, 0 tank, 1 healer, 2 damage). Returns false on an unknown token.
-    static bool ParseRoleToken(std::string token, int& roleOut)
+    // Parses a role or specialization token for .playerbots init.
+    // Roles: tank / healer / dps. Specs: elemental, enhancement, feral, moonkin, etc.
+    static bool ParseRoleOrSpecToken(std::string token, int& roleOut, uint32& specOut)
     {
         std::transform(token.begin(), token.end(), token.begin(),
             [](unsigned char c) { return char(std::tolower(c)); });
 
+        roleOut = -1;
+        specOut = 0;
+
         if (token == "tank")
+        {
             roleOut = 0;
-        else if (token == "healer" || token == "heal" || token == "heals")
+            return true;
+        }
+        if (token == "healer" || token == "heal" || token == "heals" || token == "resto" || token == "restoration")
+        {
+            // "resto" alone is ambiguous across classes - treat as healer role
+            // so SpecIdForRole picks the class's resto tab. Explicit class specs
+            // below still win when the token is unique (e.g. mistweaver).
+            if (token == "resto" || token == "restoration")
+            {
+                // Prefer role mapping; per-class resto specs use the same word.
+                roleOut = 1;
+                return true;
+            }
             roleOut = 1;
-        else if (token == "dps" || token == "damage" || token == "dd")
+            return true;
+        }
+        if (token == "dps" || token == "damage" || token == "dd")
+        {
             roleOut = 2;
+            return true;
+        }
+
+        // Spec names (ChrSpecialization ids). Hybrids need these so DPS is not
+        // stuck on the default tab (e.g. shaman ele vs enh, druid balance vs feral).
+        if (token == "elemental" || token == "ele")
+            specOut = SPEC_SHAMAN_ELEMENTAL;
+        else if (token == "enhancement" || token == "enh" || token == "enhance")
+            specOut = SPEC_SHAMAN_ENHANCEMENT;
+        else if (token == "balance" || token == "moonkin" || token == "boomkin" || token == "boomie")
+            specOut = SPEC_DRUID_BALANCE;
+        else if (token == "feral")
+            specOut = SPEC_DRUID_FERAL;
+        else if (token == "guardian")
+            specOut = SPEC_DRUID_GUARDIAN;
+        else if (token == "retribution" || token == "ret")
+            specOut = SPEC_PALADIN_RETRIBUTION;
+        else if (token == "protection" || token == "prot")
+        {
+            // Ambiguous across warrior/pala/monk - leave as tank role.
+            roleOut = 0;
+            return true;
+        }
+        else if (token == "holy")
+        {
+            // Ambiguous (pala/priest); use healer role so SpecIdForRole is class-aware.
+            roleOut = 1;
+            return true;
+        }
+        else if (token == "shadow")
+            specOut = SPEC_PRIEST_SHADOW;
+        else if (token == "discipline" || token == "disc")
+            specOut = SPEC_PRIEST_DISCIPLINE;
+        else if (token == "windwalker" || token == "ww")
+            specOut = SPEC_MONK_WINDWALKER;
+        else if (token == "brewmaster" || token == "brm")
+            specOut = SPEC_MONK_BREWMASTER;
+        else if (token == "mistweaver" || token == "mw")
+            specOut = SPEC_MONK_MISTWEAVER;
+        else if (token == "beastmastery" || token == "beastmaster" || token == "bm")
+            specOut = SPEC_HUNTER_BEAST_MASTERY;
+        else if (token == "marksmanship" || token == "marks" || token == "mm")
+            specOut = SPEC_HUNTER_MARKSMANSHIP;
+        else if (token == "survival" || token == "surv")
+            specOut = SPEC_HUNTER_SURVIVAL;
+        else if (token == "affliction" || token == "aff")
+            specOut = SPEC_WARLOCK_AFFLICTION;
+        else if (token == "demonology" || token == "demo")
+            specOut = SPEC_WARLOCK_DEMONOLOGY;
+        else if (token == "destruction" || token == "destro")
+            specOut = SPEC_WARLOCK_DESTRUCTION;
+        else if (token == "arcane")
+            specOut = SPEC_MAGE_ARCANE;
+        else if (token == "fire")
+            specOut = SPEC_MAGE_FIRE;
+        else if (token == "frost")
+            specOut = SPEC_MAGE_FROST;
+        else if (token == "arms")
+            specOut = SPEC_WARRIOR_ARMS;
+        else if (token == "fury")
+            specOut = SPEC_WARRIOR_FURY;
+        else if (token == "assassination" || token == "mut")
+            specOut = SPEC_ROGUE_ASSASSINATION;
+        else if (token == "combat")
+            specOut = SPEC_ROGUE_COMBAT;
+        else if (token == "subtlety" || token == "sub")
+            specOut = SPEC_ROGUE_SUBTLETY;
+        else if (token == "blood")
+            specOut = SPEC_DEATH_KNIGHT_BLOOD;
+        else if (token == "unholy")
+            specOut = SPEC_DEATH_KNIGHT_UNHOLY;
         else
             return false;
-        return true;
+
+        return specOut != 0;
     }
 
-    // .playerbots init [<charname>|all|self] [tank|healer|dps]
+    static bool SpecMatchesClass(uint32 specId, uint8 cls)
+    {
+        ChrSpecializationEntry const* entry = sChrSpecializationStore.LookupEntry(specId);
+        return entry && entry->classId == cls;
+    }
+
+    // .playerbots init [<charname>|all|self] [tank|healer|dps|<spec>]
     // Re-applies specialization/spells and gear. With no name, initializes you
     // and any bots in your group.
     static bool HandlePlayerbotInitCommand(ChatHandler* handler, char const* args)
@@ -355,30 +454,54 @@ public:
         }
 
         int roleOverride = -1;
-        bool haveRole = false;
-        if (!second.empty())
+        uint32 specOverride = 0;
+        bool haveChoice = false;
+        auto applyToken = [&](std::string const& token) -> bool
         {
-            if (!ParseRoleToken(second, roleOverride))
+            int role = -1;
+            uint32 spec = 0;
+            if (!ParseRoleOrSpecToken(token, role, spec))
             {
-                handler->PSendSysMessage("Unknown role '%s'. Use tank, healer, or dps.", second.c_str());
+                handler->PSendSysMessage(
+                    "Unknown role/spec '%s'. Use tank, healer, dps, or a spec name "
+                    "(e.g. elemental, enhancement, feral, moonkin, ret, shadow).",
+                    token.c_str());
                 handler->SetSentErrorMessage(true);
                 return false;
             }
-            haveRole = true;
-        }
-        else if (!first.empty() && ParseRoleToken(first, roleOverride))
+            roleOverride = role;
+            specOverride = spec;
+            haveChoice = true;
+            return true;
+        };
+
+        if (!second.empty())
         {
-            haveRole = true;
-            first.clear();
+            if (!applyToken(second))
+                return false;
+        }
+        else if (!first.empty())
+        {
+            int role = -1;
+            uint32 spec = 0;
+            if (ParseRoleOrSpecToken(first, role, spec))
+            {
+                roleOverride = role;
+                specOverride = spec;
+                haveChoice = true;
+                first.clear();
+            }
         }
 
         Player* master = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
+        char const* choiceNote = haveChoice
+            ? (specOverride ? " with the requested spec" : " with the requested role")
+            : "";
 
         if (first == "all")
         {
-            uint32 count = sPlayerbotMgr->InitializeAllBots(haveRole ? roleOverride : -1);
-            handler->PSendSysMessage("Initialized %u active bot(s)%s.", count,
-                haveRole ? " with the requested role" : "");
+            uint32 count = sPlayerbotMgr->InitializeAllBots(roleOverride, specOverride);
+            handler->PSendSysMessage("Initialized %u active bot(s)%s.", count, choiceNote);
             return true;
         }
 
@@ -390,9 +513,14 @@ public:
                 handler->SetSentErrorMessage(true);
                 return false;
             }
-            sPlayerbotMgr->InitializeBot(master, roleOverride);
-            handler->PSendSysMessage("Initialized yourself%s.",
-                haveRole ? " with the requested role" : "");
+            if (specOverride && !SpecMatchesClass(specOverride, master->getClass()))
+            {
+                handler->SendSysMessage("That specialization does not match your class.");
+                handler->SetSentErrorMessage(true);
+                return false;
+            }
+            sPlayerbotMgr->InitializeBot(master, roleOverride, specOverride);
+            handler->PSendSysMessage("Initialized yourself%s.", choiceNote);
             return true;
         }
 
@@ -414,21 +542,34 @@ public:
                 handler->SetSentErrorMessage(true);
                 return false;
             }
+            if (specOverride && !SpecMatchesClass(specOverride, bot->getClass()))
+            {
+                handler->PSendSysMessage("That specialization does not match %s's class.", name.c_str());
+                handler->SetSentErrorMessage(true);
+                return false;
+            }
 
-            sPlayerbotMgr->InitializeBot(bot, roleOverride);
-            handler->PSendSysMessage("Initialized bot '%s'%s.", name.c_str(),
-                haveRole ? " with the requested role" : "");
+            sPlayerbotMgr->InitializeBot(bot, roleOverride, specOverride);
+            handler->PSendSysMessage("Initialized bot '%s'%s.", name.c_str(), choiceNote);
             return true;
         }
 
         if (!master)
         {
-            handler->SendSysMessage("Usage: .playerbots init [<charname>|all|self] [tank|healer|dps].");
+            handler->SendSysMessage(
+                "Usage: .playerbots init [<charname>|all|self] [tank|healer|dps|<spec>].");
             handler->SetSentErrorMessage(true);
             return false;
         }
 
-        sPlayerbotMgr->InitializeBot(master, roleOverride);
+        if (specOverride && !SpecMatchesClass(specOverride, master->getClass()))
+        {
+            handler->SendSysMessage("That specialization does not match your class.");
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        sPlayerbotMgr->InitializeBot(master, roleOverride, specOverride);
         uint32 count = 1;
 
         if (Group* group = master->GetGroup())
@@ -438,14 +579,16 @@ public:
                 Player* member = itr->GetSource();
                 if (member && member != master && sPlayerbotMgr->IsBot(member->GetGUID()))
                 {
-                    sPlayerbotMgr->InitializeBot(member, roleOverride);
+                    if (specOverride && !SpecMatchesClass(specOverride, member->getClass()))
+                        continue;
+                    sPlayerbotMgr->InitializeBot(member, roleOverride, specOverride);
                     ++count;
                 }
             }
         }
 
         handler->PSendSysMessage("Initialized yourself and %u grouped bot(s)%s.",
-            count - 1, haveRole ? " with the requested role" : "");
+            count - 1, choiceNote);
         return true;
     }
 

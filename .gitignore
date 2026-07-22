@@ -37,3 +37,6 @@ cmake-build-debug/
 /mcp_config.json
 /dbc_export/
 
+# Local addon reference for playerbot rotation ports (not shipped with the server)
+/Hekili/
+

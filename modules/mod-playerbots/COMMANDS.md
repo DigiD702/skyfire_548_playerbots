@@ -20,12 +20,13 @@ Whisper replies with a short ack. Party/raid orders apply silently (no spam).
 | `.playerbots summon` | Teleport all bots in your group to you. |
 | `.playerbots reload` | Reload `playerbots.conf` and the random-bot candidate pool. |
 | `.playerbots create` | Run the auto-creator (accounts + characters from config). |
-| `.playerbots init [<name>\|all\|self] [tank\|healer\|dps]` | Re-apply specialization spells and gear. See below. |
-| `.playerbots self [on\|off]` | Attach/detach cast-only AI on **your** character. See Self-bot. |
+| `.playerbots init [<name>\|all\|self] [tank\|healer\|dps\|<spec>]` | Re-apply specialization, talents (Wave-1), and gear. |
+| `.playerbots self [on\|off]` | Attach/detach cast-only AI on **your** character. |
 
 ### `.playerbots init`
 
-Re-gears and re-applies spec spells for the current level.
+Re-gears and re-applies spec spells for the current level. For Wave-1 DPS
+specs it also learns a recommended talent spell set used by the rotation.
 
 | Args | Effect |
 | --- | --- |
@@ -33,14 +34,39 @@ Re-gears and re-applies spec spells for the current level.
 | `self` | Initialize only yourself. |
 | `<charname>` | Initialize that active bot (or self-bot). |
 | `all` | Initialize every active socket bot. |
-| `… tank` / `healer` / `dps` | Switch to that role’s spec first, then gear for it. |
+| `… tank` / `healer` / `dps` | Switch to that role’s **default** spec, then gear. |
+| `… <spec>` | Switch to an explicit specialization (needed for hybrid DPS). |
+
+**Hybrid DPS:** `dps` alone is not enough when a class has two damage specs:
+
+| Class | `dps` defaults to | Explicit specs |
+| --- | --- | --- |
+| Shaman | Elemental | `elemental` / `ele`, `enhancement` / `enh` |
+| Druid | Balance (moonkin) | `moonkin` / `balance`, `feral` |
+| Druid tank/heal | — | `guardian`, `resto` / `healer` |
+
+Other useful tokens: `ret`, `shadow`, `bm`, `ww`, `aff`, `arms`, `fury`, `frost`, etc.
+
+### Combat rotations
+
+Bots (and `.playerbots self`) use per-spec priority lists for:
+
+**Wave 1:** Retribution, Windwalker, Beast Mastery, Shadow, Affliction, Elemental
+
+**Wave 2:** Enhancement, Feral, Marksmanship, Survival, Arms, Fury, Combat Rogue,
+Frost Mage, Destruction, Demonology, Unholy DK
+
+Other specs still use the class filler / auto-attack. Priorities were simplified
+from MoP Hekili/SimC lists (local `Hekili/` reference only; not shipped).
 
 Examples:
 
 ```
 .playerbots init
-.playerbots init self tank
-.playerbots init Arix healer
+.playerbots init self enhancement
+.playerbots init self moonkin
+.playerbots init self feral
+.playerbots init Arix elemental
 .playerbots init all dps
 ```
 
@@ -49,7 +75,7 @@ Examples:
 Attaches AI to your logged-in character **without** replacing the client session:
 
 - You keep WASD / jump / camera.
-- AI picks combat targets and casts class filler spells when you are in range with LoS.
+- AI picks combat targets and casts class filler / Wave-1 rotation spells when you are in range with LoS.
 - Toggle again, or `.playerbots self off`, to detach.
 
 Useful for testing rotations and for `.playerbots init` gearing yourself.
@@ -87,7 +113,7 @@ Prefix an order with a filter so only matching bots react (party/raid):
 | `@tank …` | Tank-spec bots |
 | `@dps …` | Damage-spec bots |
 | `@heal …` / `@healer …` | Healer-spec bots |
-| `@ranged …` | Hunter / priest / mage / warlock (non-tank) |
+| `@ranged …` | Hunter / priest / mage / warlock / Elemental / Balance (non-tank) |
 
 Examples:
 
@@ -137,6 +163,6 @@ Closest equivalents today:
 2. `.playerbots add SomeOfflineChar` — or let random bots spawn from config.
 3. Invite bots, then `/p follow` or `/p attack` with a mob selected.
 4. Optional: `.playerbots self` on your own character to test casting while you move.
-5. `.playerbots init` after leveling to refresh gear/spec.
+5. `.playerbots init` after leveling to refresh gear/spec (use `enhancement` / `feral` / `moonkin` when you need a specific hybrid DPS tree).
 
 See `README.md` for build/config and `PORTING.md` for port status and backlog.

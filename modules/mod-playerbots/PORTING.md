@@ -97,6 +97,14 @@ Remaining for later phases:
   mage, warlock) hold at ~25y and spam a single filler spell. Bots only cast
   spells they actually know; casts go through the normal path so GCD/power/range/
   LoS are validated by the core.
+* [DONE] Per-spec rotation framework (`modules/mod-playerbots/src/rotations/`):
+  priority picker with aura/resource/enemy-count helpers. DPS specs with
+  hand-ported MoP Hekili `.simc` priorities: Ret, WW, BM/MM/Survival, Shadow,
+  Affliction/Demo/Destro, Elemental/Enhancement, Feral, Arms/Fury, Combat Rogue,
+  Frost Mage, Unholy DK. Other specs keep fillers. Elemental/Balance ranged
+  stance. `.playerbots init` learns recommended talent spells and accepts
+  explicit names (`enhancement`, `feral`, `moonkin`, …). Local `Hekili/` is
+  reference-only (gitignored).
 * [DONE] World interaction (first pass):
   * Solo bots wander to nearby random ground points so they aren't frozen statues.
   * Bots auto-accept trade windows and duel challenges.
@@ -119,19 +127,17 @@ Remaining for later phases:
   * `help` - list orders (whisper reply). Whisper commands get a short ack;
     party/raid orders apply silently to avoid spam.
 * [DONE] Self-bot mode (`.playerbots self`): attach cast-only AI to a real
-  logged-in player. Client keeps movement; AI casts fillers. `.playerbots init`
-  with no args gears yourself and grouped bots.
-* [TODO] Per-spec rotations: cooldowns, dots/procs, AoE, interrupts, dispels,
-  healing, tanking, resource management (the large, iterative piece). Warrior,
-  DK, shaman, monk, druid are melee-only auto-attack until their specs land.
+  logged-in player. Client keeps movement; AI casts fillers / per-spec rotations.
+  `.playerbots init` with no args gears yourself and grouped bots.
+* [TODO] Remaining specs (Balance full list, Rogue Mut/Sub, Fire/Arcane Mage,
+  Frost/Blood DK, tanks/healers), deeper cooldowns/dots/AoE/interrupts,
+  trinkets/racials, glyph-aware lines.
 * [TODO] Point movement / travel to arbitrary destinations (for questing,
   objectives, and dungeon navigation).
 * [TODO] Port the strategy/action/trigger/value engine on top of `PlayerbotAI`
   (`co`/`nc` strategies from the AC playerbot wiki).
 * [TODO] AC wiki backlog (later): RTSC/aedm, loot lists (`ll`), item/vendor
   chat ops, glyphs, raid-specific strats, Multibot addon protocol.
-* [TODO] Targeting + combat rotations per class/spec (rebuilt for 5.4.8 spells
-  and talents - the largest single piece).
 * [TODO] Non-combat behaviour remaining: sell junk to vendors, rest/eat/drink,
   mounts, gossip/quest NPC interaction.
 

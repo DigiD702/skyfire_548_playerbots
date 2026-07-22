@@ -74,12 +74,13 @@ public:
     uint32 CreateBotPopulation(std::string* report = nullptr);
 
     // Re-applies derived state (specialization/spells, gear) to a single active
-    // bot. Safe to call repeatedly. roleOverride: -1 keeps the bot's current
-    // spec, otherwise 0 = tank, 1 = healer, 2 = damage (matches BotRole order).
-    void InitializeBot(Player* bot, int roleOverride = -1);
-    // Initializes every active bot; returns the number processed. roleOverride
-    // is forwarded to InitializeBot (-1 keeps each bot's current spec).
-    uint32 InitializeAllBots(int roleOverride = -1);
+    // bot. Safe to call repeatedly.
+    // roleOverride: -1 keep current role mapping, otherwise 0 = tank, 1 = healer,
+    // 2 = damage (default DPS tab for the class).
+    // specOverride: if non-zero, force that ChrSpecialization id (takes priority).
+    void InitializeBot(Player* bot, int roleOverride = -1, uint32 specOverride = 0);
+    // Initializes every active bot; returns the number processed.
+    uint32 InitializeAllBots(int roleOverride = -1, uint32 specOverride = 0);
 
     uint32 GetActiveBotCount() const { return uint32(_bots.size()); }
     uint32 GetRandomBotCount() const { return uint32(_randomBots.size()); }

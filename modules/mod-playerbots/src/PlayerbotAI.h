@@ -65,9 +65,9 @@ private:
     void SetForcedTarget(Unit* target);
     void ClearForcedTarget();
     CombatRole GetCombatRole() const;
-    bool IsRangedClass() const;    // caster/ranged classes hold at range
-    uint32 GetFillerSpell() const;              // primary spammable attack for this class
-    void DoRotation(Unit* target, uint32 spellId); // cast the class filler if ready
+    bool IsRangedClass() const;    // caster/ranged stance (spec-aware for hybrids)
+    uint32 GetFillerSpell() const;              // fallback filler when no spec list
+    void DoRotation(Unit* target);              // pick + cast next rotation / filler spell
 
     // Chat-order helpers.
     void ReplyTo(Player* from, std::string const& text);
