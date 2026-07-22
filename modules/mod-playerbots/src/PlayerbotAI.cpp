@@ -212,55 +212,59 @@ void PlayerbotAI::HandlePendingInvites()
 // the LFG flow (teleport in/out, boot votes, etc.) is handled by the core.
 void PlayerbotAI::HandleLfg()
 {
-    Group* grp = _bot->GetGroup();
-    if (!grp)
-    {
-        _lfgRoleResponded = false;
-        _lfgProposalResponded = false;
-        return;
-    }
-
     uint64 const guid = _bot->GetGUID();
-    uint64 const gguid = grp->GetGUID();
+    Group* grp = _bot->GetGroup();
     uint8 const roles = ComputeLfgRole();
 
-    // MoP: HandleLfgJoinOpcode refuses to call JoinLfg until every member has a
-    // party role (Group::RoleCheckAllResponded). That happens *before* any LFG
-    // ROLECHECK state exists, so bots must set GetMemberRole from their spec
-    // while simply grouped — not only during an active role check.
+    // Solo LFG fill: bots join without a party. They still must accept proposals.
+    // Grouped bots also set party roles so MoP JoinLfg can pass RoleCheckAllResponded.
+    if (grp)
     {
-        uint32 const memberRole = grp->GetMemberRole(guid);
-        uint32 const combatBits = memberRole & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE);
-        if (combatBits == 0 || (combatBits & roles) != roles)
+        uint64 const gguid = grp->GetGUID();
+
+        // MoP: HandleLfgJoinOpcode refuses to call JoinLfg until every member has a
+        // party role (Group::RoleCheckAllResponded). That happens *before* any LFG
+        // ROLECHECK state exists, so bots must set GetMemberRole from their spec
+        // while simply grouped — not only during an active role check.
         {
-            uint32 newRole = roles;
-            if (memberRole & lfg::PLAYER_ROLE_LEADER)
-                newRole |= lfg::PLAYER_ROLE_LEADER;
-            grp->SetMemberRole(guid, newRole);
-            grp->SendUpdate();
+            uint32 const memberRole = grp->GetMemberRole(guid);
+            uint32 const combatBits = memberRole & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE);
+            if (combatBits == 0 || (combatBits & roles) != roles)
+            {
+                uint32 newRole = roles;
+                if (memberRole & lfg::PLAYER_ROLE_LEADER)
+                    newRole |= lfg::PLAYER_ROLE_LEADER;
+                grp->SetMemberRole(guid, newRole);
+                grp->SendUpdate();
+            }
         }
-    }
 
-    // Prefer group state: player PlayersStore entries can default-construct to
-    // NONE if touched before JoinLfg sets ROLECHECK on every member.
-    lfg::LfgState const gstate = sLFGMgr->GetState(gguid);
-    lfg::LfgState const pstate = sLFGMgr->GetState(guid);
-    bool const inRoleCheck = (gstate == lfg::LFG_STATE_ROLECHECK) || (pstate == lfg::LFG_STATE_ROLECHECK);
+        // Prefer group state: player PlayersStore entries can default-construct to
+        // NONE if touched before JoinLfg sets ROLECHECK on every member.
+        lfg::LfgState const gstate = sLFGMgr->GetState(gguid);
+        lfg::LfgState const pstate = sLFGMgr->GetState(guid);
+        bool const inRoleCheck = (gstate == lfg::LFG_STATE_ROLECHECK) || (pstate == lfg::LFG_STATE_ROLECHECK);
 
-    if (inRoleCheck)
-    {
-        uint8 const current = sLFGMgr->GetRoleCheckRoles(gguid, guid);
-        // Only submit when unset or mismatched (avoid packet spam every tick).
-        if ((current & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE)) == 0
-            || (current & roles) != roles)
-            sLFGMgr->UpdateRoleCheck(gguid, guid, roles);
-        _lfgRoleResponded = true;
+        if (inRoleCheck)
+        {
+            uint8 const current = sLFGMgr->GetRoleCheckRoles(gguid, guid);
+            // Only submit when unset or mismatched (avoid packet spam every tick).
+            if ((current & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE)) == 0
+                || (current & roles) != roles)
+                sLFGMgr->UpdateRoleCheck(gguid, guid, roles);
+            _lfgRoleResponded = true;
+        }
+        else if (_lfgRoleResponded)
+            _lfgRoleResponded = false;
     }
-    else if (_lfgRoleResponded)
+    else
         _lfgRoleResponded = false;
 
-    bool const inProposal = (gstate == lfg::LFG_STATE_PROPOSAL) || (pstate == lfg::LFG_STATE_PROPOSAL);
-    if (inProposal)
+    // Proposals apply to solo queues and party queues alike — do not require a group.
+    lfg::LfgState const pstate = sLFGMgr->GetState(guid);
+    lfg::LfgState const gstate = grp ? sLFGMgr->GetState(grp->GetGUID()) : lfg::LFG_STATE_NONE;
+    bool const inProposal = (pstate == lfg::LFG_STATE_PROPOSAL) || (gstate == lfg::LFG_STATE_PROPOSAL);
+    if (inProposal || sLFGMgr->GetActiveProposalIdForPlayer(guid))
     {
         if (uint32 proposalId = sLFGMgr->GetActiveProposalIdForPlayer(guid))
         {
