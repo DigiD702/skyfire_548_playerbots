@@ -94,4 +94,107 @@ uint32 SelectFeral(Context const& ctx)
     return 0;
 }
 
+uint32 SelectBalance(Context const& ctx)
+{
+    Player* bot = ctx.bot;
+    Unit* target = ctx.target;
+
+    enum BalanceSpells : uint32
+    {
+        MARK_OF_THE_WILD    = 1126,
+        MOONKIN_FORM        = 24858,
+        MOONFIRE            = 8921,
+        SUNFIRE             = 93402,
+        STARSURGE           = 78674,
+        STARFIRE            = 2912,
+        WRATH               = 5176,
+        STARFALL            = 48505,
+        CELESTIAL_ALIGNMENT = 112071,
+        HURRICANE           = 16914,
+        SHOOTING_STARS      = 93400,
+    };
+
+    if (!HasAuraUp(bot, MARK_OF_THE_WILD) && CanTryCast(bot, MARK_OF_THE_WILD))
+        return MARK_OF_THE_WILD;
+
+    if (!HasAuraUp(bot, MOONKIN_FORM) && CanTryCast(bot, MOONKIN_FORM))
+        return MOONKIN_FORM;
+
+    if (CanTryCast(bot, CELESTIAL_ALIGNMENT))
+        return CELESTIAL_ALIGNMENT;
+
+    if (ctx.enemies >= 3 && CanTryCast(bot, STARFALL))
+        return STARFALL;
+    if (ctx.enemies >= 4 && CanTryCast(bot, HURRICANE))
+        return HURRICANE;
+
+    if ((!HasAuraUp(target, MOONFIRE) || AuraRemains(target, MOONFIRE) <= 3.0f)
+        && CanTryCast(bot, MOONFIRE))
+        return MOONFIRE;
+    if ((!HasAuraUp(target, SUNFIRE) || AuraRemains(target, SUNFIRE) <= 3.0f)
+        && CanTryCast(bot, SUNFIRE))
+        return SUNFIRE;
+
+    if ((HasAuraUp(bot, SHOOTING_STARS) || CanTryCast(bot, STARSURGE))
+        && CanTryCast(bot, STARSURGE))
+        return STARSURGE;
+
+    // Alternate fillers; without eclipse tracking Starfire is a safe default.
+    if (CanTryCast(bot, STARFIRE))
+        return STARFIRE;
+    if (CanTryCast(bot, WRATH))
+        return WRATH;
+
+    return 0;
+}
+
+uint32 SelectGuardian(Context const& ctx)
+{
+    Player* bot = ctx.bot;
+    Unit* target = ctx.target;
+
+    enum GuardianSpells : uint32
+    {
+        BEAR_FORM       = 5487,
+        MANGLE_BEAR     = 33878,
+        THRASH_BEAR     = 77758,
+        LACERATE        = 33745,
+        MAUL            = 6807,
+        FAERIE_FIRE     = 770,
+        SAVAGE_DEFENSE  = 62606,
+        MARK_OF_THE_WILD = 1126,
+    };
+
+    if (!HasAuraUp(bot, MARK_OF_THE_WILD) && CanTryCast(bot, MARK_OF_THE_WILD))
+        return MARK_OF_THE_WILD;
+    if (!HasAuraUp(bot, BEAR_FORM) && CanTryCast(bot, BEAR_FORM))
+        return BEAR_FORM;
+
+    float const hpPct = bot->GetMaxHealth()
+        ? (100.0f * float(bot->GetHealth()) / float(bot->GetMaxHealth())) : 100.0f;
+    if (hpPct < 70.0f && CanTryCast(bot, SAVAGE_DEFENSE))
+        return SAVAGE_DEFENSE;
+
+    if (!HasAuraUp(target, FAERIE_FIRE) && CanTryCast(bot, FAERIE_FIRE))
+        return FAERIE_FIRE;
+
+    if (ctx.enemies >= 2 && CanTryCast(bot, THRASH_BEAR))
+        return THRASH_BEAR;
+
+    if ((!HasAuraUp(target, LACERATE) || AuraStacks(target, LACERATE) < 3
+        || AuraRemains(target, LACERATE) <= 3.0f) && CanTryCast(bot, LACERATE))
+        return LACERATE;
+
+    if (CanTryCast(bot, MANGLE_BEAR))
+        return MANGLE_BEAR;
+
+    if (bot->GetPower(POWER_RAGE) >= 60 && CanTryCast(bot, MAUL))
+        return MAUL;
+
+    if (CanTryCast(bot, THRASH_BEAR))
+        return THRASH_BEAR;
+
+    return 0;
+}
+
 } // namespace BotRotation

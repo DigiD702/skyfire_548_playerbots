@@ -76,4 +76,118 @@ uint32 SelectCombat(Context const& ctx)
     return 0;
 }
 
+uint32 SelectAssassination(Context const& ctx)
+{
+    Player* bot = ctx.bot;
+    Unit* target = ctx.target;
+    int8 const cp = ctx.comboPoints;
+
+    enum MutSpells : uint32
+    {
+        MUTILATE            = 1329,
+        DISPATCH            = 111240,
+        ENVENOM             = 32645,
+        GARROTE             = 703,
+        RUPTURE             = 1943,
+        VENDETTA            = 79140,
+        SLICE_AND_DICE      = 5171,
+        BLINDSIDE           = 121153,
+        FAN_OF_KNIVES       = 51723,
+        CRIMSON_TEMPEST     = 121411,
+        SHADOW_BLADES       = 121471,
+    };
+
+    if (CanTryCast(bot, VENDETTA))
+        return VENDETTA;
+    if (CanTryCast(bot, SHADOW_BLADES))
+        return SHADOW_BLADES;
+
+    if ((!HasAuraUp(bot, SLICE_AND_DICE) || AuraRemains(bot, SLICE_AND_DICE) <= 2.0f)
+        && cp >= 1 && CanTryCast(bot, SLICE_AND_DICE))
+        return SLICE_AND_DICE;
+
+    if (cp >= 5)
+    {
+        if (ctx.enemies >= 4 && CanTryCast(bot, CRIMSON_TEMPEST))
+            return CRIMSON_TEMPEST;
+        if ((!HasAuraUp(target, RUPTURE) || AuraRemains(target, RUPTURE) <= 4.0f)
+            && CanTryCast(bot, RUPTURE))
+            return RUPTURE;
+        if (CanTryCast(bot, ENVENOM))
+            return ENVENOM;
+    }
+
+    if (ctx.enemies >= 4 && CanTryCast(bot, FAN_OF_KNIVES))
+        return FAN_OF_KNIVES;
+
+    if ((!HasAuraUp(target, GARROTE) || AuraRemains(target, GARROTE) <= 3.0f)
+        && CanTryCast(bot, GARROTE))
+        return GARROTE;
+
+    if ((ctx.targetHealthPct < 35.0f || HasAuraUp(bot, BLINDSIDE)) && CanTryCast(bot, DISPATCH))
+        return DISPATCH;
+
+    if (CanTryCast(bot, MUTILATE))
+        return MUTILATE;
+
+    return 0;
+}
+
+uint32 SelectSubtlety(Context const& ctx)
+{
+    Player* bot = ctx.bot;
+    Unit* target = ctx.target;
+    int8 const cp = ctx.comboPoints;
+
+    enum SubSpells : uint32
+    {
+        BACKSTAB            = 53,
+        HEMORRHAGE          = 16511,
+        EVISCERATE          = 2098,
+        RUPTURE             = 1943,
+        SLICE_AND_DICE      = 5171,
+        SHADOW_DANCE        = 51713,
+        PREMEDITATION       = 14183,
+        AMBUSH              = 8676,
+        FAN_OF_KNIVES       = 51723,
+        CRIMSON_TEMPEST     = 121411,
+        SHADOW_BLADES       = 121471,
+    };
+
+    if (CanTryCast(bot, SHADOW_BLADES))
+        return SHADOW_BLADES;
+    if (CanTryCast(bot, SHADOW_DANCE))
+        return SHADOW_DANCE;
+    if (CanTryCast(bot, PREMEDITATION))
+        return PREMEDITATION;
+
+    if ((!HasAuraUp(bot, SLICE_AND_DICE) || AuraRemains(bot, SLICE_AND_DICE) <= 2.0f)
+        && cp >= 1 && CanTryCast(bot, SLICE_AND_DICE))
+        return SLICE_AND_DICE;
+
+    if (cp >= 5)
+    {
+        if (ctx.enemies >= 4 && CanTryCast(bot, CRIMSON_TEMPEST))
+            return CRIMSON_TEMPEST;
+        if ((!HasAuraUp(target, RUPTURE) || AuraRemains(target, RUPTURE) <= 4.0f)
+            && CanTryCast(bot, RUPTURE))
+            return RUPTURE;
+        if (CanTryCast(bot, EVISCERATE))
+            return EVISCERATE;
+    }
+
+    if (ctx.enemies >= 4 && CanTryCast(bot, FAN_OF_KNIVES))
+        return FAN_OF_KNIVES;
+
+    if (HasAuraUp(bot, SHADOW_DANCE) && CanTryCast(bot, AMBUSH))
+        return AMBUSH;
+
+    if (CanTryCast(bot, BACKSTAB))
+        return BACKSTAB;
+    if (CanTryCast(bot, HEMORRHAGE))
+        return HEMORRHAGE;
+
+    return 0;
+}
+
 } // namespace BotRotation

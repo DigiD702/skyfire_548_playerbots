@@ -14,6 +14,7 @@
 #include "GroupReference.h"
 #include "Item.h"
 #include "ItemPrototype.h"
+#include "LFGMgr.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -63,6 +64,14 @@ void PlayerbotMgr::LoadConfig()
     _accountPrefix = sConfigMgr->GetStringDefault("Playerbots.RandomBots.AccountPrefix", "RNDBOT");
     _loginIntervalMs = uint32(sConfigMgr->GetIntDefault("Playerbots.RandomBots.LoginInterval", 2000));
 
+    _joinLfg = sConfigMgr->GetBoolDefault("Playerbots.RandomBotJoinLfg", false);
+    _joinLfgMaxBots = uint32(sConfigMgr->GetIntDefault("Playerbots.RandomBotJoinLfg.MaxBots", 10));
+    _joinLfgLevelRange = uint32(sConfigMgr->GetIntDefault("Playerbots.RandomBotJoinLfg.LevelRange", 5));
+    if (_joinLfgMaxBots > 40)
+        _joinLfgMaxBots = 40;
+    if (_joinLfgLevelRange > 20)
+        _joinLfgLevelRange = 20;
+
     _autoCreateOnStartup = sConfigMgr->GetBoolDefault("Playerbots.AutoCreate.OnStartup", false);
     _autoAccountCount = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.AccountCount", 0));
     _autoPassword = sConfigMgr->GetStringDefault("Playerbots.AutoCreate.AccountPassword", "password");
@@ -84,8 +93,9 @@ void PlayerbotMgr::LoadConfig()
     _candidatesLoaded = false;
 
     if (_enabled)
-        SF_LOG_INFO("modules", "[mod-playerbots] Enabled (random bots: %s, max: %u, account prefix: '%s').",
-            _randomBotsEnabled ? "on" : "off", _maxRandomBots, _accountPrefix.c_str());
+        SF_LOG_INFO("modules", "[mod-playerbots] Enabled (random bots: %s, max: %u, account prefix: '%s', LFG join: %s).",
+            _randomBotsEnabled ? "on" : "off", _maxRandomBots, _accountPrefix.c_str(),
+            _joinLfg ? "on" : "off");
     else
         SF_LOG_INFO("modules", "[mod-playerbots] Disabled via configuration.");
 }
@@ -97,6 +107,9 @@ void PlayerbotMgr::Update(uint32 diff)
 
     // Drop bots whose player has left the world for any reason.
     CleanupDeadBots();
+
+    // AC-style: when a real player solo-queues LFG, fill with level-matched bots.
+    UpdateLfgAutoJoin(diff);
 
     if (!_randomBotsEnabled)
         return;
@@ -204,6 +217,115 @@ void PlayerbotMgr::CleanupDeadBots()
         }
         else
             ++it;
+    }
+}
+
+// When a real player is solo-queued in the dungeon finder, queue online bots that
+// fit the same dungeon level bracket (and within LevelRange of the player).
+void PlayerbotMgr::UpdateLfgAutoJoin(uint32 diff)
+{
+    if (!_joinLfg || _bots.empty())
+        return;
+
+    _lfgJoinTimer += diff;
+    if (_lfgJoinTimer < 2000)
+        return;
+    _lfgJoinTimer = 0;
+
+    struct MasterQueue
+    {
+        Player* player = nullptr;
+        lfg::LfgDungeonSet dungeons;
+    };
+
+    std::vector<MasterQueue> masters;
+    HashMapHolder<Player>::MapType const& players = ObjectAccessor::GetPlayers();
+    for (auto const& pair : players)
+    {
+        Player* player = pair.second;
+        if (!player || !player->IsInWorld() || !player->GetSession())
+            continue;
+        if (player->GetSession()->IsBot() || IsBot(player->GetGUID()))
+            continue;
+        // Party queues already use HandleLfg role/proposal responses on grouped bots.
+        if (player->GetGroup())
+            continue;
+        if (sLFGMgr->GetState(player->GetGUID()) != lfg::LFG_STATE_QUEUED)
+            continue;
+
+        lfg::LfgDungeonSet const& selected = sLFGMgr->GetSelectedDungeons(player->GetGUID());
+        if (selected.empty())
+            continue;
+
+        MasterQueue mq;
+        mq.player = player;
+        mq.dungeons = selected;
+        masters.push_back(mq);
+    }
+
+    if (masters.empty())
+        return;
+
+    for (MasterQueue const& mq : masters)
+    {
+        Player* master = mq.player;
+        uint8 const masterLevel = master->getLevel();
+        uint32 queued = 0;
+
+        for (auto const& pair : _bots)
+        {
+            if (queued >= _joinLfgMaxBots)
+                break;
+
+            WorldSession* session = pair.second;
+            Player* bot = session ? session->GetPlayer() : nullptr;
+            if (!bot || !bot->IsInWorld() || !bot->IsAlive())
+                continue;
+            if (bot->GetGroup())
+                continue;
+            if (bot->GetTeam() != master->GetTeam())
+                continue;
+
+            int const levelDiff = std::abs(int(bot->getLevel()) - int(masterLevel));
+            if (uint32(levelDiff) > _joinLfgLevelRange)
+                continue;
+
+            lfg::LfgState const botState = sLFGMgr->GetState(bot->GetGUID());
+            if (botState == lfg::LFG_STATE_QUEUED
+                || botState == lfg::LFG_STATE_ROLECHECK
+                || botState == lfg::LFG_STATE_PROPOSAL
+                || botState == lfg::LFG_STATE_DUNGEON
+                || botState == lfg::LFG_STATE_BOOT)
+                continue;
+
+            // Keep only dungeons the bot's level is eligible for.
+            lfg::LfgDungeonSet botDungeons;
+            for (uint32 dungeonRef : mq.dungeons)
+            {
+                uint32 const dungeonId = dungeonRef & 0x00FFFFFF;
+                LFGDungeonEntry const* entry = sLFGDungeonStore.LookupEntry(dungeonId);
+                if (!entry)
+                    continue;
+                if (bot->getLevel() < entry->m_MinLevel || bot->getLevel() > entry->m_MaxLevel)
+                    continue;
+                botDungeons.insert(dungeonId);
+            }
+
+            if (botDungeons.empty())
+                continue;
+
+            uint8 roles = lfg::PLAYER_ROLE_DAMAGE;
+            auto aiIt = _ai.find(bot->GetGUID());
+            if (aiIt != _ai.end() && aiIt->second)
+                roles = aiIt->second->ComputeLfgRole();
+
+            sLFGMgr->JoinLfg(bot, roles, botDungeons, "");
+            ++queued;
+        }
+
+        if (queued)
+            SF_LOG_DEBUG("modules", "[mod-playerbots] LFG auto-join: queued %u bot(s) for %s (level %u).",
+                queued, master->GetName().c_str(), masterLevel);
     }
 }
 
@@ -636,16 +758,20 @@ namespace
     // restricted to items carrying that stat. More than one row is returned so
     // callers can skip items the bot cannot actually equip yet (e.g. a low-level
     // plate class that only has armor proficiency for mail/leather).
+    //
+    // Filter by RequiredLevel near the bot's level (not ItemLevel <= level+25):
+    // MoP ilvl is hundreds at 90, so an ItemLevel cap wrongly forces ~TBC gear.
     std::vector<uint32> QueryItemEntries(Player* bot, std::string const& where, uint32 primaryStat, uint32 exclude)
     {
         uint32 const level    = bot->getLevel();
         uint32 const classBit = 1u << (bot->getClass() - 1);
         uint32 const raceBit  = 1u << (bot->getRace() - 1);
+        uint32 const minReq   = level > 10 ? (level - 10) : 1;
 
         std::ostringstream q;
         q << "SELECT entry FROM item_template WHERE " << where
           << " AND RequiredLevel <= " << level
-          << " AND ItemLevel <= " << (level + 25)
+          << " AND RequiredLevel >= " << minReq
           << " AND Quality BETWEEN 2 AND 4"
           << " AND duration = 0 AND startquest = 0"
           << " AND (AllowableClass = -1 OR (AllowableClass & " << classBit << "))"
@@ -672,6 +798,69 @@ namespace
             } while (result->NextRow());
         }
         return entries;
+    }
+
+    // Learn cloth/leather/mail/plate proficiency spells the class is allowed to
+    // have at its current level (mirrors trainer unlocks / GiveLevel plate).
+    // Called on every init so deleveling then re-init does not teach plate early,
+    // while a level-90 warrior that never visited a trainer still learns it.
+    void LearnArmorProficiencies(Player* bot)
+    {
+        if (!bot)
+            return;
+
+        uint8 const level = bot->getLevel();
+        uint8 const cls = bot->getClass();
+
+        auto learn = [&](uint32 spellId)
+        {
+            if (spellId && !bot->HasSpell(spellId))
+                bot->learnSpell(spellId, true);
+        };
+
+        // Cloth (9078) is baseline for cloth wearers; leather classes also use it
+        // under the armor. Learning again is a no-op when already known.
+        switch (cls)
+        {
+            case CLASS_PRIEST:
+            case CLASS_MAGE:
+            case CLASS_WARLOCK:
+                learn(9078); // Cloth
+                break;
+            case CLASS_ROGUE:
+            case CLASS_DRUID:
+            case CLASS_MONK:
+                learn(9078);
+                learn(9077); // Leather
+                break;
+            case CLASS_HUNTER:
+            case CLASS_SHAMAN:
+                learn(9078);
+                learn(9077);
+                if (level >= 40)
+                    learn(8737); // Mail
+                break;
+            case CLASS_WARRIOR:
+            case CLASS_PALADIN:
+                learn(9078);
+                learn(9077);
+                learn(119811); // Mail (MoP)
+                if (level >= 40)
+                    learn(750); // Plate Mail
+                break;
+            case CLASS_DEATH_KNIGHT:
+                // DKs begin at 55 with plate available.
+                learn(9078);
+                learn(9077);
+                learn(119811);
+                learn(750);
+                break;
+            default:
+                break;
+        }
+
+        // Keep weapon skills usable for the equipped level band.
+        bot->UpdateSkillsToMaxSkillsForLevel();
     }
 
     // Equips a fresh copy of the item into whichever slot the core picks.
@@ -977,6 +1166,10 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverr
     {
         role = static_cast<BotRole>(roleOverride);
     }
+
+    // Armor/weapon skills for this level, then gear. Re-running init after a
+    // delevel simply skips plate/mail spells the bot is no longer high enough for.
+    LearnArmorProficiencies(bot);
 
     // Gear the bot for the (possibly newly assigned) role/spec at its level.
     GearBot(bot, role, specId);

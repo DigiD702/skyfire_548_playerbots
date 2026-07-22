@@ -56,8 +56,37 @@ Bots (and `.playerbots self`) use per-spec priority lists for:
 **Wave 2:** Enhancement, Feral, Marksmanship, Survival, Arms, Fury, Combat Rogue,
 Frost Mage, Destruction, Demonology, Unholy DK
 
-Other specs still use the class filler / auto-attack. Priorities were simplified
-from MoP Hekili/SimC lists (local `Hekili/` reference only; not shipped).
+**Wave 3:** Balance, Guardian, Fire, Arcane, Assassination, Subtlety, Frost DK,
+Blood DK, Prot Paladin, Prot Warrior, Brewmaster
+
+Healer specs still lean on the group heal AI (below) plus class fillers. Priorities
+were simplified from MoP Hekili/SimC lists (local `Hekili/` reference only; not shipped).
+
+### Tank / healer in groups
+
+- **Tanks** peel mobs attacking party members and taunt when they lose threat.
+- **Healers** prioritize injured group members (below ~90% HP) before dealing damage.
+
+Init bots to the right role before queueing: `.playerbots init Botname tank` /
+`healer` / `dps` (or an explicit spec).
+
+### LFG / LFR party roles
+
+MoP blocks dungeon finder join until every party member has a **party role** set
+(tank / healer / dps). Bots now set that from their active specialization as soon
+as they are grouped, and still auto-accept the LFG role check + ready proposal.
+
+Queue needs a workable mix (at least one tank + healer for normal dungeons). All-DPS
+parties will fail the role check with wrong roles.
+
+**Solo LFG fill (optional):** set `Playerbots.RandomBotJoinLfg = 1` in
+`playerbots.conf`. When a real player solo-queues, online bots within
+`RandomBotJoinLfg.LevelRange` of that player (and inside the dungeon level bracket)
+also join the same LFG selection. Premade parties still use grouped bots only.
+
+Init also teaches level-gated armor proficiency (mail at 40 for hunter/shaman,
+plate at 40 for warrior/paladin, etc.) and gears by **RequiredLevel** near the
+bot’s level (so a level 90 no longer gets ~70 ilvl from the old ItemLevel cap).
 
 Examples:
 

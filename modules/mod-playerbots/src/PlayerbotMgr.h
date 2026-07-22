@@ -99,6 +99,8 @@ private:
     void TrySpawnRandomBot();
     void CleanupDeadBots();
     void DestroyBotAI(uint64 characterGuid);
+    // When a real player is solo-queued for LFG, queue level-matched bots too.
+    void UpdateLfgAutoJoin(uint32 diff);
 
     // Auto-creation helpers.
     uint32 PopulateAccount(uint32 accountId);               // create missing characters on one account
@@ -109,6 +111,12 @@ private:
     uint32 _maxRandomBots = 0;
     std::string _accountPrefix = "RNDBOT";
     uint32 _loginIntervalMs = 2000;
+
+    // Auto-join LFG when a real player queues (AC-style fill).
+    bool _joinLfg = false;
+    uint32 _joinLfgMaxBots = 10;
+    uint32 _joinLfgLevelRange = 5;   // |botLevel - playerLevel| must be <= this
+    uint32 _lfgJoinTimer = 0;
 
     // Auto-creation settings.
     bool _autoCreateOnStartup = false;

@@ -109,43 +109,15 @@ PlayerbotAI::PlayerbotAI(Player* bot, bool clientControlled)
 {
 }
 
-namespace
-{
-    bool CanTankClass(uint8 cls)
-    {
-        switch (cls)
-        {
-            case CLASS_WARRIOR:
-            case CLASS_PALADIN:
-            case CLASS_DEATH_KNIGHT:
-            case CLASS_DRUID:
-            case CLASS_MONK:
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    bool CanHealClass(uint8 cls)
-    {
-        switch (cls)
-        {
-            case CLASS_PALADIN:
-            case CLASS_PRIEST:
-            case CLASS_SHAMAN:
-            case CLASS_DRUID:
-            case CLASS_MONK:
-                return true;
-            default:
-                return false;
-        }
-    }
-}
-
 void PlayerbotAI::UpdateAI(uint32 diff)
 {
     if (!_bot || !_bot->IsInWorld())
         return;
+
+    // Invites and LFG must react immediately - role checks time out if bots
+    // only answer on the coarse AI interval.
+    HandlePendingInvites();
+    HandleLfg();
 
     _updateTimer += diff;
     if (_updateTimer < BOT_AI_UPDATE_INTERVAL)
@@ -160,18 +132,14 @@ void PlayerbotAI::UpdateAI(uint32 diff)
 
     _updateTimer = 0;
 
-    // Self-bot: client owns movement. Only cast in combat (and light invites/LFG).
+    // Self-bot: client owns movement. Only cast in combat.
     if (_clientControlled)
     {
-        HandlePendingInvites();
-        HandleLfg();
         if (_bot->IsAlive())
             HandleCombatCastOnly();
         return;
     }
 
-    HandlePendingInvites();
-    HandleLfg();
     HandleInteractions();
 
     if (!_bot->IsAlive())
@@ -252,77 +220,69 @@ void PlayerbotAI::HandleLfg()
         return;
     }
 
-    uint64 guid = _bot->GetGUID();
-    lfg::LfgState state = sLFGMgr->GetState(guid);
+    uint64 const guid = _bot->GetGUID();
+    uint64 const gguid = grp->GetGUID();
+    uint8 const roles = ComputeLfgRole();
 
-    if (state == lfg::LFG_STATE_ROLECHECK)
+    // MoP: HandleLfgJoinOpcode refuses to call JoinLfg until every member has a
+    // party role (Group::RoleCheckAllResponded). That happens *before* any LFG
+    // ROLECHECK state exists, so bots must set GetMemberRole from their spec
+    // while simply grouped — not only during an active role check.
     {
-        if (!_lfgRoleResponded)
+        uint32 const memberRole = grp->GetMemberRole(guid);
+        uint32 const combatBits = memberRole & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE);
+        if (combatBits == 0 || (combatBits & roles) != roles)
         {
-            sLFGMgr->UpdateRoleCheck(grp->GetGUID(), guid, ComputeLfgRole());
-            _lfgRoleResponded = true;
+            uint32 newRole = roles;
+            if (memberRole & lfg::PLAYER_ROLE_LEADER)
+                newRole |= lfg::PLAYER_ROLE_LEADER;
+            grp->SetMemberRole(guid, newRole);
+            grp->SendUpdate();
         }
     }
-    else
+
+    // Prefer group state: player PlayersStore entries can default-construct to
+    // NONE if touched before JoinLfg sets ROLECHECK on every member.
+    lfg::LfgState const gstate = sLFGMgr->GetState(gguid);
+    lfg::LfgState const pstate = sLFGMgr->GetState(guid);
+    bool const inRoleCheck = (gstate == lfg::LFG_STATE_ROLECHECK) || (pstate == lfg::LFG_STATE_ROLECHECK);
+
+    if (inRoleCheck)
+    {
+        uint8 const current = sLFGMgr->GetRoleCheckRoles(gguid, guid);
+        // Only submit when unset or mismatched (avoid packet spam every tick).
+        if ((current & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE)) == 0
+            || (current & roles) != roles)
+            sLFGMgr->UpdateRoleCheck(gguid, guid, roles);
+        _lfgRoleResponded = true;
+    }
+    else if (_lfgRoleResponded)
         _lfgRoleResponded = false;
 
-    if (state == lfg::LFG_STATE_PROPOSAL)
+    bool const inProposal = (gstate == lfg::LFG_STATE_PROPOSAL) || (pstate == lfg::LFG_STATE_PROPOSAL);
+    if (inProposal)
     {
-        if (!_lfgProposalResponded)
+        if (uint32 proposalId = sLFGMgr->GetActiveProposalIdForPlayer(guid))
         {
-            if (uint32 proposalId = sLFGMgr->GetActiveProposalIdForPlayer(guid))
-            {
-                sLFGMgr->UpdateProposal(proposalId, guid, true);
-                _lfgProposalResponded = true;
-            }
+            sLFGMgr->UpdateProposal(proposalId, guid, true);
+            _lfgProposalResponded = true;
         }
     }
     else
         _lfgProposalResponded = false;
 }
 
-// Pick a role for the role check. All bots in the group run the same
-// deterministic assignment (by GUID order), so without communicating they still
-// produce a valid tank/healer/dps spread: first tank-capable bot tanks, first
-// healer-capable bot heals, the rest are damage.
+// Pick a role for the role check from the bot's current specialization.
+// Hybrids must be init'd to tank/healer/dps (or an explicit spec) so the party
+// can pass CheckGroupRoles.
 uint8 PlayerbotAI::ComputeLfgRole()
 {
-    Group* grp = _bot->GetGroup();
-    if (!grp)
-        return lfg::PLAYER_ROLE_DAMAGE;
-
-    std::vector<uint64> botGuids;
-    for (GroupReference* itr = grp->GetFirstMember(); itr != NULL; itr = itr->next())
-        if (Player* m = itr->GetSource())
-            if (m->GetSession() && m->GetSession()->IsBot())
-                botGuids.push_back(m->GetGUID());
-
-    std::sort(botGuids.begin(), botGuids.end());
-
-    bool tankTaken = false;
-    bool healTaken = false;
-    for (uint64 g : botGuids)
+    switch (GetCombatRole())
     {
-        Player* m = ObjectAccessor::FindPlayer(g);
-        uint8 cls = m ? m->getClass() : 0;
-
-        uint8 role = lfg::PLAYER_ROLE_DAMAGE;
-        if (!tankTaken && CanTankClass(cls))
-        {
-            role = lfg::PLAYER_ROLE_TANK;
-            tankTaken = true;
-        }
-        else if (!healTaken && CanHealClass(cls))
-        {
-            role = lfg::PLAYER_ROLE_HEALER;
-            healTaken = true;
-        }
-
-        if (g == _bot->GetGUID())
-            return role;
+        case CombatRole::Tank:   return lfg::PLAYER_ROLE_TANK;
+        case CombatRole::Healer: return lfg::PLAYER_ROLE_HEALER;
+        default:                 return lfg::PLAYER_ROLE_DAMAGE;
     }
-
-    return lfg::PLAYER_ROLE_DAMAGE;
 }
 
 // Combat: acquire a target (own attacker, or assist the group leader), position
@@ -330,6 +290,10 @@ uint8 PlayerbotAI::ComputeLfgRole()
 // class rotation on top of auto-attack.
 bool PlayerbotAI::HandleCombat()
 {
+    // Healers prioritize keeping the party alive before dealing damage.
+    if (GetCombatRole() == CombatRole::Healer && HandleHealing())
+        return true;
+
     Unit* target = SelectTarget();
     if (!target)
     {
@@ -372,7 +336,11 @@ bool PlayerbotAI::HandleCombat()
             _chaseGuid = target->GetGUID();
 
         if (inMelee)
+        {
+            if (GetCombatRole() == CombatRole::Tank)
+                DoTankExtras(target);
             DoRotation(target);
+        }
 
         return true;
     }
@@ -434,6 +402,9 @@ bool PlayerbotAI::HandleCombat()
 // range with LoS; they steer into position themselves.
 bool PlayerbotAI::HandleCombatCastOnly()
 {
+    if (GetCombatRole() == CombatRole::Healer && HandleHealing())
+        return true;
+
     Unit* target = SelectTarget();
     if (!target)
     {
@@ -460,6 +431,8 @@ bool PlayerbotAI::HandleCombatCastOnly()
         if (!_bot->IsWithinMeleeRange(target))
             return true;
         _bot->Attack(target, true);
+        if (GetCombatRole() == CombatRole::Tank)
+            DoTankExtras(target);
         DoRotation(target);
     }
     return true;
@@ -472,6 +445,11 @@ Unit* PlayerbotAI::SelectTarget()
     if (Unit* forced = GetForcedTarget())
         return forced;
 
+    // Tanks peel mobs off party members first.
+    if (GetCombatRole() == CombatRole::Tank)
+        if (Unit* tankTarget = SelectTankTarget())
+            return tankTarget;
+
     Unit* victim = _bot->GetVictim();
     if (victim && victim->IsAlive() && _bot->IsValidAttackTarget(victim))
         return victim;
@@ -480,7 +458,7 @@ Unit* PlayerbotAI::SelectTarget()
         if (attacker && attacker->IsAlive() && _bot->IsValidAttackTarget(attacker))
             return attacker;
 
-    // Passiveive bots only fight back; they do not assist or pull.
+    // Passive bots only fight back; they do not assist or pull.
     if (_passive)
         return nullptr;
 
@@ -654,6 +632,194 @@ void PlayerbotAI::DoRotation(Unit* target)
         return;
 
     BotRotation::CastSpell(_bot, target, spellId);
+}
+
+bool PlayerbotAI::HandleHealing()
+{
+    if (_bot->HasUnitState(UNIT_STATE_CASTING))
+        return true;
+
+    Player* ally = SelectHealTarget();
+    if (!ally)
+        return false;
+
+    uint32 const healId = GetHealSpell();
+    if (!healId || !BotRotation::CanTryCast(_bot, healId))
+        return false;
+
+    constexpr float HEAL_RANGE = 40.0f;
+    if (!_bot->IsWithinDistInMap(ally, HEAL_RANGE))
+    {
+        if (!_clientControlled)
+        {
+            _bot->GetMotionMaster()->Clear();
+            _bot->GetMotionMaster()->MoveChase(ally, 0.0f);
+            _chaseGuid = ally->GetGUID();
+        }
+        return true;
+    }
+
+    if (!_clientControlled && !_bot->IsWithinMeleeRange(ally))
+        _bot->StopMoving();
+
+    _bot->SetSelection(ally->GetGUID());
+    _bot->CastSpell(ally, healId, false);
+    return true;
+}
+
+Unit* PlayerbotAI::SelectTankTarget()
+{
+    Group* group = _bot->GetGroup();
+    if (!group)
+        return nullptr;
+
+    Unit* best = nullptr;
+    float bestDist = 60.0f;
+
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || !member->IsAlive() || !_bot->IsInMap(member))
+            continue;
+
+        for (Unit* attacker : member->getAttackers())
+        {
+            if (!attacker || !attacker->IsAlive() || !_bot->IsValidAttackTarget(attacker))
+                continue;
+            if (!_bot->IsWithinDistInMap(attacker, 60.0f))
+                continue;
+
+            // Prefer mobs hitting someone other than us (need a taunt / peel).
+            Unit* victim = attacker->GetVictim();
+            bool const peeling = victim && victim != _bot;
+            float const dist = _bot->GetDistance(attacker);
+            if (!best
+                || (peeling && (!best->GetVictim() || best->GetVictim() == _bot))
+                || dist < bestDist)
+            {
+                best = attacker;
+                bestDist = dist;
+            }
+        }
+    }
+
+    return best;
+}
+
+Player* PlayerbotAI::SelectHealTarget()
+{
+    Group* group = _bot->GetGroup();
+    Player* best = nullptr;
+    float bestPct = 90.0f; // only heal when below this
+
+    auto consider = [&](Player* member)
+    {
+        if (!member || !member->IsAlive() || !_bot->IsInMap(member))
+            return;
+        if (!_bot->IsWithinDistInMap(member, 50.0f))
+            return;
+        if (member->GetMaxHealth() == 0)
+            return;
+        float const pct = 100.0f * float(member->GetHealth()) / float(member->GetMaxHealth());
+        if (pct < bestPct)
+        {
+            bestPct = pct;
+            best = member;
+        }
+    };
+
+    if (group)
+    {
+        for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+            consider(itr->GetSource());
+    }
+    else
+        consider(_bot);
+
+    return best;
+}
+
+uint32 PlayerbotAI::GetTauntSpell() const
+{
+    switch (_bot->getClass())
+    {
+        case CLASS_WARRIOR:      return 355;     // Taunt
+        case CLASS_PALADIN:      return 62124;   // Hand of Reckoning
+        case CLASS_DEATH_KNIGHT: return 56222;   // Dark Command
+        case CLASS_DRUID:        return 6795;    // Growl
+        case CLASS_MONK:         return 115546;  // Provoke
+        default:                 return 0;
+    }
+}
+
+uint32 PlayerbotAI::GetHealSpell() const
+{
+    float lowestPct = 100.0f;
+    if (Group* group = _bot->GetGroup())
+    {
+        for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+        {
+            Player* member = itr->GetSource();
+            if (!member || !member->IsAlive() || member->GetMaxHealth() == 0)
+                continue;
+            float const pct = 100.0f * float(member->GetHealth()) / float(member->GetMaxHealth());
+            if (pct < lowestPct)
+                lowestPct = pct;
+        }
+    }
+    else if (_bot->GetMaxHealth())
+        lowestPct = 100.0f * float(_bot->GetHealth()) / float(_bot->GetMaxHealth());
+
+    bool const urgent = lowestPct < 40.0f;
+
+    switch (_bot->getClass())
+    {
+        case CLASS_PALADIN:
+            if (urgent && BotRotation::SpellReady(_bot, 19750))
+                return 19750; // Flash of Light
+            if (BotRotation::SpellReady(_bot, 20473))
+                return 20473; // Holy Shock
+            return BotRotation::SpellReady(_bot, 635) ? 635 : 19750; // Holy Light / FoL
+        case CLASS_PRIEST:
+            if (urgent && BotRotation::SpellReady(_bot, 2061))
+                return 2061; // Flash Heal
+            if (BotRotation::SpellReady(_bot, 2060))
+                return 2060; // Heal
+            return 2061;
+        case CLASS_SHAMAN:
+            if (urgent && BotRotation::SpellReady(_bot, 8004))
+                return 8004; // Healing Surge
+            if (BotRotation::SpellReady(_bot, 77472))
+                return 77472; // Greater Healing Wave
+            return BotRotation::SpellReady(_bot, 331) ? 331 : 8004;
+        case CLASS_DRUID:
+            if (urgent && BotRotation::SpellReady(_bot, 8936))
+                return 8936; // Regrowth
+            if (BotRotation::SpellReady(_bot, 5185))
+                return 5185; // Healing Touch
+            return BotRotation::SpellReady(_bot, 774) ? 774 : 5185; // Rejuvenation
+        case CLASS_MONK:
+            if (BotRotation::SpellReady(_bot, 116694))
+                return 116694; // Surging Mist
+            return 115175; // Soothing Mist
+        default:
+            return 0;
+    }
+}
+
+void PlayerbotAI::DoTankExtras(Unit* target)
+{
+    if (!target || _bot->HasUnitState(UNIT_STATE_CASTING))
+        return;
+
+    // Taunt when the mob is hitting someone else.
+    Unit* victim = target->GetVictim();
+    if (victim && victim != _bot)
+    {
+        if (uint32 taunt = GetTauntSpell())
+            if (BotRotation::CanTryCast(_bot, taunt))
+                BotRotation::CastSpell(_bot, target, taunt);
+    }
 }
 
 // Auto-accept trades and duels. Trades use the real accept opcode path so a

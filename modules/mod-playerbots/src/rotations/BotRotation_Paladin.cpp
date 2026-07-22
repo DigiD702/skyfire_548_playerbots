@@ -108,4 +108,60 @@ uint32 SelectRetribution(Context const& ctx)
     return 0;
 }
 
+uint32 SelectProtectionPaladin(Context const& ctx)
+{
+    Player* bot = ctx.bot;
+    uint32 const hp = bot->GetPower(POWER_HOLY_POWER);
+
+    enum ProtSpells : uint32
+    {
+        SEAL_OF_INSIGHT             = 20165,
+        AVENGERS_SHIELD             = 31935,
+        HAMMER_OF_THE_RIGHTEOUS     = 53595,
+        CRUSADER_STRIKE             = 35395,
+        JUDGMENT                    = 20271,
+        SHIELD_OF_THE_RIGHTEOUS     = 53600,
+        CONSECRATION                = 26573,
+        HOLY_WRATH                  = 2812,
+        HAMMER_OF_WRATH             = 24275,
+        GRAND_CRUSADER              = 85416,
+        BLESSING_OF_KINGS           = 20217,
+    };
+
+    if (!HasAuraUp(bot, BLESSING_OF_KINGS) && CanTryCast(bot, BLESSING_OF_KINGS))
+        return BLESSING_OF_KINGS;
+    if (!HasAuraUp(bot, SEAL_OF_INSIGHT) && CanTryCast(bot, SEAL_OF_INSIGHT))
+        return SEAL_OF_INSIGHT;
+
+    if ((hp >= 3 || HasAuraUp(bot, 90174)) && CanTryCast(bot, SHIELD_OF_THE_RIGHTEOUS))
+        return SHIELD_OF_THE_RIGHTEOUS;
+
+    if (HasAuraUp(bot, GRAND_CRUSADER) && CanTryCast(bot, AVENGERS_SHIELD))
+        return AVENGERS_SHIELD;
+
+    if (ctx.targetHealthPct <= 20.0f && CanTryCast(bot, HAMMER_OF_WRATH))
+        return HAMMER_OF_WRATH;
+
+    if (ctx.enemies >= 3)
+    {
+        if (CanTryCast(bot, HAMMER_OF_THE_RIGHTEOUS))
+            return HAMMER_OF_THE_RIGHTEOUS;
+        if (CanTryCast(bot, CONSECRATION))
+            return CONSECRATION;
+    }
+    else if (CanTryCast(bot, CRUSADER_STRIKE))
+        return CRUSADER_STRIKE;
+
+    if (CanTryCast(bot, JUDGMENT))
+        return JUDGMENT;
+    if (CanTryCast(bot, AVENGERS_SHIELD))
+        return AVENGERS_SHIELD;
+    if (CanTryCast(bot, HOLY_WRATH))
+        return HOLY_WRATH;
+    if (CanTryCast(bot, CONSECRATION))
+        return CONSECRATION;
+
+    return 0;
+}
+
 } // namespace BotRotation

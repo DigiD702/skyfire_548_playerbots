@@ -36,6 +36,9 @@ public:
     // Role filter for "@tank attack" style group orders (tank/heal/dps/ranged).
     bool MatchesRoleFilter(std::string const& filter) const;
 
+    // LFG role mask (tank/healer/damage) from the bot's active specialization.
+    uint8 ComputeLfgRole();
+
     Player* GetBot() const { return _bot; }
     bool IsClientControlled() const { return _clientControlled; }
 
@@ -46,10 +49,10 @@ private:
     // Behaviour steps (kept small and independent so strategies can be added).
     void HandlePendingInvites();
     void HandleLfg();      // auto-respond to LFG role checks and proposals
-    uint8 ComputeLfgRole();
     void HandleInteractions(); // trade / duel accept
     bool HandleCombat();   // returns true if the bot is engaged (chasing a target)
     bool HandleCombatCastOnly(); // self-bot: target + cast, no MotionMaster
+    bool HandleHealing();  // healer specs: heal injured group members; true if busy
     bool HandleLoot();     // walk to / loot nearby corpses; true while busy
     void HandleFollow();   // out of combat: stick with the group leader
     void HandleWander();   // solo idle: walk to a nearby random point
@@ -61,13 +64,18 @@ private:
     // Combat helpers.
     Unit* SelectTarget();          // forced / grind / own attacker / assist leader
     Unit* SelectGrindTarget();     // nearest attackable in range
+    Unit* SelectTankTarget();      // prefer mobs attacking party members
+    Player* SelectHealTarget();    // lowest-HP injured ally in group
     Unit* GetForcedTarget() const;
     void SetForcedTarget(Unit* target);
     void ClearForcedTarget();
     CombatRole GetCombatRole() const;
     bool IsRangedClass() const;    // caster/ranged stance (spec-aware for hybrids)
     uint32 GetFillerSpell() const;              // fallback filler when no spec list
+    uint32 GetTauntSpell() const;               // tank taunt, or 0
+    uint32 GetHealSpell() const;                // simple single-target heal, or 0
     void DoRotation(Unit* target);              // pick + cast next rotation / filler spell
+    void DoTankExtras(Unit* target);            // taunt if threat is lost
 
     // Chat-order helpers.
     void ReplyTo(Player* from, std::string const& text);

@@ -111,4 +111,54 @@ uint32 SelectWindwalker(Context const& ctx)
     return 0;
 }
 
+uint32 SelectBrewmaster(Context const& ctx)
+{
+    Player* bot = ctx.bot;
+    uint32 const chi = bot->GetPower(POWER_CHI);
+
+    enum BrewSpells : uint32
+    {
+        STANCE_STURDY_OX    = 115069,
+        KEG_SMASH           = 121253,
+        BLACKOUT_KICK       = 100784,
+        GUARD               = 115295,
+        BREATH_OF_FIRE      = 115181,
+        JAB                 = 100780,
+        TIGER_PALM          = 100787,
+        SPINNING_CRANE_KICK = 101546,
+        EXPEL_HARM          = 115072,
+        LEGACY_EMPEROR      = 115921,
+    };
+
+    if (!HasAuraUp(bot, LEGACY_EMPEROR) && CanTryCast(bot, LEGACY_EMPEROR))
+        return LEGACY_EMPEROR;
+    if (!HasAuraUp(bot, STANCE_STURDY_OX) && CanTryCast(bot, STANCE_STURDY_OX))
+        return STANCE_STURDY_OX;
+
+    float const hpPct = bot->GetMaxHealth()
+        ? (100.0f * float(bot->GetHealth()) / float(bot->GetMaxHealth())) : 100.0f;
+    if (hpPct < 80.0f && CanTryCast(bot, GUARD))
+        return GUARD;
+    if (hpPct < 70.0f && CanTryCast(bot, EXPEL_HARM))
+        return EXPEL_HARM;
+
+    if (CanTryCast(bot, KEG_SMASH))
+        return KEG_SMASH;
+
+    if (ctx.enemies >= 3 && CanTryCast(bot, SPINNING_CRANE_KICK))
+        return SPINNING_CRANE_KICK;
+    if (ctx.enemies >= 2 && chi >= 2 && CanTryCast(bot, BREATH_OF_FIRE))
+        return BREATH_OF_FIRE;
+
+    if (chi >= 2 && CanTryCast(bot, BLACKOUT_KICK))
+        return BLACKOUT_KICK;
+    if (chi >= 1 && CanTryCast(bot, TIGER_PALM))
+        return TIGER_PALM;
+
+    if (CanTryCast(bot, JAB))
+        return JAB;
+
+    return 0;
+}
+
 } // namespace BotRotation

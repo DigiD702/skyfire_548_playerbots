@@ -147,4 +147,59 @@ uint32 SelectFury(Context const& ctx)
     return 0;
 }
 
+uint32 SelectProtectionWarrior(Context const& ctx)
+{
+    Player* bot = ctx.bot;
+    uint32 const rage = bot->GetPower(POWER_RAGE);
+
+    enum ProtWarSpells : uint32
+    {
+        DEFENSIVE_STANCE    = 71,
+        BATTLE_SHOUT        = 6673,
+        SHIELD_SLAM         = 23922,
+        REVENGE             = 6572,
+        DEVASTATE           = 20243,
+        THUNDER_CLAP        = 6343,
+        SHIELD_BLOCK        = 2565,
+        SHIELD_BLOCK_BUFF   = 132404,
+        HEROIC_STRIKE       = 78,
+        SHIELD_WALL         = 871,
+        DEMORALIZING_SHOUT  = 1160,
+    };
+
+    bool const inDefensive = bot->GetShapeshiftForm() == FORM_DEFENSIVESTANCE
+        || HasAuraUp(bot, DEFENSIVE_STANCE);
+    if (!inDefensive && CanTryCast(bot, DEFENSIVE_STANCE))
+        return DEFENSIVE_STANCE;
+    if (!HasAuraUp(bot, BATTLE_SHOUT) && CanTryCast(bot, BATTLE_SHOUT))
+        return BATTLE_SHOUT;
+
+    bool const hasShield = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND) != nullptr;
+
+    float const hpPct = bot->GetMaxHealth()
+        ? (100.0f * float(bot->GetHealth()) / float(bot->GetMaxHealth())) : 100.0f;
+    if (hasShield && hpPct < 40.0f && CanTryCast(bot, SHIELD_WALL))
+        return SHIELD_WALL;
+    if (hasShield && !HasAuraUp(bot, SHIELD_BLOCK_BUFF) && !HasAuraUp(bot, SHIELD_BLOCK)
+        && CanTryCast(bot, SHIELD_BLOCK))
+        return SHIELD_BLOCK;
+
+    if (ctx.enemies >= 2 && CanTryCast(bot, THUNDER_CLAP))
+        return THUNDER_CLAP;
+    if (ctx.enemies >= 2 && CanTryCast(bot, DEMORALIZING_SHOUT))
+        return DEMORALIZING_SHOUT;
+
+    if (hasShield && CanTryCast(bot, SHIELD_SLAM))
+        return SHIELD_SLAM;
+    if (CanTryCast(bot, REVENGE))
+        return REVENGE;
+    if (CanTryCast(bot, DEVASTATE))
+        return DEVASTATE;
+
+    if (rage >= 60 && CanTryCast(bot, HEROIC_STRIKE))
+        return HEROIC_STRIKE;
+
+    return 0;
+}
+
 } // namespace BotRotation

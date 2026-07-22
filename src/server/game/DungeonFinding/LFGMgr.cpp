@@ -1360,6 +1360,19 @@ namespace lfg
         return 0;
     }
 
+    uint8 LFGMgr::GetRoleCheckRoles(uint64 gguid, uint64 playerGuid) const
+    {
+        LfgRoleCheckContainer::const_iterator it = RoleChecksStore.find(gguid);
+        if (it == RoleChecksStore.end())
+            return PLAYER_ROLE_NONE;
+
+        LfgRolesMap::const_iterator itRoles = it->second.roles.find(playerGuid);
+        if (itRoles == it->second.roles.end())
+            return PLAYER_ROLE_NONE;
+
+        return itRoles->second;
+    }
+
     void LFGMgr::UpdateProposal(uint32 proposalId, uint64 guid, bool accept)
     {
         // Check if the proposal exists

@@ -81,6 +81,23 @@ namespace
             case 46584:  // Raise Dead
             case 113858: // Dark Soul: Instability
             case 113861: // Dark Soul: Knowledge
+            case 24858:  // Moonkin Form
+            case 5487:   // Bear Form
+            case 71:     // Defensive Stance
+            case 48263:  // Blood Presence
+            case 20165:  // Seal of Insight
+            case 6117:   // Mage Armor
+            case 30482:  // Molten Armor
+            case 1459:   // Arcane Brilliance
+            case 51713:  // Shadow Dance
+            case 49222:  // Bone Shield
+            case 115069: // Stance of the Sturdy Ox
+            case 115295: // Guard
+            case 2565:   // Shield Block
+            case 871:    // Shield Wall
+            case 1160:   // Demoralizing Shout
+            case 62606:  // Savage Defense
+            case 132404: // Shield Block (MoP buff)
                 return true;
             default:
                 return false;
@@ -153,7 +170,15 @@ bool CastSpell(Player* bot, Unit* enemy, uint32 spellId)
     if (!bot || !spellId || !CanTryCast(bot, spellId))
         return false;
 
-    Unit* castTarget = IsSelfCast(spellId) ? bot : enemy;
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    if (!info)
+        return false;
+
+    // Self-buffs / stances / shouts / ground AoE around the caster must not be
+    // forced onto the enemy (that path has crashed for prot warrior Shield Block).
+    Unit* castTarget = enemy;
+    if (IsSelfCast(spellId) || !info->NeedsExplicitUnitTarget())
+        castTarget = bot;
     if (!castTarget)
         return false;
 
@@ -179,7 +204,9 @@ uint32 SelectNextSpell(Player* bot, Unit* target)
     switch (spec)
     {
         case SPEC_PALADIN_RETRIBUTION:   return SelectRetribution(ctx);
+        case SPEC_PALADIN_PROTECTION:    return SelectProtectionPaladin(ctx);
         case SPEC_MONK_WINDWALKER:       return SelectWindwalker(ctx);
+        case SPEC_MONK_BREWMASTER:       return SelectBrewmaster(ctx);
         case SPEC_HUNTER_BEAST_MASTERY:  return SelectBeastMastery(ctx);
         case SPEC_HUNTER_MARKSMANSHIP:   return SelectMarksmanship(ctx);
         case SPEC_HUNTER_SURVIVAL:       return SelectSurvival(ctx);
@@ -189,11 +216,20 @@ uint32 SelectNextSpell(Player* bot, Unit* target)
         case SPEC_WARLOCK_DEMONOLOGY:    return SelectDemonology(ctx);
         case SPEC_SHAMAN_ELEMENTAL:      return SelectElemental(ctx);
         case SPEC_SHAMAN_ENHANCEMENT:    return SelectEnhancement(ctx);
+        case SPEC_DRUID_BALANCE:         return SelectBalance(ctx);
         case SPEC_DRUID_FERAL:           return SelectFeral(ctx);
+        case SPEC_DRUID_GUARDIAN:        return SelectGuardian(ctx);
         case SPEC_WARRIOR_ARMS:          return SelectArms(ctx);
         case SPEC_WARRIOR_FURY:          return SelectFury(ctx);
+        case SPEC_WARRIOR_PROTECTION:    return SelectProtectionWarrior(ctx);
+        case SPEC_ROGUE_ASSASSINATION:   return SelectAssassination(ctx);
         case SPEC_ROGUE_COMBAT:          return SelectCombat(ctx);
+        case SPEC_ROGUE_SUBTLETY:        return SelectSubtlety(ctx);
+        case SPEC_MAGE_ARCANE:           return SelectArcane(ctx);
+        case SPEC_MAGE_FIRE:             return SelectFire(ctx);
         case SPEC_MAGE_FROST:            return SelectFrostMage(ctx);
+        case SPEC_DEATH_KNIGHT_BLOOD:    return SelectBlood(ctx);
+        case SPEC_DEATH_KNIGHT_FROST:    return SelectFrostDK(ctx);
         case SPEC_DEATH_KNIGHT_UNHOLY:   return SelectUnholy(ctx);
         default:                         return 0;
     }
