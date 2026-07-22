@@ -20,7 +20,7 @@ Whisper replies with a short ack. Party/raid orders apply silently (no spam).
 | `.playerbots summon` | Teleport all bots in your group to you. |
 | `.playerbots reload` | Reload `playerbots.conf` and the random-bot candidate pool. |
 | `.playerbots create` | Run the auto-creator (accounts + characters from config). |
-| `.playerbots init [<name>\|all\|self] [tank\|healer\|dps\|<spec>]` | Re-apply specialization, talents (Wave-1), and gear. |
+| `.playerbots init [<name>\|all\|self] [tank\|healer\|dps\|<spec>] [rare\|epic\|…]` | Re-apply specialization, talents, and gear (optional quality cap). |
 | `.playerbots self [on\|off]` | Attach/detach cast-only AI on **your** character. |
 
 ### `.playerbots init`
@@ -36,6 +36,9 @@ specs it also learns a recommended talent spell set used by the rotation.
 | `all` | Initialize every active socket bot. |
 | `… tank` / `healer` / `dps` | Switch to that role’s **default** spec, then gear. |
 | `… <spec>` | Switch to an explicit specialization (needed for hybrid DPS). |
+| `… rare` / `epic` / … | Cap gear quality (default **epic**). Also: `blue`, `purple`, `quality=rare`. |
+
+Tokens may be in any order, e.g. `.playerbots init self fury rare` or `.playerbots init rare self fury`.
 
 **Hybrid DPS:** `dps` alone is not enough when a class has two damage specs:
 
@@ -76,6 +79,9 @@ MoP blocks dungeon finder join until every party member has a **party role** set
 (tank / healer / dps). Bots now set that from their active specialization as soon
 as they are grouped, and still auto-accept the LFG role check + ready proposal.
 
+When a real player queues (solo or with bots) and the dungeon forms, that player
+is preferred as **LFG group leader** so bots auto-follow them like a normal party.
+
 Queue needs a workable mix (at least one tank + healer for normal dungeons). All-DPS
 parties will fail the role check with wrong roles.
 
@@ -95,6 +101,8 @@ Examples:
 .playerbots init self enhancement
 .playerbots init self moonkin
 .playerbots init self feral
+.playerbots init self fury rare
+.playerbots init rare self fury
 .playerbots init Arix elemental
 .playerbots init all dps
 ```

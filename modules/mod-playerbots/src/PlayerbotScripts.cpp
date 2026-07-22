@@ -440,72 +440,136 @@ public:
         return entry && entry->classId == cls;
     }
 
-    // .playerbots init [<charname>|all|self] [tank|healer|dps|<spec>]
-    // Re-applies specialization/spells and gear. With no name, initializes you
-    // and any bots in your group.
+    // Parses a gear quality token for .playerbots init (caps ItemQuality).
+    // Accepts names, colors, or quality=rare / =epic forms.
+    static bool ParseQualityToken(std::string token, int& qualityOut)
+    {
+        std::transform(token.begin(), token.end(), token.begin(),
+            [](unsigned char c) { return char(std::tolower(c)); });
+
+        // Strip optional "quality=" / "q=" / leading '=' (e.g. init=rare style).
+        if (token.compare(0, 8, "quality=") == 0)
+            token = token.substr(8);
+        else if (token.compare(0, 2, "q=") == 0)
+            token = token.substr(2);
+        else if (!token.empty() && token[0] == '=')
+            token = token.substr(1);
+
+        if (token == "poor" || token == "grey" || token == "gray" || token == "trash")
+            qualityOut = ITEM_QUALITY_POOR;
+        else if (token == "common" || token == "white")
+            qualityOut = ITEM_QUALITY_NORMAL;
+        else if (token == "uncommon" || token == "green")
+            qualityOut = ITEM_QUALITY_UNCOMMON;
+        else if (token == "rare" || token == "blue")
+            qualityOut = ITEM_QUALITY_RARE;
+        else if (token == "epic" || token == "purple")
+            qualityOut = ITEM_QUALITY_EPIC;
+        else if (token == "legendary" || token == "orange")
+            qualityOut = ITEM_QUALITY_LEGENDARY;
+        else
+            return false;
+
+        return true;
+    }
+
+    static char const* QualityName(int quality)
+    {
+        switch (quality)
+        {
+            case ITEM_QUALITY_POOR: return "poor";
+            case ITEM_QUALITY_NORMAL: return "common";
+            case ITEM_QUALITY_UNCOMMON: return "uncommon";
+            case ITEM_QUALITY_RARE: return "rare";
+            case ITEM_QUALITY_EPIC: return "epic";
+            case ITEM_QUALITY_LEGENDARY: return "legendary";
+            default: return "custom";
+        }
+    }
+
+    // .playerbots init [<charname>|all|self] [tank|healer|dps|<spec>] [rare|epic|...]
+    // Tokens may appear in any order. Quality caps gear rolls (default epic).
     static bool HandlePlayerbotInitCommand(ChatHandler* handler, char const* args)
     {
-        std::string first;
-        std::string second;
+        std::vector<std::string> tokens;
         if (args)
         {
             std::istringstream stream(args);
-            stream >> first >> second;
+            std::string token;
+            while (stream >> token)
+                tokens.push_back(token);
         }
 
+        std::string target;
         int roleOverride = -1;
         uint32 specOverride = 0;
         bool haveChoice = false;
-        auto applyToken = [&](std::string const& token) -> bool
-        {
-            int role = -1;
-            uint32 spec = 0;
-            if (!ParseRoleOrSpecToken(token, role, spec))
-            {
-                handler->PSendSysMessage(
-                    "Unknown role/spec '%s'. Use tank, healer, dps, or a spec name "
-                    "(e.g. elemental, enhancement, feral, moonkin, ret, shadow).",
-                    token.c_str());
-                handler->SetSentErrorMessage(true);
-                return false;
-            }
-            roleOverride = role;
-            specOverride = spec;
-            haveChoice = true;
-            return true;
-        };
+        int maxItemQuality = ITEM_QUALITY_EPIC;
+        bool haveQuality = false;
 
-        if (!second.empty())
+        for (std::string const& raw : tokens)
         {
-            if (!applyToken(second))
-                return false;
-        }
-        else if (!first.empty())
-        {
+            int quality = 0;
+            if (ParseQualityToken(raw, quality))
+            {
+                maxItemQuality = quality;
+                haveQuality = true;
+                continue;
+            }
+
             int role = -1;
             uint32 spec = 0;
-            if (ParseRoleOrSpecToken(first, role, spec))
+            if (ParseRoleOrSpecToken(raw, role, spec))
             {
                 roleOverride = role;
                 specOverride = spec;
                 haveChoice = true;
-                first.clear();
+                continue;
             }
+
+            if (target.empty())
+            {
+                target = raw;
+                continue;
+            }
+
+            handler->PSendSysMessage(
+                "Unknown init token '%s'. Use self|all|<name>, a role/spec, "
+                "and/or a quality (poor, common, uncommon, rare, epic, legendary).",
+                raw.c_str());
+            handler->SetSentErrorMessage(true);
+            return false;
         }
 
         Player* master = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
-        char const* choiceNote = haveChoice
-            ? (specOverride ? " with the requested spec" : " with the requested role")
-            : "";
-
-        if (first == "all")
+        std::string choiceNote;
+        if (haveChoice || haveQuality)
         {
-            uint32 count = sPlayerbotMgr->InitializeAllBots(roleOverride, specOverride);
-            handler->PSendSysMessage("Initialized %u active bot(s)%s.", count, choiceNote);
+            choiceNote = " (";
+            bool firstNote = true;
+            if (haveChoice)
+            {
+                choiceNote += specOverride ? "spec" : "role";
+                firstNote = false;
+            }
+            if (haveQuality)
+            {
+                if (!firstNote)
+                    choiceNote += ", ";
+                choiceNote += "max quality ";
+                choiceNote += QualityName(maxItemQuality);
+            }
+            choiceNote += ")";
+        }
+
+        if (target == "all")
+        {
+            uint32 count = sPlayerbotMgr->InitializeAllBots(roleOverride, specOverride, maxItemQuality);
+            handler->PSendSysMessage("Initialized %u active bot(s)%s.", count, choiceNote.c_str());
             return true;
         }
 
-        if (first == "self" || (!first.empty() && master && first == master->GetName()))
+        if (target == "self" || (!target.empty() && master && target == master->GetName()))
         {
             if (!master)
             {
@@ -519,14 +583,14 @@ public:
                 handler->SetSentErrorMessage(true);
                 return false;
             }
-            sPlayerbotMgr->InitializeBot(master, roleOverride, specOverride);
-            handler->PSendSysMessage("Initialized yourself%s.", choiceNote);
+            sPlayerbotMgr->InitializeBot(master, roleOverride, specOverride, maxItemQuality);
+            handler->PSendSysMessage("Initialized yourself%s.", choiceNote.c_str());
             return true;
         }
 
-        if (!first.empty())
+        if (!target.empty())
         {
-            std::string name = first;
+            std::string name = target;
             if (!normalizePlayerName(name))
             {
                 handler->SendSysMessage("Invalid character name.");
@@ -549,15 +613,15 @@ public:
                 return false;
             }
 
-            sPlayerbotMgr->InitializeBot(bot, roleOverride, specOverride);
-            handler->PSendSysMessage("Initialized bot '%s'%s.", name.c_str(), choiceNote);
+            sPlayerbotMgr->InitializeBot(bot, roleOverride, specOverride, maxItemQuality);
+            handler->PSendSysMessage("Initialized bot '%s'%s.", name.c_str(), choiceNote.c_str());
             return true;
         }
 
         if (!master)
         {
             handler->SendSysMessage(
-                "Usage: .playerbots init [<charname>|all|self] [tank|healer|dps|<spec>].");
+                "Usage: .playerbots init [<charname>|all|self] [tank|healer|dps|<spec>] [rare|epic|...].");
             handler->SetSentErrorMessage(true);
             return false;
         }
@@ -569,7 +633,7 @@ public:
             return false;
         }
 
-        sPlayerbotMgr->InitializeBot(master, roleOverride, specOverride);
+        sPlayerbotMgr->InitializeBot(master, roleOverride, specOverride, maxItemQuality);
         uint32 count = 1;
 
         if (Group* group = master->GetGroup())
@@ -581,14 +645,14 @@ public:
                 {
                     if (specOverride && !SpecMatchesClass(specOverride, member->getClass()))
                         continue;
-                    sPlayerbotMgr->InitializeBot(member, roleOverride, specOverride);
+                    sPlayerbotMgr->InitializeBot(member, roleOverride, specOverride, maxItemQuality);
                     ++count;
                 }
             }
         }
 
         handler->PSendSysMessage("Initialized yourself and %u grouped bot(s)%s.",
-            count - 1, choiceNote);
+            count - 1, choiceNote.c_str());
         return true;
     }
 

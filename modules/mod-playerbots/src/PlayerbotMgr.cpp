@@ -761,18 +761,22 @@ namespace
     //
     // Filter by RequiredLevel near the bot's level (not ItemLevel <= level+25):
     // MoP ilvl is hundreds at 90, so an ItemLevel cap wrongly forces ~TBC gear.
-    std::vector<uint32> QueryItemEntries(Player* bot, std::string const& where, uint32 primaryStat, uint32 exclude)
+    // maxQuality caps ITEM_QUALITY_* (default epic) so testers can request rare/etc.
+    std::vector<uint32> QueryItemEntries(Player* bot, std::string const& where, uint32 primaryStat,
+        uint32 exclude, int maxQuality)
     {
         uint32 const level    = bot->getLevel();
         uint32 const classBit = 1u << (bot->getClass() - 1);
         uint32 const raceBit  = 1u << (bot->getRace() - 1);
         uint32 const minReq   = level > 10 ? (level - 10) : 1;
+        int const qualityCap  = std::max(0, std::min(maxQuality, int(ITEM_QUALITY_LEGENDARY)));
+        int const qualityMin  = qualityCap >= int(ITEM_QUALITY_UNCOMMON) ? int(ITEM_QUALITY_UNCOMMON) : qualityCap;
 
         std::ostringstream q;
         q << "SELECT entry FROM item_template WHERE " << where
           << " AND RequiredLevel <= " << level
           << " AND RequiredLevel >= " << minReq
-          << " AND Quality BETWEEN 2 AND 4"
+          << " AND Quality BETWEEN " << qualityMin << " AND " << qualityCap
           << " AND duration = 0 AND startquest = 0"
           << " AND (AllowableClass = -1 OR (AllowableClass & " << classBit << "))"
           << " AND (AllowableRace = -1 OR (AllowableRace & " << raceBit << "))";
@@ -881,14 +885,15 @@ namespace
     // is equippable. Prefers items with the spec's primary stat, then any. The
     // exclude entry keeps paired slots (rings/trinkets) distinct. Returns the
     // equipped entry, or 0.
-    uint32 EquipBestForSlot(Player* bot, std::string const& where, uint32 primaryStat, uint32 exclude)
+    uint32 EquipBestForSlot(Player* bot, std::string const& where, uint32 primaryStat, uint32 exclude,
+        int maxQuality)
     {
         uint32 const passStats[2] = { primaryStat, 0 };
         int const passes = primaryStat ? 2 : 1;
 
         for (int p = 0; p < passes; ++p)
         {
-            std::vector<uint32> const entries = QueryItemEntries(bot, where, passStats[p], exclude);
+            std::vector<uint32> const entries = QueryItemEntries(bot, where, passStats[p], exclude, maxQuality);
             for (uint32 entry : entries)
                 if (EquipItemEntry(bot, entry))
                     return entry;
@@ -910,14 +915,14 @@ namespace
     }
 
     // Picks class/role-appropriate weapons (and shield/offhand/ranged).
-    void GearWeapons(Player* bot, BotRole role, uint32 specId = 0)
+    void GearWeapons(Player* bot, BotRole role, uint32 specId, int maxQuality)
     {
         uint8 const cls = bot->getClass();
         uint32 const primary = PrimaryStatForClassRole(cls, role, specId);
 
         auto equip = [&](std::string const& where) -> bool
         {
-            return EquipBestForSlot(bot, where, primary, 0) != 0;
+            return EquipBestForSlot(bot, where, primary, 0, maxQuality) != 0;
         };
 
         std::string const oneH   = "class=2 AND InventoryType IN (13,21)";
@@ -1015,7 +1020,7 @@ namespace
     }
 
     // Fills every gear slot with the best level/class/spec-appropriate items.
-    void GearBot(Player* bot, BotRole role, uint32 specId = 0)
+    void GearBot(Player* bot, BotRole role, uint32 specId, int maxQuality)
     {
         uint8 const cls = bot->getClass();
         uint32 const primary = PrimaryStatForClassRole(cls, role, specId);
@@ -1028,7 +1033,7 @@ namespace
         // entry (used to place two distinct rings/trinkets).
         auto equipOne = [&](std::string const& where, uint32 exclude) -> uint32
         {
-            return EquipBestForSlot(bot, where, primary, exclude);
+            return EquipBestForSlot(bot, where, primary, exclude, maxQuality);
         };
 
         equipOne(armorRange + " AND InventoryType=1", 0);        // head
@@ -1048,7 +1053,7 @@ namespace
         uint32 trinket1 = equipOne("class=4 AND InventoryType=12", 0);
         equipOne("class=4 AND InventoryType=12", trinket1);
 
-        GearWeapons(bot, role, specId);
+        GearWeapons(bot, role, specId, maxQuality);
     }
 }
 
@@ -1114,7 +1119,7 @@ uint32 PlayerbotMgr::CreateBotPopulation(std::string* report)
     return charsCreated;
 }
 
-void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverride)
+void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverride, int maxItemQuality)
 {
     if (!bot || !bot->IsInWorld())
         return;
@@ -1172,12 +1177,13 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverr
     LearnArmorProficiencies(bot);
 
     // Gear the bot for the (possibly newly assigned) role/spec at its level.
-    GearBot(bot, role, specId);
+    int const qualityCap = std::max(0, std::min(maxItemQuality, int(ITEM_QUALITY_LEGENDARY)));
+    GearBot(bot, role, specId, qualityCap);
 
     bot->SaveToDB();
 }
 
-uint32 PlayerbotMgr::InitializeAllBots(int roleOverride, uint32 specOverride)
+uint32 PlayerbotMgr::InitializeAllBots(int roleOverride, uint32 specOverride, int maxItemQuality)
 {
     uint32 count = 0;
     for (auto const& pair : _bots)
@@ -1193,7 +1199,7 @@ uint32 PlayerbotMgr::InitializeAllBots(int roleOverride, uint32 specOverride)
                 if (!entry || entry->classId != bot->getClass())
                     continue;
             }
-            InitializeBot(bot, roleOverride, specOverride);
+            InitializeBot(bot, roleOverride, specOverride, maxItemQuality);
             ++count;
         }
     }

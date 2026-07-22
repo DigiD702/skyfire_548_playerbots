@@ -1185,11 +1185,32 @@ namespace lfg
         LfgGuidList playersToTeleport;
         LfgGuidSet expectedPlayers;
 
+        // Prefer a real (non-bot) client as group leader so playerbots follow them
+        // after teleport. Proposal.leader is usually already set that way in LFGQueue.
+        uint64 preferredLeader = 0;
+        uint64 firstRealPlayer = 0;
         for (LfgProposalPlayerContainer::const_iterator it = proposal.players.begin(); it != proposal.players.end(); ++it)
         {
             uint64 guid = it->first;
             expectedPlayers.insert(guid);
-            if (guid == proposal.leader)
+
+            Player* player = ObjectAccessor::FindPlayer(guid);
+            bool const isBot = player && player->GetSession() && player->GetSession()->IsBot();
+            if (player && player->GetSession() && !isBot)
+            {
+                if (!firstRealPlayer)
+                    firstRealPlayer = guid;
+                if (guid == proposal.leader)
+                    preferredLeader = guid;
+            }
+        }
+        if (!preferredLeader)
+            preferredLeader = firstRealPlayer ? firstRealPlayer : proposal.leader;
+
+        for (LfgProposalPlayerContainer::const_iterator it = proposal.players.begin(); it != proposal.players.end(); ++it)
+        {
+            uint64 guid = it->first;
+            if (guid == preferredLeader)
                 players.push_front(guid);
             else
                 players.push_back(guid);
@@ -1239,7 +1260,7 @@ namespace lfg
                 }
 
                 uint64 gguid = grp->GetGUID();
-                SetActiveQueueId(gguid, GetActiveQueueId(proposal.leader));
+                SetActiveQueueId(gguid, GetActiveQueueId(preferredLeader ? preferredLeader : proposal.leader));
                 SetState(gguid, LFG_STATE_PROPOSAL);
                 sGroupMgr->AddGroup(grp);
 
@@ -1293,11 +1314,12 @@ namespace lfg
             grp->SetDungeonDifficulty(difficulty);
 
         uint64 gguid = grp->GetGUID();
-        SetActiveQueueId(gguid, GetActiveQueueId(proposal.leader));
+        SetActiveQueueId(gguid, GetActiveQueueId(preferredLeader ? preferredLeader : proposal.leader));
         SetDungeon(gguid, dungeon->Entry());
         SetState(gguid, LFG_STATE_DUNGEON);
 
-        uint64 leader = proposal.leader && grp->IsMember(proposal.leader) ? proposal.leader : grp->GetLeaderGUID();
+        uint64 leader = preferredLeader && grp->IsMember(preferredLeader) ? preferredLeader
+            : (proposal.leader && grp->IsMember(proposal.leader) ? proposal.leader : grp->GetLeaderGUID());
         if (leader && grp->GetLeaderGUID() != leader)
             grp->ChangeLeader(leader);
 

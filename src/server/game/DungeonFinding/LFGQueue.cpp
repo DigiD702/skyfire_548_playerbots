@@ -11,8 +11,11 @@
 #include "LFGMgr.h"
 #include "LFGQueue.h"
 #include "Log.h"
+#include "ObjectAccessor.h"
 #include "ObjectDefines.h"
+#include "Player.h"
 #include "World.h"
+#include "WorldSession.h"
 
 #include <algorithm>
 #include <map>
@@ -26,6 +29,52 @@ namespace lfg
         bool QueueContainsGuid(LfgGuidList const& queue, uint64 guid)
         {
             return std::find(queue.begin(), queue.end(), guid) != queue.end();
+        }
+
+        // Socket playerbots use WorldSession::IsBot(). Prefer real clients as LFG
+        // group leaders so bots follow them after the dungeon teleport.
+        bool IsBotGuid(uint64 guid)
+        {
+            Player* player = ObjectAccessor::FindPlayer(guid);
+            return player && player->GetSession() && player->GetSession()->IsBot();
+        }
+
+        // Pick proposal.leader: real (non-bot) players first, then PLAYER_ROLE_LEADER,
+        // otherwise any member. Avoids random bot leaders when humans queue with bots.
+        uint64 SelectProposalLeader(LfgRolesMap const& roles)
+        {
+            uint64 realWithLeader = 0;
+            uint64 realAny = 0;
+            uint64 botWithLeader = 0;
+            uint64 botAny = 0;
+
+            for (LfgRolesMap::const_iterator it = roles.begin(); it != roles.end(); ++it)
+            {
+                uint64 const guid = it->first;
+                bool const hasLeader = (it->second & PLAYER_ROLE_LEADER) != 0;
+                if (IsBotGuid(guid))
+                {
+                    if (hasLeader && !botWithLeader)
+                        botWithLeader = guid;
+                    if (!botAny)
+                        botAny = guid;
+                }
+                else
+                {
+                    if (hasLeader && !realWithLeader)
+                        realWithLeader = guid;
+                    if (!realAny)
+                        realAny = guid;
+                }
+            }
+
+            if (realWithLeader)
+                return realWithLeader;
+            if (realAny)
+                return realAny;
+            if (botWithLeader)
+                return botWithLeader;
+            return botAny;
         }
 
         bool CompatibleKeyContainsGuid(std::string const& key, uint64 guid)
@@ -546,22 +595,12 @@ namespace lfg
             proposal.autoAccept = false;
             proposal.cancelTime = time(NULL) + LFG_TIME_PROPOSAL;
             proposal.state = LFG_PROPOSAL_INITIATING;
-            proposal.leader = 0;
+            proposal.leader = SelectProposalLeader(selectedRoles);
             proposal.dungeonId = dungeonId;
             proposal.group = 0;
 
-            bool leader = false;
             for (LfgRolesMap::const_iterator itRole = selectedRoles.begin(); itRole != selectedRoles.end(); ++itRole)
             {
-                if (itRole->second & PLAYER_ROLE_LEADER)
-                {
-                    if (!leader || !proposal.leader || std::rand() % 2)
-                        proposal.leader = itRole->first;
-                    leader = true;
-                }
-                else if (!leader && (!proposal.leader || std::rand() % 2))
-                    proposal.leader = itRole->first;
-
                 LfgProposalPlayer& data = proposal.players[itRole->first];
                 data.role = itRole->second;
                 std::map<uint64, uint64>::const_iterator itGroup = playerGroups.find(itRole->first);
@@ -979,22 +1018,11 @@ namespace lfg
         // Create a new proposal
         proposal.cancelTime = time(NULL) + LFG_TIME_PROPOSAL;
         proposal.state = LFG_PROPOSAL_INITIATING;
-        proposal.leader = 0;
+        proposal.leader = SelectProposalLeader(proposalRoles);
         proposal.dungeonId = Skyfire::Containers::SelectRandomContainerElement(proposalDungeons);
 
-        bool leader = false;
         for (LfgRolesMap::const_iterator itRoles = proposalRoles.begin(); itRoles != proposalRoles.end(); ++itRoles)
         {
-            // Assing new leader
-            if (itRoles->second & PLAYER_ROLE_LEADER)
-            {
-                if (!leader || !proposal.leader || std::rand() % 2)
-                    proposal.leader = itRoles->first;
-                leader = true;
-            }
-            else if (!leader && (!proposal.leader || std::rand() % 2))
-                proposal.leader = itRoles->first;
-
             // Assing player data and roles
             LfgProposalPlayer& data = proposal.players[itRoles->first];
             data.role = itRoles->second;

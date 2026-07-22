@@ -78,9 +78,12 @@ public:
     // roleOverride: -1 keep current role mapping, otherwise 0 = tank, 1 = healer,
     // 2 = damage (default DPS tab for the class).
     // specOverride: if non-zero, force that ChrSpecialization id (takes priority).
-    void InitializeBot(Player* bot, int roleOverride = -1, uint32 specOverride = 0);
+    // maxItemQuality: ITEM_QUALITY_* cap for gear rolls (default epic).
+    void InitializeBot(Player* bot, int roleOverride = -1, uint32 specOverride = 0,
+        int maxItemQuality = 4);
     // Initializes every active bot; returns the number processed.
-    uint32 InitializeAllBots(int roleOverride = -1, uint32 specOverride = 0);
+    uint32 InitializeAllBots(int roleOverride = -1, uint32 specOverride = 0,
+        int maxItemQuality = 4);
 
     uint32 GetActiveBotCount() const { return uint32(_bots.size()); }
     uint32 GetRandomBotCount() const { return uint32(_randomBots.size()); }
