@@ -32,6 +32,9 @@ namespace
         FIRE_ELEMENTAL      = 2894,
         EARTH_ELEMENTAL     = 2062,
         THUNDERSTORM        = 51490,
+        SPIRITWALKERS_GRACE = 79206,
+        LAVA_BEAM           = 114209,
+        ANCESTRAL_SWIFTNESS = 16188,
     };
 
     bool HasMainhandWeaponImbue(Player* bot)
@@ -74,6 +77,12 @@ uint32 SelectElemental(Context const& ctx)
     float const fsRemains = AuraRemains(target, FLAME_SHOCK);
     bool const ascendance = HasAuraUp(bot, ASCENDANCE_BUFF) || HasAuraUp(bot, ASCENDANCE);
     uint32 const lsStacks = AuraStacks(bot, LIGHTNING_SHIELD);
+    // Glyph of Chain Lightning (55449): CL earlier on 2+ targets.
+    bool const glyphCL = HasGlyphSpell(bot, 55449);
+    uint32 const aoeThresh = glyphCL ? 2u : 3u;
+
+    if (!bot->IsStopped() && CanTryCast(bot, SPIRITWALKERS_GRACE) && !HasAuraUp(bot, SPIRITWALKERS_GRACE))
+        return SPIRITWALKERS_GRACE;
 
     if (CanTryCast(bot, ELEMENTAL_MASTERY))
         return ELEMENTAL_MASTERY;
@@ -85,7 +94,7 @@ uint32 SelectElemental(Context const& ctx)
         return FIRE_ELEMENTAL;
 
     // AoE
-    if (ctx.enemies >= 3)
+    if (ctx.enemies >= aoeThresh)
     {
         if (ctx.enemies >= 4 && !HasActiveTotem(bot) && CanTryCast(bot, MAGMA_TOTEM))
             return MAGMA_TOTEM;
@@ -93,6 +102,8 @@ uint32 SelectElemental(Context const& ctx)
             return EARTHQUAKE;
         if ((!fsUp || fsRemains < 2.0f) && CanTryCast(bot, FLAME_SHOCK))
             return FLAME_SHOCK;
+        if (ascendance && CanTryCast(bot, LAVA_BEAM))
+            return LAVA_BEAM;
         if (HasAuraUp(bot, LAVA_SURGE) && CanTryCast(bot, LAVA_BURST))
             return LAVA_BURST;
         if (lsStacks >= 7 && !ascendance && CanTryCast(bot, EARTH_SHOCK))
@@ -108,6 +119,9 @@ uint32 SelectElemental(Context const& ctx)
     if ((!fsUp || fsRemains < 3.0f) && CanTryCast(bot, FLAME_SHOCK))
         return FLAME_SHOCK;
 
+    // Ascendance turns LB into Lava Beam — prefer it over Lava Burst spam.
+    if (ascendance && CanTryCast(bot, LAVA_BEAM))
+        return LAVA_BEAM;
     if (ascendance && CanTryCast(bot, LAVA_BURST))
         return LAVA_BURST;
 
@@ -126,6 +140,9 @@ uint32 SelectElemental(Context const& ctx)
 
     if (lsStacks >= 7 && !ascendance && (fsRemains > 6.0f) && CanTryCast(bot, EARTH_SHOCK))
         return EARTH_SHOCK;
+
+    if (CanTryCast(bot, ANCESTRAL_SWIFTNESS) && CanTryCast(bot, ELEMENTAL_BLAST))
+        return ANCESTRAL_SWIFTNESS;
 
     if (CanTryCast(bot, LIGHTNING_BOLT))
         return LIGHTNING_BOLT;

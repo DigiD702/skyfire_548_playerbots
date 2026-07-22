@@ -164,9 +164,11 @@ for future updates.
   first healer-capable heals, rest dps) so a bot party forms a valid composition
   without communicating. Core exposes `LFGMgr::GetActiveProposalIdForPlayer` so
   the module can find a bot's pending proposal to accept.
-* [TODO] In-dungeon behaviour: bots need real tanking/healing/threat and
-  boss/trash handling to actually *complete* a dungeon (depends on per-spec
-  rotations above).
+* [DONE] Between-pull food: socket bots sit + regen (bag food/drink when present,
+  direct HP/mana fallback always), wait for party resources, no grind pulls in
+  instances while drinking.
+* [IN PROGRESS] In-dungeon behaviour: tank assist / threat throttle / party rest
+  between pulls. Boss/trash scripting still thin — depends on deeper rotations.
 * [TODO] LFR: bots fill raid finder queues (auto-accept the LFR prompt/roles).
 * [TODO] Random battlegrounds / rated battlegrounds and arenas.
 * [TODO] Open-world grinding/questing for population.
@@ -182,3 +184,11 @@ for future updates.
   portable; the class-specific *spell IDs and rotations* must be rebuilt for MoP.
 * Keep core edits behind `ScriptMgr` hooks where possible so the core diff stays
   reviewable and this module remains self-contained.
+
+### Rotation coverage
+
+* [DONE] All 34 MoP specializations have combat (or heal) priority lists.
+* Healer specs also have `*Dps` damage lines for `co +healer dps`.
+* Trinkets sync with burst windows; Elemental/Assassination/Mage lines deepened
+  (AoE, bombs, Ascendance Lava Beam, Marked for Death).
+* [TODO] Further SimC-faithful tuning, glyph variants, and boss-specific holds.

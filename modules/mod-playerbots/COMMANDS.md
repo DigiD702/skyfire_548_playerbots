@@ -54,21 +54,25 @@ Other useful tokens: `ret`, `shadow`, `bm`, `ww`, `aff`, `arms`, `fury`, `frost`
 
 ### Combat rotations
 
-Bots (and `.playerbots self`) use per-spec priority lists for:
+Bots (and `.playerbots self`) use per-spec priority lists for **all 34 MoP specs**:
 
-**Wave 1:** Retribution, Windwalker, Beast Mastery, Shadow, Affliction, Elemental
+| Class | Specs |
+|-------|--------|
+| Warrior | Arms, Fury, Protection |
+| Paladin | Holy (heal + healer-dps), Protection, Retribution |
+| Hunter | Beast Mastery, Marksmanship, Survival |
+| Rogue | Assassination, Combat, Subtlety |
+| Priest | Discipline / Holy (heal + healer-dps), Shadow |
+| Death Knight | Blood, Frost, Unholy |
+| Shaman | Elemental, Enhancement, Restoration (heal + healer-dps) |
+| Mage | Arcane, Fire, Frost |
+| Warlock | Affliction, Demonology, Destruction |
+| Monk | Brewmaster, Mistweaver (heal + healer-dps), Windwalker |
+| Druid | Balance, Feral, Guardian, Restoration (heal + healer-dps) |
 
-**Wave 2:** Enhancement, Feral, Marksmanship, Survival, Arms, Fury, Combat Rogue,
-Frost Mage, Destruction, Demonology, Unholy DK
-
-**Wave 3:** Balance, Guardian, Fire, Arcane, Assassination, Subtlety, Frost DK,
-Blood DK, Prot Paladin, Prot Warrior, Brewmaster
-
-**Wave 4 (healers):** Holy Paladin, Discipline, Holy Priest, Restoration Shaman,
-Restoration Druid, Mistweaver
-
-Healer specs lean on `SelectNextHeal` plus shared interrupts/racials/trinkets.
-Priorities were simplified from MoP Hekili/SimC lists (local `Hekili/` reference only; not shipped).
+Priorities are simplified MoP dungeon/raid lines (Hekili/SimC-inspired). Healers
+use `SelectNextHeal` until nobody needs healing; with `co +healer dps` they switch
+to the healer-dps damage lists above.
 
 ### Tank / healer in groups
 
@@ -157,7 +161,7 @@ Send these as the message text (case-insensitive).
 | `dps attack` | Same, but only damage-spec bots. |
 | `maintenance` | Re-run init (spec + gear) on that bot. |
 | `autogear` | Same as `maintenance`. |
-| `eat` / `drink` / `food` | Sit and regenerate HP/mana until nearly full. Self-bots: AI never stands you up (so AFK sit and clicked food/drink work); regen only while seated. |
+| `eat` / `drink` / `food` | Sit and use bag food/drink (or fallback regen) until nearly full. Self-bots: AI will not stand you up or interrupt clicked food/drink; regen continues past the start threshold. |
 | `heal` | Healer-only shortcut: strict heal mode (same as `co +heal`). |
 | `healer dps` | Healer-only shortcut: `co +healer dps`. |
 | `save mana` / `save mana off` | Healer-only shortcut: `co +save mana` / `co -save mana`. |

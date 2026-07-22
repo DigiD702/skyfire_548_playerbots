@@ -6,6 +6,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotMgr.h"
 #include "rotations/BotRotation.h"
+#include "Bag.h"
 #include "CellImpl.h"
 #include "Chat.h"
 #include "Creature.h"
@@ -16,8 +17,10 @@
 #include "GroupMgr.h"
 #include "GroupReference.h"
 #include "Item.h"
+#include "ItemPrototype.h"
 #include "LFGMgr.h"
 #include "LootMgr.h"
+#include "Map.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "Opcodes.h"
@@ -25,6 +28,9 @@
 #include "Player.h"
 #include "SharedDefines.h"
 #include "SpellAuraDefines.h"
+#include "SpellAuras.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "ThreatManager.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
@@ -363,17 +369,23 @@ uint8 PlayerbotAI::ComputeLfgRole()
 // position for the class, and run the rotation.
 bool PlayerbotAI::HandleCombat()
 {
-    StopResting();
+    // Between pulls: sit/drink with the party instead of chasing the next pack.
+    if (!_bot->IsInCombat() && !GroupInCombat() && _food && PartyNeedsRest())
+        return false;
 
     if (GetCombatRole() == CombatRole::Healer)
     {
         if (SelectHealTarget() && HandleHealing())
+        {
+            StopResting();
             return true;
+        }
         // Strict heal: hold with the group, never spend GCDs on damage.
         if (!_healerDps)
         {
             if (GroupInCombat() || !_bot->getAttackers().empty())
             {
+                StopResting();
                 if (!_clientControlled && !_stay)
                     HandleFollow();
                 return true;
@@ -395,6 +407,9 @@ bool PlayerbotAI::HandleCombat()
         _chaseGuid = 0;
         return false;
     }
+
+    // Only abort eat/drink once we actually have something to fight.
+    StopResting();
 
     // Spec decides stance (e.g. Elemental ranged, Enhancement melee). Tanks always melee.
     bool const ranged = IsRangedClass() && GetCombatRole() != CombatRole::Tank;
@@ -502,13 +517,22 @@ bool PlayerbotAI::HandleCombat()
 // range with LoS; they steer into position themselves.
 bool PlayerbotAI::HandleCombatCastOnly()
 {
-    StopResting();
+    // Seated / mid-cast OOC: never clear rest or start a rotation — that cancelled
+    // clicked food/drink and wiped eat/drink state every AI tick.
+    if (!_bot->IsInCombat() && _bot->getAttackers().empty())
+    {
+        if (_bot->IsSitState() || _bot->IsNonMeleeSpellCasted(false) || HasFoodOrDrinkAura())
+            return false;
+    }
 
     // Heal only when someone is actually injured; otherwise healer-dps may attack.
     if (GetCombatRole() == CombatRole::Healer)
     {
         if (SelectHealTarget() && HandleHealing())
+        {
+            StopResting();
             return true;
+        }
         if (!_healerDps)
             return GroupInCombat() || !_bot->getAttackers().empty();
     }
@@ -520,6 +544,8 @@ bool PlayerbotAI::HandleCombatCastOnly()
             ClearForcedTarget();
         return false;
     }
+
+    StopResting();
 
     bool const ranged = IsRangedClass() && GetCombatRole() != CombatRole::Tank;
     if (ranged)
@@ -583,8 +609,15 @@ Unit* PlayerbotAI::SelectTarget()
         return execute;
 
     if (_grind)
-        if (Unit* grind = SelectGrindTarget())
-            return grind;
+    {
+        // Never open-world grind-pull inside dungeons/raids — that yanks the party
+        // into trash while healers are drinking.
+        Map* map = _bot->GetMap();
+        bool const inInstance = map && map->IsInstance();
+        if (!inInstance && !PartyNeedsRest())
+            if (Unit* grind = SelectGrindTarget())
+                return grind;
+    }
 
     // Self-bot only: the real player's selected unit while they are in combat.
     if (_clientControlled && _bot->IsInCombat())
@@ -744,13 +777,22 @@ void PlayerbotAI::DoRotation(Unit* target)
     if (ShouldThrottleThreat(target))
         return;
 
-    if (BotRotation::TryCombatUtilities(_bot, target))
+    // Interrupts first. During burst windows pop trinkets before fillers so they
+    // sync with Ascendance / Vendetta / Adrenaline Rush etc.
+    if (BotRotation::TryInterrupt(_bot, target))
+        return;
+    if (BotRotation::IsBursting(_bot) && BotRotation::TryTrinkets(_bot))
         return;
 
-    // Prefer the priority list. If CheckCast rejects a pick, fall through to filler.
     if (uint32 spellId = BotRotation::SelectNextSpell(_bot, target))
         if (BotRotation::CastSpell(_bot, target, spellId))
             return;
+
+    if (BotRotation::TryRacial(_bot, target))
+        return;
+    // Fallback: still use trinkets if no burst window this fight.
+    if (BotRotation::TryTrinkets(_bot))
+        return;
 
     if (uint32 filler = GetFillerSpell())
         BotRotation::CastSpell(_bot, target, filler);
@@ -1538,6 +1580,183 @@ void PlayerbotAI::StopResting()
         _bot->SetStandState(UNIT_STAND_STATE_STAND);
 }
 
+bool PlayerbotAI::HasFoodOrDrinkAura() const
+{
+    if (!_bot)
+        return false;
+
+    Unit::AuraApplicationMap const& auras = _bot->GetAppliedAuras();
+    for (Unit::AuraApplicationMap::const_iterator itr = auras.begin(); itr != auras.end(); ++itr)
+    {
+        AuraApplication const* app = itr->second;
+        if (!app || !app->GetBase())
+            continue;
+        SpellInfo const* info = app->GetBase()->GetSpellInfo();
+        if (!info)
+            continue;
+        // Food/drink buffs break if you stand (NOT_SEATED interrupt).
+        if (!(info->AuraInterruptFlags & AURA_INTERRUPT_FLAG_NOT_SEATED))
+            continue;
+        if (info->HasAura(SPELL_AURA_OBS_MOD_HEALTH) || info->HasAura(SPELL_AURA_MOD_POWER_REGEN))
+            return true;
+    }
+    return false;
+}
+
+bool PlayerbotAI::TryUseFoodOrDrinkItem()
+{
+    if (!_bot || _bot->IsInCombat())
+        return false;
+    if (_bot->IsNonMeleeSpellCasted(false) || HasFoodOrDrinkAura())
+        return true;
+
+    bool const needHp = HealthPct() < 98.0f;
+    bool const needMana = UsesMana() && ManaPct() < 98.0f;
+    if (!needHp && !needMana)
+        return false;
+
+    auto categoryOf = [](ItemTemplate const* proto) -> uint32
+    {
+        if (!proto)
+            return 0;
+        for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+        {
+            if (proto->Spells[i].SpellId && proto->Spells[i].SpellCategory)
+                return proto->Spells[i].SpellCategory;
+        }
+        return 0;
+    };
+
+    auto prefer = [&](Item* item) -> int
+    {
+        if (!item)
+            return -1;
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE || proto->SubClass != ITEM_SUBCLASS_FOOD_DRINK)
+            return -1;
+        if (_bot->CanUseItem(item) != EQUIP_ERR_OK)
+            return -1;
+
+        uint32 const cat = categoryOf(proto);
+        // Higher score = better match for what we still need.
+        if (needHp && needMana)
+            return 3;
+        if (needMana && cat == SPELL_CATEGORY_DRINK)
+            return 3;
+        if (needHp && cat == SPELL_CATEGORY_FOOD)
+            return 3;
+        if (needMana && cat == SPELL_CATEGORY_FOOD)
+            return 1; // some foods also restore mana via refreshment
+        if (needHp && cat == SPELL_CATEGORY_DRINK)
+            return 0;
+        return 2;
+    };
+
+    Item* best = nullptr;
+    int bestScore = -1;
+
+    auto consider = [&](Item* item)
+    {
+        int const score = prefer(item);
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = item;
+        }
+    };
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        consider(_bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        if (Bag* container = _bot->GetBagByPos(bag))
+            for (uint32 slot = 0; slot < container->GetBagSize(); ++slot)
+                consider(_bot->GetItemByPos(bag, uint8(slot)));
+    }
+
+    if (!best || bestScore < 0)
+        return false;
+
+    SpellCastTargets targets;
+    targets.SetUnitTarget(_bot);
+    _bot->CastItemUseSpell(best, targets, 1, 0);
+    // Only treat as success if a cast/aura actually started — otherwise fall
+    // through to direct regen (failed item use used to skip recovery entirely).
+    return _bot->IsNonMeleeSpellCasted(false) || HasFoodOrDrinkAura();
+}
+
+void PlayerbotAI::ApplyDirectRestRegen()
+{
+    if (!_bot)
+        return;
+    // Never fight the client or food/drink auras — SetPower/SetHealth every AI tick
+    // desyncs the mana bar (100% → real → 100% flicker).
+    if (_clientControlled)
+        return;
+    if (_bot->IsNonMeleeSpellCasted(false) || HasFoodOrDrinkAura())
+        return;
+
+    if (uint32 const maxHp = _bot->GetMaxHealth())
+    {
+        uint32 const cur = _bot->GetHealth();
+        if (cur < maxHp)
+        {
+            uint32 const gain = std::max<uint32>(1, uint32(float(maxHp) * BOT_REST_REGEN_PCT));
+            _bot->SetHealth(std::min(maxHp, cur + gain));
+        }
+    }
+    if (UsesMana())
+    {
+        int32 const maxMana = _bot->GetMaxPower(POWER_MANA);
+        int32 const cur = _bot->GetPower(POWER_MANA);
+        if (maxMana > 0 && cur < maxMana)
+        {
+            int32 const gain = std::max(1, int32(float(maxMana) * BOT_REST_REGEN_PCT));
+            _bot->SetPower(POWER_MANA, std::min(maxMana, cur + gain));
+        }
+    }
+}
+
+bool PlayerbotAI::PartyNeedsRest() const
+{
+    if (!_bot || !_food)
+        return false;
+
+    auto memberNeeds = [&](Player* member) -> bool
+    {
+        if (!member || !member->IsAlive() || member->IsInCombat())
+            return false;
+        float const hp = member->GetMaxHealth()
+            ? (100.0f * float(member->GetHealth()) / float(member->GetMaxHealth())) : 100.0f;
+        if (hp < sPlayerbotMgr->GetRestHealthPct())
+            return true;
+        if (member->GetMaxPower(POWER_MANA) > 0)
+        {
+            float const mana = 100.0f * float(member->GetPower(POWER_MANA))
+                / float(member->GetMaxPower(POWER_MANA));
+            if (mana < sPlayerbotMgr->GetRestManaPct())
+                return true;
+        }
+        return false;
+    };
+
+    if (memberNeeds(_bot))
+        return true;
+
+    Group* group = _bot->GetGroup();
+    if (!group)
+        return false;
+
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (member && member != _bot && memberNeeds(member))
+            return true;
+    }
+    return false;
+}
+
 bool PlayerbotAI::StartRefreshment()
 {
     if (!_bot)
@@ -1559,29 +1778,21 @@ bool PlayerbotAI::StartRefreshment()
         _bot->GetMotionMaster()->MoveIdle();
         _followGuid = 0;
         _chaseGuid = 0;
+        if (_bot->GetVictim())
+            _bot->AttackStop();
     }
     _resting = true;
 
-    // Direct regen — no spells (avoids Refreshment cast spam).
-    if (uint32 const maxHp = _bot->GetMaxHealth())
-    {
-        uint32 const cur = _bot->GetHealth();
-        if (cur < maxHp)
-        {
-            uint32 const gain = std::max<uint32>(1, uint32(float(maxHp) * BOT_REST_REGEN_PCT));
-            _bot->SetHealth(std::min(maxHp, cur + gain));
-        }
-    }
-    if (UsesMana())
-    {
-        int32 const maxMana = _bot->GetMaxPower(POWER_MANA);
-        int32 const cur = _bot->GetPower(POWER_MANA);
-        if (maxMana > 0 && cur < maxMana)
-        {
-            int32 const gain = std::max(1, int32(float(maxMana) * BOT_REST_REGEN_PCT));
-            _bot->SetPower(POWER_MANA, std::min(maxMana, cur + gain));
-        }
-    }
+    // Already eating/drinking: wait on the aura — do not SetPower (causes mana flicker).
+    if (_bot->IsNonMeleeSpellCasted(false) || HasFoodOrDrinkAura())
+        return true;
+
+    // Prefer real bag food/drink.
+    if (TryUseFoodOrDrinkItem())
+        return true;
+
+    // Socket-bot fallback only when no consumable is active.
+    ApplyDirectRestRegen();
     return true;
 }
 
@@ -1601,16 +1812,19 @@ bool PlayerbotAI::HandleRest()
     bool const needHp = hpPct < sPlayerbotMgr->GetRestHealthPct();
     bool const needMana = UsesMana() && manaPct < sPlayerbotMgr->GetRestManaPct();
     bool const lowResources = needHp || needMana;
+    // Non-mana classes only care about HP; mana classes need both near full.
     bool const nearlyFull = hpPct >= 98.0f && (!UsesMana() || manaPct >= 98.0f);
+    bool const itemResting = HasFoodOrDrinkAura() || (_bot->IsSitState() && _bot->IsNonMeleeSpellCasted(false));
 
-    // Once we start resting, keep going until nearly full (not just above the
-    // start threshold — that used to stand bots up mid-drink at 50%).
-    bool const shouldRest = _forceRest || _resting || (_food && lowResources);
+    // Only THIS bot rests. Full / non-mana bots keep following while others drink.
+    // (PartyNeedsRest still gates new pulls in HandleCombat, not follow.)
+    bool const shouldRest = _forceRest || _resting || (_food && lowResources) || itemResting;
 
     if (!shouldRest)
         return false;
 
-    if (nearlyFull)
+    // Done recovering — stand (socket bots) and resume follow/wander next tick.
+    if (nearlyFull && !itemResting)
     {
         StopResting();
         return false;

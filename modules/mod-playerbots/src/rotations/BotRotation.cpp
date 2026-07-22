@@ -5,6 +5,7 @@
 #include "BotRotation.h"
 #include "BotRotationLists.h"
 
+#include "DBCStores.h"
 #include "Group.h"
 #include "GroupReference.h"
 #include "Item.h"
@@ -395,6 +396,77 @@ bool TryRacial(Player* bot, Unit* /*targetOrSelf*/)
     return false;
 }
 
+bool IsBursting(Player* bot)
+{
+    if (!bot)
+        return false;
+
+    // Major DPS cooldown buffs — trinkets should land in these windows.
+    static uint32 const kBurstAuras[] =
+    {
+        13750,  // Adrenaline Rush
+        121471, // Shadow Blades
+        79140,  // Vendetta (debuff on target — also checked below)
+        51713,  // Shadow Dance
+        114050, // Ascendance (Elemental)
+        114051, // Ascendance (Enhancement)
+        114052, // Ascendance (Resto)
+        16166,  // Elemental Mastery
+        12472,  // Icy Veins
+        12042,  // Arcane Power
+        48108,  // Hot Streak (not a CD but burst)
+        3045,   // Rapid Fire
+        19574,  // Bestial Wrath
+        121818, // Stampede
+        1719,   // Recklessness
+        107574, // Avatar
+        46924,  // Bladestorm
+        31884,  // Avenging Wrath
+        105809, // Holy Avenger
+        51271,  // Pillar of Frost
+        49206,  // Summon Gargoyle / Dark Transformation window proxy
+        49016,  // Unholy Frenzy
+        103958, // Metamorphosis
+        113860, // Dark Soul: Misery
+        113861, // Dark Soul: Knowledge
+        113858, // Dark Soul: Instability
+        106951, // Berserk (Feral)
+        102543, // Incarnation: King of the Jungle
+        112071, // Celestial Alignment
+        116740, // Tigereye Brew
+        115288, // Energizing Brew
+    };
+
+    for (uint32 id : kBurstAuras)
+        if (HasAuraUp(bot, id))
+            return true;
+
+    if (Unit* victim = bot->GetVictim())
+        if (HasAuraUp(victim, 79140)) // Vendetta
+            return true;
+
+    return false;
+}
+
+bool HasGlyphSpell(Player* bot, uint32 glyphSpellId)
+{
+    if (!bot || !glyphSpellId)
+        return false;
+    if (bot->HasSpell(glyphSpellId) || bot->HasAura(glyphSpellId))
+        return true;
+
+    for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
+    {
+        uint32 const glyph = bot->GetGlyph(bot->GetActiveSpec(), slot);
+        if (!glyph)
+            continue;
+        if (GlyphPropertiesEntry const* gp = sGlyphPropertiesStore.LookupEntry(glyph))
+            if (gp->SpellId == glyphSpellId)
+                return true;
+    }
+    return false;
+}
+
 bool TryTrinkets(Player* bot)
 {
     if (!bot || bot->HasUnitState(UNIT_STATE_CASTING))
@@ -419,8 +491,6 @@ bool TryTrinkets(Player* bot)
             if (bot->HasSpellCooldown(data.SpellId) || bot->GetSpellCooldownDelay(data.SpellId) > 0)
                 continue;
 
-            // Item must actually be usable — otherwise we used to return true here
-            // and block the entire rotation forever (bots cast no abilities).
             if (bot->CanUseItem(item) != InventoryResult::EQUIP_ERR_OK)
                 continue;
 
@@ -436,7 +506,6 @@ bool TryTrinkets(Player* bot)
                 targets.SetUnitTarget(bot);
 
             bot->CastItemUseSpell(item, targets, 0, 0);
-            // Only claim success if the item spell went on cooldown (actually used).
             if (bot->HasSpellCooldown(data.SpellId) || bot->GetSpellCooldownDelay(data.SpellId) > 0)
                 return true;
         }
@@ -503,6 +572,13 @@ uint32 SelectNextSpell(Player* bot, Unit* target)
         case SPEC_DEATH_KNIGHT_BLOOD:    return SelectBlood(ctx);
         case SPEC_DEATH_KNIGHT_FROST:    return SelectFrostDK(ctx);
         case SPEC_DEATH_KNIGHT_UNHOLY:   return SelectUnholy(ctx);
+        // Healer specs: damage line used when co +healer dps (nobody needs heals).
+        case SPEC_PALADIN_HOLY:          return SelectHolyPaladinDps(ctx);
+        case SPEC_PRIEST_DISCIPLINE:     return SelectDisciplineDps(ctx);
+        case SPEC_PRIEST_HOLY:           return SelectHolyPriestDps(ctx);
+        case SPEC_SHAMAN_RESTORATION:    return SelectRestorationShamanDps(ctx);
+        case SPEC_DRUID_RESTORATION:     return SelectRestorationDruidDps(ctx);
+        case SPEC_MONK_MISTWEAVER:       return SelectMistweaverDps(ctx);
         default:                         return 0;
     }
 }

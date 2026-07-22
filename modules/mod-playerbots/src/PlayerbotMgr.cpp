@@ -1423,6 +1423,42 @@ namespace
 
         GearWeapons(bot, role, specId, maxQuality);
     }
+
+    // Level-scaled conjured food (+ water for mana users) so bots can eat/drink
+    // between pulls instead of relying only on direct regen.
+    void GiveRestConsumables(Player* bot)
+    {
+        if (!bot)
+            return;
+
+        uint8 const level = bot->getLevel();
+        uint32 food = 65500; // Conjured Mana Cookie (34)
+        if (level >= 90)
+            food = 80610;    // Conjured Mana Pudding
+        else if (level >= 85)
+            food = 65499;    // Conjured Mana Cake
+        else if (level >= 80)
+            food = 43523;    // Conjured Mana Strudel
+        else if (level >= 74)
+            food = 43518;    // Conjured Mana Pie
+        else if (level >= 64)
+            food = 65517;    // Conjured Mana Lollipop
+        else if (level >= 54)
+            food = 65516;    // Conjured Mana Cupcake
+        else if (level >= 44)
+            food = 65515;    // Conjured Mana Brownie
+
+        bot->StoreNewItemInBestSlots(food, 20);
+
+        if (bot->GetMaxPower(POWER_MANA) > 0)
+        {
+            uint32 drink = 58257; // Highland Spring Water (85+)
+            if (level < 85)
+                drink = food; // refreshment food covers both below MoP water
+            if (drink != food)
+                bot->StoreNewItemInBestSlots(drink, 20);
+        }
+    }
 }
 
 uint32 PlayerbotMgr::CreateBotPopulation(std::string* report)
@@ -1570,6 +1606,7 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverr
     SF_LOG_INFO("modules", "[mod-playerbots]   '%s': initializing equipment (max quality %s)...",
         bot->GetName().c_str(), QualityName(qualityCap));
     GearBot(bot, role, specId, qualityCap);
+    GiveRestConsumables(bot);
 
     bot->SaveToDB();
 

@@ -57,6 +57,8 @@ namespace BotRotation
     bool TryInterrupt(Player* bot, Unit* target);
     bool TryRacial(Player* bot, Unit* targetOrSelf);
     bool TryTrinkets(Player* bot);
+    bool IsBursting(Player* bot);
+    bool HasGlyphSpell(Player* bot, uint32 glyphSpellId);
 
     // Apply a fixed recommended talent spell loadout for Wave-1 DPS specs.
     void ApplyRecommendedTalents(Player* bot);

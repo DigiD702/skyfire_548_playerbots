@@ -43,13 +43,20 @@ namespace BotRotation
     uint32 SelectProtectionWarrior(Context const& ctx);
     uint32 SelectBrewmaster(Context const& ctx);
 
-    // Wave 4 - healers
+    // Wave 4 - healers (heal + healer-dps damage lines)
     uint32 SelectHolyPaladin(HealContext const& ctx);
     uint32 SelectDiscipline(HealContext const& ctx);
     uint32 SelectHolyPriest(HealContext const& ctx);
     uint32 SelectRestorationShaman(HealContext const& ctx);
     uint32 SelectRestorationDruid(HealContext const& ctx);
     uint32 SelectMistweaver(HealContext const& ctx);
+
+    uint32 SelectHolyPaladinDps(Context const& ctx);
+    uint32 SelectDisciplineDps(Context const& ctx);
+    uint32 SelectHolyPriestDps(Context const& ctx);
+    uint32 SelectRestorationShamanDps(Context const& ctx);
+    uint32 SelectRestorationDruidDps(Context const& ctx);
+    uint32 SelectMistweaverDps(Context const& ctx);
 }
 
 #endif // _SF_BOT_ROTATION_LISTS_H

@@ -73,6 +73,10 @@ private:
     void TeleportToPlayer(Player* master);
     void StopResting();
     bool StartRefreshment();
+    bool HasFoodOrDrinkAura() const;
+    bool TryUseFoodOrDrinkItem();
+    void ApplyDirectRestRegen();
+    bool PartyNeedsRest() const;
 
     // AC-style co / nc strategy engine (role-gated).
     bool HandleStrategyCommand(Player* from, std::string const& cmd, bool acknowledge);

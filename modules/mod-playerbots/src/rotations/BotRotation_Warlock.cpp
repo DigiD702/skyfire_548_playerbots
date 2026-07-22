@@ -27,6 +27,7 @@ namespace
         SOUL_SWAP           = 86121,
         FEL_FLAME           = 77799,
         SUMMON_DOOMGUARD    = 18540,
+        SEED_OF_CORRUPTION  = 27243,
     };
 }
 
@@ -52,6 +53,15 @@ uint32 SelectAffliction(Context const& ctx)
         && (ctx.targetHealthPct <= 20.0f || shards >= 3)
         && CanTryCast(bot, DARK_SOUL_MISERY))
         return DARK_SOUL_MISERY;
+
+    // Multi-target: Seed of Corruption (Soulburn when available).
+    if (ctx.enemies >= 3)
+    {
+        if (shards >= 1 && CanTryCast(bot, SOULBURN) && CanTryCast(bot, SEED_OF_CORRUPTION))
+            return SOULBURN;
+        if (CanTryCast(bot, SEED_OF_CORRUPTION))
+            return SEED_OF_CORRUPTION;
+    }
 
     bool const agony = HasAuraUp(target, AGONY);
     bool const corr = HasAuraUp(target, CORRUPTION);

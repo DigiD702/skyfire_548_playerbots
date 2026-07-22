@@ -100,6 +100,7 @@ uint32 SelectAssassination(Context const& ctx)
         SHADOW_BLADES       = 121471,
         SINISTER_STRIKE     = 1752,
         HEMORRHAGE          = 16511,
+        MARKED_FOR_DEATH    = 137619,
     };
 
     auto hasDagger = [](Player* p, WeaponAttackType at) -> bool
@@ -110,10 +111,15 @@ uint32 SelectAssassination(Context const& ctx)
     bool const canMutilate = hasDagger(bot, WeaponAttackType::BASE_ATTACK)
         && hasDagger(bot, WeaponAttackType::OFF_ATTACK);
 
+    // Open with Vendetta + Shadow Blades so trinket sync (IsBursting) can fire.
     if (CanTryCast(bot, VENDETTA))
         return VENDETTA;
     if (CanTryCast(bot, SHADOW_BLADES))
         return SHADOW_BLADES;
+
+    // Marked for Death: force a finisher window when low on CP.
+    if (cp <= 1 && CanTryCast(bot, MARKED_FOR_DEATH))
+        return MARKED_FOR_DEATH;
 
     if ((!HasAuraUp(bot, SLICE_AND_DICE) || AuraRemains(bot, SLICE_AND_DICE) <= 2.0f)
         && cp >= 1 && CanTryCast(bot, SLICE_AND_DICE))
@@ -129,6 +135,11 @@ uint32 SelectAssassination(Context const& ctx)
         if (CanTryCast(bot, ENVENOM))
             return ENVENOM;
     }
+
+    // Multi-DoT: keep Garrote up from stealth; maintain Rupture early at 4+ CP.
+    if (cp >= 4 && (!HasAuraUp(target, RUPTURE) || AuraRemains(target, RUPTURE) <= 2.0f)
+        && CanTryCast(bot, RUPTURE))
+        return RUPTURE;
 
     if (ctx.enemies >= 4 && CanTryCast(bot, FAN_OF_KNIVES))
         return FAN_OF_KNIVES;
