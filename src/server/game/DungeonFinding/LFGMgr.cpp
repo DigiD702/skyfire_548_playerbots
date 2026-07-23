@@ -2120,12 +2120,22 @@ namespace lfg
         if (!dungeon)
             return;
 
+        // Snapshot first: TeleportPlayer → FinalizeBotTeleport can Disband/remove
+        // members and invalidate GroupReference iteration mid-loop.
+        std::vector<uint64> toTeleport;
         for (GroupReference* itr = group->GetFirstMember(); itr != NULL; itr = itr->next())
         {
             Player* member = itr->GetSource();
             if (!member || member->GetMapId() != uint32(dungeon->map))
                 continue;
+            toTeleport.push_back(member->GetGUID());
+        }
 
+        for (uint64 guid : toTeleport)
+        {
+            Player* member = ObjectAccessor::FindPlayerInOrOutOfWorld(guid);
+            if (!member || member->GetMapId() != uint32(dungeon->map))
+                continue;
             TeleportPlayer(member, true);
         }
     }

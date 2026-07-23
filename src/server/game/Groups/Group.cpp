@@ -43,7 +43,8 @@ Loot* Roll::getLoot()
 Group::Group() : m_leaderGuid(0), m_leaderName(""), m_groupType(GROUPTYPE_NORMAL),
 m_dungeonDifficulty(DIFFICULTY_NORMAL), m_raidDifficulty(DIFFICULTY_10MAN_NORMAL),
 m_bgGroup(NULL), m_bfGroup(NULL), m_lootMethod(LootMethod::FREE_FOR_ALL), m_lootThreshold(ITEM_QUALITY_UNCOMMON), m_looterGuid(0),
-m_subGroupsCounts(NULL), m_guid(0), m_counter(0), m_maxEnchantingLevel(0), m_dbStoreId(0), _readyCheckInProgress(false)
+m_subGroupsCounts(NULL), m_guid(0), m_counter(0), m_maxEnchantingLevel(0), m_dbStoreId(0), _readyCheckInProgress(false),
+m_isDisbanding(false)
 {
     for (uint8 i = 0; i < TARGETICONCOUNT; ++i)
         m_targetIcons[i] = 0;
@@ -728,6 +729,13 @@ void Group::ChangeLeader(uint64 newLeaderGuid)
 
 void Group::Disband(bool hideDestroy /* = false */)
 {
+    // Leaving an LFG dungeon teleports remaining members out during OnDisband.
+    // Bot FinalizeBotTeleport → OnMapChanged would otherwise call Disband again
+    // on this same object (use-after-free / double-delete).
+    if (m_isDisbanding)
+        return;
+    m_isDisbanding = true;
+
     bool const wasLFGGroup = isLFGGroup();
 
     sScriptMgr->OnGroupDisband(this);

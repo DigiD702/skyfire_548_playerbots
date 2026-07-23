@@ -196,7 +196,8 @@ for future updates.
   without communicating. Core exposes `LFGMgr::GetActiveProposalIdForPlayer` so
   the module can find a bot's pending proposal to accept. Solo LFG fill teleports
   bots via `LFGMgr::TeleportPlayer`, which finalizes bot worldports with
-  `FinalizeBotTeleport` (no client ack).
+  `FinalizeBotTeleport` (no client ack). Leaving the dungeon guards `Group::Disband`
+  against re-entry when bots finalize their exit teleports.
 * [DONE] Between-pull food: socket + self-bots sit and cast Refreshment
   (`128701`, HP+mana) — no bag food/drink. Cancels at full resources.
 * [IN PROGRESS] In-dungeon behaviour: tank assist / threat throttle / party rest

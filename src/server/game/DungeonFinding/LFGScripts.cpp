@@ -139,13 +139,21 @@ namespace lfg
             }
 
             Group* group = player->GetGroup();
-            if (group && group->isLFGGroup())
+            if (group && group->isLFGGroup() && !group->IsDisbanding())
             {
                 uint64 const groupGuid = group->GetGUID();
                 uint64 const playerGuid = player->GetGUID();
                 LfgState const groupState = sLFGMgr->GetState(groupGuid);
 
                 if (!IsLfgDungeonState(groupState) && groupState != LFG_STATE_NONE)
+                {
+                    player->RemoveAurasDueToSpell(LFG_SPELL_LUCK_OF_THE_DRAW);
+                    return;
+                }
+
+                // Socketless bots leave via TeleportDungeonGroupOut while the real
+                // player's exit already owns Disband — never nest another Disband.
+                if (player->GetSession() && player->GetSession()->IsBot())
                 {
                     player->RemoveAurasDueToSpell(LFG_SPELL_LUCK_OF_THE_DRAW);
                     return;

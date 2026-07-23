@@ -186,6 +186,7 @@ public:
     void   UpdateLooterGuid(WorldObject* pLootedObject, bool ifneed = false);
     void   SetLootThreshold(ItemQualities threshold);
     void   Disband(bool hideDestroy = false);
+    bool   IsDisbanding() const { return m_isDisbanding; }
     void   SetLfgRoles(uint64 guid, const uint8 roles);
 
     // properties accessories
@@ -342,5 +343,6 @@ protected:
     uint32              m_maxEnchantingLevel;
     uint32              m_dbStoreId;                    // Represents the ID used in database (Can be reused by other groups if group was disbanded)
     bool                _readyCheckInProgress;
+    bool                m_isDisbanding;
 };
 #endif

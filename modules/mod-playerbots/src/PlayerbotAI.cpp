@@ -346,11 +346,15 @@ void PlayerbotAI::UpdateAI(uint32 diff)
     if (!_bot || !_bot->IsInWorld())
         return;
 
-    // Invites / loot rolls must react immediately — they time out if bots only
-    // answer on the coarse AI interval. LFG role/proposal responses run from
-    // PlayerbotMgr::Update on the world thread (not here on map workers).
+    // Invites / loot rolls / rez accepts must react immediately — they time out
+    // (or stall forever for bots) if only handled on the coarse AI interval.
     HandlePendingInvites();
     HandleLootRolls();
+    if (!_bot->IsAlive())
+    {
+        TryAcceptResurrect();
+        return;
+    }
 
     _updateTimer += diff;
     if (_updateTimer < BOT_AI_UPDATE_INTERVAL)
@@ -366,12 +370,6 @@ void PlayerbotAI::UpdateAI(uint32 diff)
     _updateTimer = 0;
 
     HandleInteractions();
-
-    if (!_bot->IsAlive())
-    {
-        TryAcceptResurrect();
-        return;
-    }
 
     // Rez dead party members before buffs / combat (OOC rez or battle-rez).
     if (HandleResurrect())
@@ -1079,11 +1077,24 @@ bool PlayerbotAI::TryAcceptResurrect()
 {
     if (!_bot || _bot->IsAlive())
         return false;
+    // Real self-bots see the rez popup on their client — leave the click to them.
+    if (_clientControlled)
+        return false;
     if (!_bot->IsRessurectRequested())
         return false;
 
     _bot->ResurectUsingRequestData();
-    return true;
+
+    // ResurectUsingRequestData teleports to the caster, then schedules
+    // DELAYED_RESURRECT_PLAYER while IsBeingTeleported(). Socketless bots never
+    // send the teleport ack, so finalize now (same pattern as LFG/summon).
+    if (WorldSession* session = _bot->GetSession())
+    {
+        if (session->IsBot() && _bot->IsBeingTeleported())
+            session->FinalizeBotTeleport();
+    }
+
+    return _bot->IsAlive();
 }
 
 bool PlayerbotAI::HandleResurrect()
