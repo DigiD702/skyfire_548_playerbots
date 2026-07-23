@@ -162,10 +162,10 @@ Remaining for later phases:
   fight back if attacked. Tanks ignore. Disable with `co -wait for attack`.
 * [DONE] **Role formations**: follow angle/distance by tank / healer / melee DPS /
   ranged DPS (`BotFormation` + `BotMovement::MoveFollowLeader`).
-* [DONE] Richer AC actions (first slice): raid-target icon preference (`rti skull`
-  etc., default skull) in SelectTarget, and tank `pull` (selected target or RTI).
-  Still TODO: combat flee kite / FleeManager, auto-mark RTI, sequenced pull
-  (reach + opener).
+* [DONE] Richer AC actions: raid-target icon preference (`rti skull` etc., default
+  skull) in SelectTarget; tank `pull` as reach → opener → fight; combat kite via
+  `BotFleeManager` when ranged is too close; tank auto-marks the preferred RTI on
+  an unmarked pack mob.
 * [DONE] Class/raid buff maintenance (self + party equivalents), recommended
   major/minor glyphs on `.playerbots init` (3+3 per spec).
 * [DONE] Deeper cooldowns/DoTs/AoE on thinner DPS lines (Balance, Destro/Demo,

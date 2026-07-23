@@ -185,6 +185,17 @@ Playerbots.SaveMana.Threshold = 60
 Playerbots.Threat.ThrottlePct = 80
 
 #
+#    Playerbots.Flee.Enabled
+#    Playerbots.Flee.Distance
+#        Description: Ranged bots kite with BotFleeManager when an enemy is too
+#                     close for casting. Distance is the sample radius for flee
+#                     points. Chat order `flee` still teleports to the issuer.
+#        Default:     1 / 20
+
+Playerbots.Flee.Enabled = 1
+Playerbots.Flee.Distance = 20
+
+#
 #    Playerbots.WaitForAttack.Seconds
 #        Description: With co +wait for attack (default on for DPS), non-tanks
 #                     delay opening damage this many seconds after combat starts

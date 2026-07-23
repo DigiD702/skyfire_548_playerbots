@@ -72,6 +72,8 @@ public:
     float GetAlmostFullHealthPct() const { return _almostFullHealthPct; }
     float GetMediumManaPct() const { return _mediumManaPct; }
     float GetThreatThrottlePct() const { return _threatThrottlePct; }
+    float GetFleeDistance() const { return _fleeDistance; }
+    bool IsFleeEnabled() const { return _fleeEnabled; }
     float GetSaveManaThreshold() const { return _saveManaThreshold; }
     uint32 GetWaitForAttackSeconds() const { return _waitForAttackSeconds; }
 
@@ -145,6 +147,8 @@ private:
     float _almostFullHealthPct = 85.0f; // party holds follow until allies reach this
     float _mediumManaPct = 40.0f;       // mana users must reach this before "ready"
     float _threatThrottlePct = 80.0f;   // DPS pause when threat >= this % of tank/top
+    float _fleeDistance = 20.0f;        // combat kite / flee sample radius
+    bool _fleeEnabled = true;
     float _saveManaThreshold = 60.0f;
     uint32 _waitForAttackSeconds = 5;
 

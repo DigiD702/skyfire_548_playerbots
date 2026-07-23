@@ -154,6 +154,13 @@ private:
     uint32 GetFillerSpell() const;
     uint32 GetTauntSpell() const;
     uint32 GetAoeThreatSpell() const;
+    uint32 GetPullOpenerSpell(Unit* target) const;
+    float GetPullOpenerRange(Unit* target) const;
+    bool HandlePullSequence();
+    void BeginPullSequence(Unit* target);
+    void EndPullSequence(bool keepForcedTarget);
+    bool TryCombatFlee(Unit* focus);
+    bool TryAutoMarkRti();
     uint32 GetHealSpell() const;
     void DoRotation(Unit* target);
     void DoTankExtras(Unit* target);
@@ -182,6 +189,10 @@ private:
     std::unique_ptr<BotAiEngine> _aiEngine;
     BotTargetValues _targets;
     time_t _combatStartTime = 0;
+    time_t _lastCombatFlee = 0;
+    time_t _pullStartTime = 0;
+    enum class PullPhase : uint8 { None, Reach, Opener };
+    PullPhase _pullPhase = PullPhase::None;
 
     // --- Flags synced from _strategies (procedural AI still reads these) ---
     bool _stay;          // nc stay (implies not follow)

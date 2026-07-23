@@ -6,6 +6,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotMgr.h"
 #include "engine/BotAiEngine.h"
+#include "engine/BotFleeManager.h"
 #include "engine/BotFormation.h"
 #include "engine/BotMovement.h"
 #include "rotations/BotRotation.h"
@@ -39,6 +40,7 @@
 #include "ThreatManager.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include "ByteBuffer.h"
 
 #include <algorithm>
 #include <cctype>
@@ -281,6 +283,8 @@ bool PlayerbotAI::IsRangedClassPublic() const { return IsRangedClass(); }
 
 bool PlayerbotAI::HasEngageTarget() const
 {
+    if (_pullPhase != PullPhase::None)
+        return true;
     if (_forcedTargetGuid && GetForcedTarget())
         return true;
     if (_targets.GetPullGuid())
@@ -576,6 +580,8 @@ bool PlayerbotAI::HandleCombat()
     {
         _combatStartTime = 0;
         _targets.OnCombatEnded();
+        if (_pullPhase != PullPhase::None)
+            EndPullSequence(false);
     }
 
     // Non-tanks with +wait for attack hold DPS until the tank has threat time.
@@ -591,6 +597,13 @@ bool PlayerbotAI::HandleCombat()
     if (!HasEngageTarget() && !_bot->IsInCombat() && !GroupInCombat() && _food
         && (PartyNeedsRest() || PartyNotAlmostReady()))
         return false;
+
+    // Sequenced pull: reach opener range, cast pull spell, then normal combat.
+    if (HandlePullSequence())
+        return true;
+
+    // Tank marks the preferred RTI icon on an unmarked pack mob.
+    TryAutoMarkRti();
 
     if (GetCombatRole() == CombatRole::Healer)
     {
@@ -720,6 +733,13 @@ bool PlayerbotAI::HandleCombat()
         _bot->SendMeleeAttackStop(target);
     }
     _bot->Attack(target, false);
+
+    // Too close for casting: kite out with FleeManager before planting.
+    if (!casting && (_bot->IsWithinMeleeRange(target) || dist < BOT_CAST_DIST * 0.40f))
+    {
+        if (TryCombatFlee(target))
+            return true;
+    }
 
     if (inRange && hasLos)
     {
@@ -966,6 +986,8 @@ void PlayerbotAI::ClearForcedTarget()
 {
     _forcedTargetGuid = 0;
     _targets.SetPullTarget(nullptr);
+    _pullPhase = PullPhase::None;
+    _pullStartTime = 0;
 }
 
 PlayerbotAI::CombatRole PlayerbotAI::GetCombatRole() const
@@ -1656,6 +1678,297 @@ void PlayerbotAI::DoTankExtras(Unit* target)
             if (BotRotation::CanTryCast(_bot, aoe) && BotRotation::CastSpell(_bot, target, aoe))
                 return;
     }
+}
+
+uint32 PlayerbotAI::GetPullOpenerSpell(Unit* target) const
+{
+    if (!_bot || !target)
+        return 0;
+
+    float const dist = _bot->GetDistance(target);
+    auto pick = [&](uint32 spellId, float minDist = 0.0f, float maxDist = 40.0f) -> uint32
+    {
+        if (!spellId || !_bot->HasSpell(spellId) || _bot->HasSpellCooldown(spellId))
+            return 0;
+        if (dist < minDist || dist > maxDist)
+            return 0;
+        return spellId;
+    };
+
+    switch (_bot->getClass())
+    {
+        case CLASS_WARRIOR:
+            if (uint32 charge = pick(100, 8.0f, 25.0f)) // Charge
+                return charge;
+            if (uint32 ht = pick(57755, 0.0f, 30.0f)) // Heroic Throw
+                return ht;
+            break;
+        case CLASS_PALADIN:
+            if (uint32 as = pick(31935, 0.0f, 30.0f)) // Avenger's Shield
+                return as;
+            if (uint32 judge = pick(20271, 0.0f, 30.0f)) // Judgment
+                return judge;
+            break;
+        case CLASS_DEATH_KNIGHT:
+            if (uint32 grip = pick(49576, 0.0f, 30.0f)) // Death Grip
+                return grip;
+            break;
+        case CLASS_DRUID:
+            if (uint32 ff = pick(770, 0.0f, 35.0f)) // Faerie Fire
+                return ff;
+            break;
+        case CLASS_MONK:
+            break;
+        default:
+            break;
+    }
+    return GetTauntSpell();
+}
+
+float PlayerbotAI::GetPullOpenerRange(Unit* target) const
+{
+    if (!_bot)
+        return 8.0f;
+
+    auto known = [&](uint32 spellId) -> bool
+    {
+        return spellId && _bot->HasSpell(spellId);
+    };
+
+    switch (_bot->getClass())
+    {
+        case CLASS_WARRIOR:
+            if (known(100)) // Charge
+                return 20.0f;
+            if (known(57755)) // Heroic Throw
+                return 25.0f;
+            break;
+        case CLASS_PALADIN:
+            if (known(31935) || known(20271))
+                return 25.0f;
+            break;
+        case CLASS_DEATH_KNIGHT:
+            if (known(49576))
+                return 25.0f;
+            break;
+        case CLASS_DRUID:
+            if (known(770))
+                return 30.0f;
+            break;
+        default:
+            break;
+    }
+    (void)target;
+    return 8.0f;
+}
+
+void PlayerbotAI::BeginPullSequence(Unit* target)
+{
+    if (!target)
+        return;
+    SetForcedTarget(target);
+    _pullPhase = PullPhase::Reach;
+    _pullStartTime = time(nullptr);
+    _combatStartTime = 0;
+    _holdAssist = false;
+}
+
+void PlayerbotAI::EndPullSequence(bool keepForcedTarget)
+{
+    _pullPhase = PullPhase::None;
+    _pullStartTime = 0;
+    if (!keepForcedTarget)
+        ClearForcedTarget();
+}
+
+bool PlayerbotAI::HandlePullSequence()
+{
+    if (_pullPhase == PullPhase::None || !_bot)
+        return false;
+    if (_clientControlled)
+    {
+        EndPullSequence(true);
+        return false;
+    }
+
+    Unit* target = GetForcedTarget();
+    if (!target)
+        target = _targets.GetPullTarget(this);
+    if (!target || !target->IsAlive() || !_bot->IsValidAttackTarget(target))
+    {
+        EndPullSequence(false);
+        return false;
+    }
+
+    // Time out a stuck pull after 15s (AC PullStrategy max).
+    if (_pullStartTime && time(nullptr) - _pullStartTime > 15)
+    {
+        EndPullSequence(true);
+        return false;
+    }
+
+    // Once the pack is swinging, leave sequenced pull and fight normally.
+    if (target->IsInCombat() && (_bot->IsInCombat() || GroupInCombat()))
+    {
+        EndPullSequence(true);
+        return false;
+    }
+
+    float const range = GetPullOpenerRange(target);
+    float const dist = _bot->GetDistance(target);
+    StopResting();
+    _followGuid = 0;
+    _lootGuid = 0;
+
+    if (_pullPhase == PullPhase::Reach)
+    {
+        if (dist <= range && _bot->IsWithinLOSInMap(target))
+        {
+            _pullPhase = PullPhase::Opener;
+        }
+        else
+        {
+            MovementGeneratorType moveType = _bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
+            bool reissue = _chaseGuid != target->GetGUID()
+                || moveType != CHASE_MOTION_TYPE
+                || _bot->IsStopped();
+            if (reissue)
+            {
+                if (BotMovement::MoveChase(_bot, target, std::max(0.0f, range - 2.0f)))
+                    _chaseGuid = target->GetGUID();
+            }
+            return true;
+        }
+    }
+
+    if (_pullPhase == PullPhase::Opener)
+    {
+        if (_bot->isMoving())
+            BotMovement::StopAndIdle(_bot);
+
+        if (!_bot->HasInArc(static_cast<float>(M_PI), target))
+            _bot->SetInFront(target);
+        _bot->SetSelection(target->GetGUID());
+
+        if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
+            return true;
+
+        if (uint32 opener = GetPullOpenerSpell(target))
+        {
+            if (BotRotation::CanTryCast(_bot, opener)
+                && BotRotation::CastSpell(_bot, target, opener))
+            {
+                EndPullSequence(true);
+                return true;
+            }
+        }
+
+        // No opener available — engage melee / normal combat.
+        EndPullSequence(true);
+        return false;
+    }
+
+    return false;
+}
+
+bool PlayerbotAI::TryCombatFlee(Unit* focus)
+{
+    if (!_bot || _clientControlled || _stay)
+        return false;
+    if (!sPlayerbotMgr->IsFleeEnabled())
+        return false;
+    if (GetCombatRole() == CombatRole::Tank && _tankMode)
+        return false;
+    if (!IsRangedClass() && GetCombatRole() != CombatRole::Healer)
+        return false;
+    if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
+        return false;
+
+    time_t const now = time(nullptr);
+    if (_lastCombatFlee && now - _lastCombatFlee < 2)
+        return false;
+
+    BotFleeManager manager(_bot, sPlayerbotMgr->GetFleeDistance(), focus);
+    if (!manager.IsUseful())
+        return false;
+
+    float x, y, z;
+    if (!manager.CalculateDestination(x, y, z))
+        return false;
+
+    if (!BotMovement::MovePoint(_bot, x, y, z))
+        return false;
+
+    _lastCombatFlee = now;
+    _chaseGuid = 0;
+    return true;
+}
+
+bool PlayerbotAI::TryAutoMarkRti()
+{
+    if (!_bot || _clientControlled)
+        return false;
+    if (!_bot->IsInCombat() && !GroupInCombat())
+        return false;
+    if (GetCombatRole() != CombatRole::Tank || !_tankMode)
+        return false;
+    if (_bot->InBattleground())
+        return false;
+
+    Group* group = _bot->GetGroup();
+    if (!group)
+        return false;
+
+    int32 const index = BotTargetValues::RtiIndexFromName(_targets.GetRti());
+    if (index < 0)
+        return false;
+
+    uint64 const existing = group->GetTargetIcon(uint8(index));
+    if (existing)
+    {
+        Unit* marked = ObjectAccessor::GetUnit(*_bot, existing);
+        if (marked && marked->IsAlive() && _bot->IsValidAttackTarget(marked)
+            && _bot->IsInMap(marked) && _bot->IsWithinDistInMap(marked, 80.0f, false))
+            return false; // preferred icon already on a live hostile
+    }
+
+    Unit* best = nullptr;
+    float bestHp = 2.0f;
+    auto consider = [&](Unit* unit)
+    {
+        if (!unit || !unit->IsAlive() || unit->ToPlayer())
+            return;
+        if (!_bot->IsValidAttackTarget(unit) || !_bot->IsWithinDistInMap(unit, 60.0f))
+            return;
+        for (uint8 i = 0; i < TARGETICONCOUNT; ++i)
+            if (group->GetTargetIcon(i) == unit->GetGUID())
+                return; // already marked
+        float const hp = unit->GetMaxHealth()
+            ? float(unit->GetHealth()) / float(unit->GetMaxHealth()) : 1.0f;
+        if (!best || hp < bestHp)
+        {
+            best = unit;
+            bestHp = hp;
+        }
+    };
+
+    for (Unit* attacker : _bot->getAttackers())
+        consider(attacker);
+
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || !member->IsAlive() || !_bot->IsInMap(member))
+            continue;
+        for (Unit* attacker : member->getAttackers())
+            consider(attacker);
+    }
+
+    if (!best)
+        return false;
+
+    group->SetTargetIcon(uint8(index), ObjectGuid(_bot->GetGUID()), ObjectGuid(best->GetGUID()), 0);
+    return true;
 }
 
 // Auto-accept trades and duels. Trades use the real accept opcode path so a
@@ -2819,7 +3132,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
         return true;
     }
 
-    // AC pull: tanks engage the master's target, or the configured RTI mark.
+    // AC pull: tanks reach the master's target (or RTI), cast an opener, then fight.
     if (cmd == "pull")
     {
         if (GetCombatRole() != CombatRole::Tank)
@@ -2836,9 +3149,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
         _strategies.ChangeStrategy("-passive", BotState::Combat);
         _strategies.Remove("wait for attack", BotState::Combat);
         SyncFlagsFromStrategies();
-        _holdAssist = false;
-        _combatStartTime = 0;
-        SetForcedTarget(target);
+        BeginPullSequence(target);
         StopResting();
         ack("Pulling.");
         return true;

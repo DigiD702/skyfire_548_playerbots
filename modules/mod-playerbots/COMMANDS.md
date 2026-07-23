@@ -149,7 +149,7 @@ Send these as the message text (case-insensitive).
 | `help` | Whisper back the order list. |
 | `stay` | Hold position (no follow/wander). Self-bot: no-op (you move). |
 | `follow` / `come` | Resume following the group leader. Self-bot: no-op. |
-| `flee` | Clear combat orders and teleport to the issuer. Self-bot: no-op. |
+| `flee` | Clear combat orders and teleport to the issuer. Self-bot: no-op. Ranged bots also kite in combat when too close (config `Playerbots.Flee`). |
 | `leave` | Leave the current group. Self-bot: ignored. |
 | `summon` | Teleport the bot to the issuer. Self-bot: ignored. |
 | `grind` | Aggressive; pick nearest attackable hostiles. |
@@ -158,6 +158,8 @@ Send these as the message text (case-insensitive).
 | `aggressive` / `aggro` | Resume normal assist behaviour. |
 | `attack` | Attack the **issuer’s** current target. |
 | `tank attack` | Tank-spec bots pull your target; other bots hold until a mob is actually hitting the party, then auto-assist (lowest-HP first). Use `passive` to stay out. |
+| `pull` | Tank-spec bots: reach your target (or RTI mark), cast a ranged opener / taunt, then fight. |
+| `rti` / `rti skull\|…` | Set which raid icon bots focus (default skull). Tanks auto-mark that icon on an unmarked pack mob in combat. |
 | `dps attack` | Damage-role bots attack your target. |
 | `maintenance` | Re-run init (spec + gear) on that bot. |
 | `autogear` | Same as `maintenance`. |
