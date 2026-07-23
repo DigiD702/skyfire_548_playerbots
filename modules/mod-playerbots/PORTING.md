@@ -205,8 +205,10 @@ for future updates.
   against re-entry when bots finalize their exit teleports.
 * [DONE] Between-pull food: socket + self-bots sit and cast Refreshment
   (`128701`, HP+mana) — no bag food/drink. Cancels at full resources.
-* [IN PROGRESS] In-dungeon behaviour: tank assist / threat throttle / party rest
-  between pulls. Boss/trash scripting still thin — depends on deeper rotations.
+* [DONE] In-dungeon behaviour: party holds follow between pulls until allies are
+  almost ready (`Rest.AlmostFullHealth` / `Rest.MediumMana`); instance DPS sticks
+  to the tank's victim; `+threat` throttles vs tank threat and pauses melee as well
+  as spells. Boss/trash scripting still thin — depends on deeper rotations.
 * [DONE] Loot rolls: bots auto Need/Greed/Pass on GROUP_LOOT / NEED_BEFORE_GREED
   (LFG). Corpse loot peels briefly when OOC with `nc +loot`.
 * [TODO] LFR: bots fill raid finder queues (auto-accept the LFR prompt/roles).

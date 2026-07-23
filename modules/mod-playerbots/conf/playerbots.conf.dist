@@ -156,12 +156,33 @@ Playerbots.Rest.HealthPct = 50
 Playerbots.Rest.ManaPct = 50
 
 #
+#    Playerbots.Rest.AlmostFullHealth
+#    Playerbots.Rest.MediumMana
+#        Description: Between pulls (nc +food), the party holds follow/engage until
+#                     nearby allies are at least this healthy / have this much mana
+#                     (or finish eating/drinking). Bots below these also drink while
+#                     waiting, even if above Rest.HealthPct / Rest.ManaPct.
+#        Default:     85 / 40
+
+Playerbots.Rest.AlmostFullHealth = 85
+Playerbots.Rest.MediumMana = 40
+
+#
 #    Playerbots.SaveMana.Threshold
 #        Description: With co +save mana, healers skip expensive heals below this
 #                     mana percent unless the ally is critically low.
 #        Default:     60
 
 Playerbots.SaveMana.Threshold = 60
+
+#
+#    Playerbots.Threat.ThrottlePct
+#        Description: With co +threat (default on for DPS), pause damage (spells and
+#                     melee) when the bot's threat reaches this percent of the tank's
+#                     threat on the target (falls back to current top threat).
+#        Default:     80
+
+Playerbots.Threat.ThrottlePct = 80
 
 #
 #    Playerbots.WaitForAttack.Seconds

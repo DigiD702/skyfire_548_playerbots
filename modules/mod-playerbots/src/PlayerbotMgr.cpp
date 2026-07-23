@@ -87,6 +87,9 @@ void PlayerbotMgr::LoadConfig()
     // Optional numeric thresholds (strategies themselves are runtime co/nc only).
     _restHealthPct = float(sConfigMgr->GetFloatDefault("Playerbots.Rest.HealthPct", 50.0f));
     _restManaPct = float(sConfigMgr->GetFloatDefault("Playerbots.Rest.ManaPct", 50.0f));
+    _almostFullHealthPct = float(sConfigMgr->GetFloatDefault("Playerbots.Rest.AlmostFullHealth", 85.0f));
+    _mediumManaPct = float(sConfigMgr->GetFloatDefault("Playerbots.Rest.MediumMana", 40.0f));
+    _threatThrottlePct = float(sConfigMgr->GetFloatDefault("Playerbots.Threat.ThrottlePct", 80.0f));
     _saveManaThreshold = float(sConfigMgr->GetFloatDefault("Playerbots.SaveMana.Threshold", 60.0f));
     _waitForAttackSeconds = uint32(sConfigMgr->GetIntDefault("Playerbots.WaitForAttack.Seconds", 5));
 
@@ -101,6 +104,12 @@ void PlayerbotMgr::LoadConfig()
     if (_restHealthPct > 100.0f) _restHealthPct = 100.0f;
     if (_restManaPct < 1.0f) _restManaPct = 1.0f;
     if (_restManaPct > 100.0f) _restManaPct = 100.0f;
+    if (_almostFullHealthPct < 1.0f) _almostFullHealthPct = 1.0f;
+    if (_almostFullHealthPct > 100.0f) _almostFullHealthPct = 100.0f;
+    if (_mediumManaPct < 1.0f) _mediumManaPct = 1.0f;
+    if (_mediumManaPct > 100.0f) _mediumManaPct = 100.0f;
+    if (_threatThrottlePct < 10.0f) _threatThrottlePct = 10.0f;
+    if (_threatThrottlePct > 100.0f) _threatThrottlePct = 100.0f;
     if (_saveManaThreshold < 1.0f) _saveManaThreshold = 1.0f;
     if (_saveManaThreshold > 100.0f) _saveManaThreshold = 100.0f;
     if (_waitForAttackSeconds > 30) _waitForAttackSeconds = 30;

@@ -119,10 +119,12 @@ private:
     void StopResting();
     bool StartRefreshment();
     bool HasFoodOrDrinkAura() const;
+    static bool MemberHasFoodOrDrinkAura(Player const* player);
     bool CastRefreshmentSpell();
     void ApplyDirectRestRegen();
     void CancelRestConsumables();
     bool PartyNeedsRest() const;
+    bool PartyNotAlmostReady() const;
     bool HandleLootRolls();
 
     // AC-style co / nc strategy engine (role-gated).

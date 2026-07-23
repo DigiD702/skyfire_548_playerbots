@@ -69,6 +69,9 @@ public:
 
     float GetRestHealthPct() const { return _restHealthPct; }
     float GetRestManaPct() const { return _restManaPct; }
+    float GetAlmostFullHealthPct() const { return _almostFullHealthPct; }
+    float GetMediumManaPct() const { return _mediumManaPct; }
+    float GetThreatThrottlePct() const { return _threatThrottlePct; }
     float GetSaveManaThreshold() const { return _saveManaThreshold; }
     uint32 GetWaitForAttackSeconds() const { return _waitForAttackSeconds; }
 
@@ -139,6 +142,9 @@ private:
     // Rest / save-mana numeric thresholds only (enable/disable is co/nc runtime).
     float _restHealthPct = 50.0f;
     float _restManaPct = 50.0f;
+    float _almostFullHealthPct = 85.0f; // party holds follow until allies reach this
+    float _mediumManaPct = 40.0f;       // mana users must reach this before "ready"
+    float _threatThrottlePct = 80.0f;   // DPS pause when threat >= this % of tank/top
     float _saveManaThreshold = 60.0f;
     uint32 _waitForAttackSeconds = 5;
 

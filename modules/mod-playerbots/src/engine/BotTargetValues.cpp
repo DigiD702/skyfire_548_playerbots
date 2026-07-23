@@ -7,6 +7,7 @@
 
 #include "Group.h"
 #include "GroupReference.h"
+#include "Map.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "Unit.h"
@@ -126,12 +127,25 @@ Unit* BotTargetValues::GetRtiTarget(PlayerbotAI* ai) const
 
 Unit* BotTargetValues::GetDpsTarget(PlayerbotAI* ai) const
 {
-    // Prefer master's pull / current if still valid, else lowest-HP group threat.
+    // Prefer master's pull / current if still valid.
     if (Unit* pull = GetPullTarget(ai))
         return pull;
     if (Unit* cur = GetCurrentTarget(ai))
         return cur;
-    return ai ? ai->SelectLowestHpGroupEnemyPublic() : nullptr;
+    if (!ai)
+        return nullptr;
+
+    // In dungeons/raids stick to the tank's victim before least-HP assist so the
+    // party focuses the same pack instead of peeling random low-HP adds.
+    if (Player* bot = ai->GetBot())
+    {
+        Map* map = bot->GetMap();
+        if (map && map->IsInstance())
+            if (Unit* tankVic = GetAssistTankTarget(ai))
+                return tankVic;
+    }
+
+    return ai->SelectLowestHpGroupEnemyPublic();
 }
 
 Unit* BotTargetValues::GetAssistTankTarget(PlayerbotAI* ai) const

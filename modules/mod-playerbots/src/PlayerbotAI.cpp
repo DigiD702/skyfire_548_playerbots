@@ -315,6 +315,9 @@ bool PlayerbotAI::ShouldFollowPublic() const
         return false;
     if (HasEngageTarget())
         return false;
+    // Hold with the party between pulls while allies recover.
+    if (_food && PartyNotAlmostReady())
+        return false;
     Group* group = _bot->GetGroup();
     if (!group)
         return false;
@@ -338,7 +341,10 @@ bool PlayerbotAI::NeedsRestPublic() const
     float const manaPct = ManaPct();
     bool const needHp = hpPct < sPlayerbotMgr->GetRestHealthPct();
     bool const needMana = UsesMana() && manaPct < sPlayerbotMgr->GetRestManaPct();
-    return needHp || needMana || HasFoodOrDrinkAura();
+    if (needHp || needMana || HasFoodOrDrinkAura())
+        return true;
+    // Full (or nearly full) bots still park while the party finishes drinking.
+    return _food && PartyNotAlmostReady();
 }
 
 void PlayerbotAI::UpdateAI(uint32 diff)
@@ -582,7 +588,8 @@ bool PlayerbotAI::HandleCombat()
 
     // Between pulls: sit/drink with the party instead of chasing the next pack.
     // Explicit attack/pull orders always engage — don't stall for drinks.
-    if (!HasEngageTarget() && !_bot->IsInCombat() && !GroupInCombat() && _food && PartyNeedsRest())
+    if (!HasEngageTarget() && !_bot->IsInCombat() && !GroupInCombat() && _food
+        && (PartyNeedsRest() || PartyNotAlmostReady()))
         return false;
 
     if (GetCombatRole() == CombatRole::Healer)
@@ -633,6 +640,32 @@ bool PlayerbotAI::HandleCombat()
 
     _followGuid = 0;
     _lootGuid = 0;
+
+    // Threat throttle: stop both spells and auto-attack (not just DoRotation).
+    if (ShouldThrottleThreat(target))
+    {
+        if (_bot->GetVictim())
+            _bot->AttackStop();
+        if (_bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+        {
+            _bot->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
+            _bot->SendMeleeAttackStop(target);
+        }
+        // Stay near the fight without dealing damage so threat can decay.
+        if (!_clientControlled && !ranged && !inMelee)
+        {
+            MovementGeneratorType moveType = _bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
+            bool reissue = _chaseGuid != target->GetGUID()
+                || moveType != CHASE_MOTION_TYPE
+                || _bot->IsStopped();
+            if (reissue)
+            {
+                if (BotMovement::MoveChase(_bot, target, 0.0f))
+                    _chaseGuid = target->GetGUID();
+            }
+        }
+        return true;
+    }
 
     if (!ranged)
     {
@@ -768,6 +801,19 @@ bool PlayerbotAI::HandleCombatCastOnly()
 
     StopResting();
 
+    // Threat throttle: no auto-attack and no rotation.
+    if (ShouldThrottleThreat(target))
+    {
+        if (_bot->GetVictim())
+            _bot->AttackStop();
+        if (_bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+        {
+            _bot->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
+            _bot->SendMeleeAttackStop(target);
+        }
+        return true;
+    }
+
     bool const ranged = IsRangedClass() && GetCombatRole() != CombatRole::Tank;
     if (ranged)
     {
@@ -865,7 +911,7 @@ Unit* PlayerbotAI::SelectTarget()
     {
         Map* map = _bot->GetMap();
         bool const inInstance = map && map->IsInstance();
-        if (!inInstance && !PartyNeedsRest())
+        if (!inInstance && !PartyNeedsRest() && !PartyNotAlmostReady())
             if (Unit* grind = SelectGrindTarget())
             {
                 _targets.SetCurrentTarget(grind);
@@ -1068,15 +1114,58 @@ bool PlayerbotAI::ShouldThrottleThreat(Unit* target) const
         return false;
 
     float const myThreat = target->getThreatManager().getThreat(_bot);
-    HostileReference* cur = target->getThreatManager().getCurrentVictim();
-    if (!cur)
-        return false;
-    float const topThreat = cur->getThreat();
-    if (topThreat <= 0.0f)
+    if (myThreat <= 0.0f)
         return false;
 
-    // Stop damaging when we hold ~80%+ of the current top threat.
-    return myThreat >= topThreat * 0.80f;
+    // Prefer the party's tank threat as the reference so we don't sit out while
+    // a DPS holds temporary #1, then fall back to current top threat.
+    float tankThreat = 0.0f;
+    if (Group* group = _bot->GetGroup())
+    {
+        for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+        {
+            Player* member = itr->GetSource();
+            if (!member || !member->IsAlive() || member == _bot)
+                continue;
+
+            uint32 specId = member->GetTalentSpecialization(member->GetActiveSpec());
+            uint8 cls = member->getClass();
+            uint32 const* specs = GetClassSpecializations(cls);
+            bool isTank = false;
+            if (specs)
+            {
+                switch (cls)
+                {
+                    case CLASS_WARRIOR: isTank = (specId == specs[2]); break;
+                    case CLASS_PALADIN: isTank = (specId == specs[1]); break;
+                    case CLASS_DEATH_KNIGHT: isTank = (specId == specs[0]); break;
+                    case CLASS_DRUID: isTank = (specId == specs[2]); break;
+                    case CLASS_MONK: isTank = (specId == specs[0]); break;
+                    default: break;
+                }
+            }
+            if (!isTank)
+                continue;
+
+            float const t = target->getThreatManager().getThreat(member);
+            if (t > tankThreat)
+                tankThreat = t;
+        }
+    }
+
+    float reference = tankThreat;
+    if (reference <= 0.0f)
+    {
+        HostileReference* cur = target->getThreatManager().getCurrentVictim();
+        if (!cur)
+            return false;
+        reference = cur->getThreat();
+    }
+    if (reference <= 0.0f)
+        return false;
+
+    float const pct = sPlayerbotMgr->GetThreatThrottlePct() / 100.0f;
+    return myThreat >= reference * pct;
 }
 
 bool PlayerbotAI::TryAcceptResurrect()
@@ -2041,17 +2130,22 @@ void PlayerbotAI::StopResting()
 
 bool PlayerbotAI::HasFoodOrDrinkAura() const
 {
-    if (!_bot)
+    return MemberHasFoodOrDrinkAura(_bot);
+}
+
+bool PlayerbotAI::MemberHasFoodOrDrinkAura(Player const* player)
+{
+    if (!player)
         return false;
 
     // Explicit refreshment aura IDs (do not require NOT_SEATED — some MoP
     // wrappers omit that flag and we must not re-cast every AI tick).
-    if (_bot->HasAura(BOT_REFRESHMENT_SPELL)
-        || _bot->HasAura(BOT_FOOD_AURA_SPELL)
-        || _bot->HasAura(BOT_DRINK_AURA_SPELL))
+    if (player->HasAura(BOT_REFRESHMENT_SPELL)
+        || player->HasAura(BOT_FOOD_AURA_SPELL)
+        || player->HasAura(BOT_DRINK_AURA_SPELL))
         return true;
 
-    Unit::AuraApplicationMap const& auras = _bot->GetAppliedAuras();
+    Unit::AuraApplicationMap const& auras = player->GetAppliedAuras();
     for (Unit::AuraApplicationMap::const_iterator itr = auras.begin(); itr != auras.end(); ++itr)
     {
         AuraApplication const* app = itr->second;
@@ -2166,6 +2260,55 @@ bool PlayerbotAI::PartyNeedsRest() const
     return false;
 }
 
+bool PlayerbotAI::PartyNotAlmostReady() const
+{
+    if (!_bot || !_food)
+        return false;
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+        return false;
+
+    float const almostHp = sPlayerbotMgr->GetAlmostFullHealthPct();
+    float const mediumMana = sPlayerbotMgr->GetMediumManaPct();
+
+    auto memberNotReady = [&](Player* member) -> bool
+    {
+        if (!member || !member->IsAlive() || member->IsInCombat())
+            return false;
+        if (!_bot->IsInMap(member) || !_bot->IsWithinDistInMap(member, 50.0f))
+            return false;
+        if (MemberHasFoodOrDrinkAura(member) || member->IsSitState())
+            return true;
+
+        float const hp = member->GetMaxHealth()
+            ? (100.0f * float(member->GetHealth()) / float(member->GetMaxHealth())) : 100.0f;
+        if (hp < almostHp)
+            return true;
+        if (member->GetMaxPower(POWER_MANA) > 0)
+        {
+            float const mana = 100.0f * float(member->GetPower(POWER_MANA))
+                / float(member->GetMaxPower(POWER_MANA));
+            if (mana < mediumMana)
+                return true;
+        }
+        return false;
+    };
+
+    if (memberNotReady(_bot))
+        return true;
+
+    Group* group = _bot->GetGroup();
+    if (!group)
+        return false;
+
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (member && member != _bot && memberNotReady(member))
+            return true;
+    }
+    return false;
+}
+
 bool PlayerbotAI::StartRefreshment()
 {
     if (!_bot)
@@ -2225,23 +2368,44 @@ bool PlayerbotAI::HandleRest()
     bool const needHp = hpPct < sPlayerbotMgr->GetRestHealthPct();
     bool const needMana = UsesMana() && manaPct < sPlayerbotMgr->GetRestManaPct();
     bool const lowResources = needHp || needMana;
+    bool const belowAlmostReady = hpPct < sPlayerbotMgr->GetAlmostFullHealthPct()
+        || (UsesMana() && manaPct < sPlayerbotMgr->GetMediumManaPct());
     bool const nearlyFull = hpPct >= 98.0f && (!UsesMana() || manaPct >= 98.0f);
     bool const itemResting = HasFoodOrDrinkAura() || _bot->IsNonMeleeSpellCasted(false)
         || _bot->HasAura(BOT_REFRESHMENT_SPELL);
+    bool const partyHolding = _food && PartyNotAlmostReady();
 
-    bool const shouldRest = _forceRest || _resting || (_food && lowResources) || itemResting;
+    bool const shouldRest = _forceRest || _resting || (_food && lowResources) || itemResting
+        || partyHolding;
 
     if (!shouldRest)
         return false;
 
-    if (nearlyFull)
+    // Fully topped up and nobody else is recovering — resume follow.
+    if (nearlyFull && !partyHolding)
     {
         CancelRestConsumables();
         StopResting();
         return false;
     }
 
-    return StartRefreshment();
+    // Drink while low, or while the party is holding and we are not almost ready.
+    if (lowResources || itemResting || (partyHolding && belowAlmostReady && !nearlyFull)
+        || _forceRest || (_resting && !nearlyFull))
+        return StartRefreshment();
+
+    // Full bots: idle with the party until allies finish drinking.
+    if (!_clientControlled)
+    {
+        _bot->GetMotionMaster()->Clear();
+        _bot->GetMotionMaster()->MoveIdle();
+        _followGuid = 0;
+        _chaseGuid = 0;
+        if (_bot->GetVictim())
+            _bot->AttackStop();
+    }
+    _resting = true;
+    return true;
 }
 
 std::string PlayerbotAI::FormatStrategies(bool combat) const
