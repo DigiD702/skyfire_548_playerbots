@@ -1993,6 +1993,9 @@ namespace lfg
                 {
                     if (player->TeleportTo(returnLocation.MapId, returnLocation.X, returnLocation.Y, returnLocation.Z, returnLocation.O))
                     {
+                        if (WorldSession* session = player->GetSession())
+                            if (session->IsBot() && player->IsBeingTeleported())
+                                session->FinalizeBotTeleport();
                         playerData.ClearReturnLocation();
                         return;
                     }
@@ -2003,6 +2006,9 @@ namespace lfg
 
                 playerData.ClearReturnLocation();
                 player->TeleportToBGEntryPoint();
+                if (WorldSession* session = player->GetSession())
+                    if (session->IsBot() && player->IsBeingTeleported())
+                        session->FinalizeBotTeleport();
             }
 
             return;
@@ -2077,6 +2083,14 @@ namespace lfg
                     error = LFG_TELEPORTERROR_INVALID_LOCATION;
                     if (forceChangeInstance)
                         player->SetSemaphoreTeleportForcedFar(false);
+                }
+                else if (WorldSession* session = player->GetSession())
+                {
+                    // Bots have no client to ack the worldport; without this they are
+                    // removed from the old map and never added to the dungeon (solo LFG
+                    // fill crashes / hangs once the proposal teleports).
+                    if (session->IsBot() && player->IsBeingTeleported())
+                        session->FinalizeBotTeleport();
                 }
                 player->SetForcedTeleportFar(false);
             }

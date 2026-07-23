@@ -194,7 +194,9 @@ for future updates.
   uses a deterministic, group-aware assignment (first tank-capable bot tanks,
   first healer-capable heals, rest dps) so a bot party forms a valid composition
   without communicating. Core exposes `LFGMgr::GetActiveProposalIdForPlayer` so
-  the module can find a bot's pending proposal to accept.
+  the module can find a bot's pending proposal to accept. Solo LFG fill teleports
+  bots via `LFGMgr::TeleportPlayer`, which finalizes bot worldports with
+  `FinalizeBotTeleport` (no client ack).
 * [DONE] Between-pull food: socket + self-bots sit and cast Refreshment
   (`128701`, HP+mana) — no bag food/drink. Cancels at full resources.
 * [IN PROGRESS] In-dungeon behaviour: tank assist / threat throttle / party rest
