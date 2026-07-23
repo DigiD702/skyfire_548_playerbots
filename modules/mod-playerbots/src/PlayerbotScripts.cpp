@@ -87,9 +87,22 @@ public:
 
     void OnStartup() override
     {
+        if (!sPlayerbotMgr->IsEnabled())
+            return;
+
+        // AC-style wipe: set DeleteRandomBotAccounts=1, start worldserver once,
+        // then set it back to 0 and recreate.
+        if (sPlayerbotMgr->ShouldDeleteRandomBotAccounts())
+        {
+            std::string report;
+            sPlayerbotMgr->DeleteBotAccounts(&report);
+            SF_LOG_INFO("modules", "[mod-playerbots] %s", report.c_str());
+            return;
+        }
+
         // Optionally provision bot accounts/characters once the world is fully
         // loaded (all DBC/db data available for valid race/class/name checks).
-        if (sPlayerbotMgr->IsEnabled() && sPlayerbotMgr->IsAutoCreateOnStartup())
+        if (sPlayerbotMgr->IsAutoCreateOnStartup())
         {
             std::string report;
             sPlayerbotMgr->CreateBotPopulation(&report);
@@ -125,6 +138,7 @@ public:
             { "list",   rbac::RBAC_PERM_COMMAND_GM, true, &HandlePlayerbotListCommand,   "", },
             { "reload", rbac::RBAC_PERM_COMMAND_GM, true, &HandlePlayerbotReloadCommand, "", },
             { "create", rbac::RBAC_PERM_COMMAND_GM, true, &HandlePlayerbotCreateCommand, "", },
+            { "wipe",   rbac::RBAC_PERM_COMMAND_GM, true, &HandlePlayerbotWipeCommand,   "", },
             { "init",   rbac::RBAC_PERM_COMMAND_GM, true, &HandlePlayerbotInitCommand,   "", },
             { "self",   rbac::RBAC_PERM_COMMAND_GM, false, &HandlePlayerbotSelfCommand,  "", },
         };
@@ -269,6 +283,47 @@ public:
 
         std::string report;
         sPlayerbotMgr->CreateBotPopulation(&report);
+        handler->PSendSysMessage("%s", report.c_str());
+        return true;
+    }
+
+    // .playerbots wipe confirm — deletes all AccountPrefix bot accounts/characters.
+    static bool HandlePlayerbotWipeCommand(ChatHandler* handler, char const* args)
+    {
+        if (!sPlayerbotMgr->IsEnabled())
+        {
+            handler->SendSysMessage("Playerbots module is disabled (set Playerbots.Enable = 1).");
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        std::string arg = args ? args : "";
+        while (!arg.empty() && (arg.front() == ' ' || arg.front() == '\t'))
+            arg.erase(arg.begin());
+        std::transform(arg.begin(), arg.end(), arg.begin(),
+            [](unsigned char c) { return char(std::tolower(c)); });
+
+        if (arg != "confirm")
+        {
+            handler->PSendSysMessage(
+                "This deletes ALL accounts whose username starts with '%s' (and their characters).",
+                sPlayerbotMgr->GetAccountPrefix().c_str());
+            handler->SendSysMessage("Usage: .playerbots wipe confirm");
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        std::string error;
+        if (!sPlayerbotMgr->CanDeleteBotAccounts(&error))
+        {
+            handler->SendSysMessage(error.c_str());
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        handler->SendSysMessage("Wiping bot accounts; this may take a moment...");
+        std::string report;
+        sPlayerbotMgr->DeleteBotAccounts(&report);
         handler->PSendSysMessage("%s", report.c_str());
         return true;
     }
@@ -494,7 +549,7 @@ public:
     }
 
     // .playerbots init [<charname>|all|self] [tank|healer|dps|<spec>] [rare|epic|...]
-    // Tokens may appear in any order. Quality caps gear rolls (default epic).
+    // Tokens may appear in any order. Quality caps gear rolls (default: conf MaxQuality).
     static bool HandlePlayerbotInitCommand(ChatHandler* handler, char const* args)
     {
         std::vector<std::string> tokens;
@@ -510,7 +565,7 @@ public:
         int roleOverride = -1;
         uint32 specOverride = 0;
         bool haveChoice = false;
-        int maxItemQuality = ITEM_QUALITY_EPIC;
+        int maxItemQuality = -1; // use Playerbots.Gear.MaxQuality
         bool haveQuality = false;
 
         for (std::string const& raw : tokens)

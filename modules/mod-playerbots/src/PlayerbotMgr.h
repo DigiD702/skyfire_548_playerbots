@@ -66,6 +66,10 @@ public:
     void ReloadCandidates() { _candidatesLoaded = false; }
 
     bool IsAutoCreateOnStartup() const { return _autoCreateOnStartup; }
+    bool ShouldDeleteRandomBotAccounts() const { return _deleteRandomBotAccounts; }
+    std::string const& GetAccountPrefix() const { return _accountPrefix; }
+    int GetGearMinQuality() const { return _gearMinQuality; }
+    int GetGearMaxQuality() const { return _gearMaxQuality; }
 
     float GetRestHealthPct() const { return _restHealthPct; }
     float GetRestManaPct() const { return _restManaPct; }
@@ -78,22 +82,27 @@ public:
     uint32 GetWaitForAttackSeconds() const { return _waitForAttackSeconds; }
 
     // Provisions bot accounts (prefix + n) and fills them with characters using
-    // the configured faction/role ratios and start level. Incremental: existing
-    // accounts and characters are reused. Returns the number of characters
+    // the configured faction/role ratios and level range. Incremental: existing
+    // accounts/characters are reused. Returns the number of characters
     // created; a human-readable summary is appended to *report when provided.
     uint32 CreateBotPopulation(std::string* report = nullptr);
+
+    // Logs out prefix bots and deletes all accounts/characters matching
+    // AccountPrefix. Returns accounts deleted. Refuses unsafe prefixes.
+    uint32 DeleteBotAccounts(std::string* report = nullptr);
+    bool CanDeleteBotAccounts(std::string* errorOut = nullptr) const;
 
     // Re-applies derived state (specialization/spells, gear) to a single active
     // bot. Safe to call repeatedly.
     // roleOverride: -1 keep current role mapping, otherwise 0 = tank, 1 = healer,
     // 2 = damage (default DPS tab for the class).
     // specOverride: if non-zero, force that ChrSpecialization id (takes priority).
-    // maxItemQuality: ITEM_QUALITY_* cap for gear rolls (default epic).
+    // maxItemQuality: ITEM_QUALITY_* cap for gear rolls; -1 = use conf Gear.MaxQuality.
     void InitializeBot(Player* bot, int roleOverride = -1, uint32 specOverride = 0,
-        int maxItemQuality = 4);
+        int maxItemQuality = -1);
     // Initializes every active bot; returns the number processed.
     uint32 InitializeAllBots(int roleOverride = -1, uint32 specOverride = 0,
-        int maxItemQuality = 4);
+        int maxItemQuality = -1);
 
     uint32 GetActiveBotCount() const { return uint32(_bots.size()); }
     uint32 GetRandomBotCount() const { return uint32(_randomBots.size()); }
@@ -133,13 +142,19 @@ private:
 
     // Auto-creation settings.
     bool _autoCreateOnStartup = false;
+    bool _deleteRandomBotAccounts = false;
     uint32 _autoAccountCount = 0;
     std::string _autoPassword = "password";
     uint32 _autoCharsPerAccount = 1;
     uint32 _autoAlliancePct = 50;
     uint32 _autoTankPct = 20;
     uint32 _autoHealerPct = 20;
-    uint32 _autoLevel = 1;
+    uint32 _autoMinLevel = 1;
+    uint32 _autoMaxLevel = 1;
+
+    // Gear quality band for InitializeBot / create auto-init (ITEM_QUALITY_*).
+    int _gearMinQuality = 2; // uncommon
+    int _gearMaxQuality = 4; // epic
 
     // Rest / save-mana numeric thresholds only (enable/disable is co/nc runtime).
     float _restHealthPct = 50.0f;

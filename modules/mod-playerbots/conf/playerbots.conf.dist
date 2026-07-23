@@ -38,6 +38,19 @@ Playerbots.RandomBots.MaxBots = 0
 Playerbots.RandomBots.AccountPrefix = "RNDBOT"
 
 #
+#    Playerbots.DeleteRandomBotAccounts
+#        Description: When set to 1, worldserver startup deletes every account
+#                     whose username starts with AccountPrefix (and all of their
+#                     characters), then skips AutoCreate.OnStartup for that boot.
+#                     After the wipe finishes, set this back to 0 and restart (or
+#                     run .playerbots create) to rebuild the pool. Mid-session
+#                     wipe: .playerbots wipe confirm
+#        Default:     0 - (Disabled)
+#                     1 - (Wipe on next startup)
+
+Playerbots.DeleteRandomBotAccounts = 0
+
+#
 #    Playerbots.RandomBots.LoginInterval
 #        Description: Minimum time in milliseconds between random-bot logins.
 #                     Bots are spawned one at a time on this cadence so logins
@@ -139,11 +152,34 @@ Playerbots.AutoCreate.HealerPct = 20
 
 #
 #    Playerbots.AutoCreate.Level
-#        Description: Level assigned to newly created bot characters (1 = start
-#                     level). Death Knights are excluded from auto-creation.
-#        Default:     1
+#    Playerbots.AutoCreate.MinLevel
+#    Playerbots.AutoCreate.MaxLevel
+#        Description: Level band for newly created bots. Min/Max default to
+#                     AutoCreate.Level when omitted. When Min == Max every new
+#                     bot is that level (e.g. 80/80 for LFG testing). When the
+#                     range spans multiple levels, each new bot rolls uniformly.
+#                     Death Knights are excluded from auto-creation.
+#        Default:     1 / 1 / 1
 
 Playerbots.AutoCreate.Level = 1
+Playerbots.AutoCreate.MinLevel = 1
+Playerbots.AutoCreate.MaxLevel = 1
+
+########################################
+# Gear (create auto-init + .playerbots init)
+########################################
+#
+#    Playerbots.Gear.MinQuality
+#    Playerbots.Gear.MaxQuality
+#        Description: ITEM_QUALITY band used when gearing bots (1=normal,
+#                     2=uncommon, 3=rare, 4=epic, 5=legendary). Create auto-inits
+#                     with this band; .playerbots init uses MaxQuality unless you
+#                     pass a quality token (rare/epic/…). Among the top ilvl
+#                     candidates for each slot, one is picked at random.
+#        Default:     2 / 4
+
+Playerbots.Gear.MinQuality = 2
+Playerbots.Gear.MaxQuality = 4
 
 #
 #    Playerbots.Rest.HealthPct

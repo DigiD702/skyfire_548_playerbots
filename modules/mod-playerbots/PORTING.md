@@ -56,12 +56,17 @@ Remaining for later phases:
   `.playerbots status` (random/active/candidate counts).
 * [DONE] Bot auto-creator (`Playerbots.AutoCreate.*` / `.playerbots create`):
   provisions bot accounts and characters by faction and tank/healer/dps ratio at
-  a configured start level, with unique generated names and correct realm id.
+  a configured MinLevel–MaxLevel band (legacy `Level` seeds both), with unique
+  generated names and correct realm id. Each new character is auto-inited
+  (spec/gear) so the pool is LFG-ready without a manual init pass.
+* [DONE] Bot pool wipe: `Playerbots.DeleteRandomBotAccounts` on startup and
+  `.playerbots wipe confirm` delete all `AccountPrefix` accounts/characters.
 * [DONE] Specialization assignment: created/init bots (level >= 10) get the spec
   matching their role and learn its spells (`Player::LearnSpecialization`).
-* [DONE] Gear initialisation via `.playerbots init`: clears and refills every
-  slot with the best level/class/spec-appropriate item (armor type + primary
-  stat aware; per-class weapon/shield/off-hand/ranged selection).
+* [DONE] Gear initialisation via create auto-init / `.playerbots init`: clears and
+  refills slots from `item_template` using conf `Gear.MinQuality`–`MaxQuality`
+  (init quality token overrides the cap). Among the top ilvl candidates per slot,
+  one is chosen at random.
 * [DONE] Role change via `.playerbots init <name> <tank|healer|dps>`: switches
   the bot's spec and re-gears it for the new role.
 * [TODO] Per-master "alt bots" (a real player summoning their own alts).
@@ -175,6 +180,8 @@ Remaining for later phases:
   Rebirth / DK Raise Ally in combat; dead bots auto-accept rez requests.
 * [TODO] Point movement / travel to arbitrary destinations (for questing,
   objectives, and dungeon navigation).
+* [TODO] Random teleports to safe anchors (POI / banker / flight master), AC-style
+  map list + interval — never raw random map XY.
 * [TODO] Expand the co/nc strategy set further (aoe/boost/cc/avoid aoe, etc.).
   Role-gated tank/heal/dps strategies, self-whisper, and spell refreshment are live.
 * [TODO] AC wiki backlog (later): RTSC/aedm, loot lists (`ll`), item/vendor

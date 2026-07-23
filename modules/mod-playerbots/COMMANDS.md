@@ -19,9 +19,17 @@ Whisper replies with a short ack. Party/raid orders apply silently (no spam).
 | `.playerbots remove <name>` | Log that bot out and free its session. |
 | `.playerbots summon` | Teleport all bots in your group to you. |
 | `.playerbots reload` | Reload `playerbots.conf` and the random-bot candidate pool. |
-| `.playerbots create` | Run the auto-creator (accounts + characters from config). |
-| `.playerbots init [<name>\|all\|self] [tank\|healer\|dps\|<spec>] [rare\|epic\|…]` | Re-apply specialization, talents, and gear (optional quality cap). |
+| `.playerbots create` | Run the auto-creator (accounts + characters from config; each new char is auto-inited with conf gear). |
+| `.playerbots wipe confirm` | Delete all accounts matching `AccountPrefix` (and their characters). Requires the word `confirm`. |
+| `.playerbots init [<name>\|all\|self] [tank\|healer\|dps\|<spec>] [rare\|epic\|…]` | Re-apply specialization, talents, and gear (quality defaults to conf `Gear.MaxQuality`). |
 | `.playerbots self [on\|off]` | Attach/detach cast-only AI on **your** character. |
+
+### Resetting the bot pool (e.g. all level 80 epic)
+
+1. Set `Playerbots.AutoCreate.MinLevel` / `MaxLevel` (and AccountCount / MaxBots / gear quality) in `playerbots.conf`.
+2. Either set `Playerbots.DeleteRandomBotAccounts = 1` and restart once, **or** run `.playerbots wipe confirm`.
+3. Set `DeleteRandomBotAccounts = 0` again.
+4. Run `.playerbots create` (or enable `AutoCreate.OnStartup` and restart).
 
 ### `.playerbots init`
 

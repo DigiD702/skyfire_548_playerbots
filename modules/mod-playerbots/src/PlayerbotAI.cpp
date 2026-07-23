@@ -682,15 +682,17 @@ bool PlayerbotAI::HandleCombat()
 
     if (!ranged)
     {
-        _bot->Attack(target, true);
-
-        if (!inMelee)
+        // Always open with chase when out of melee — taunt spam must not replace
+        // closing the gap (casts stop movement; MoveChase is blocked while casting).
+        if (!inMelee && !_clientControlled)
         {
             MovementGeneratorType moveType = _bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
+            bool const casting = _bot->HasUnitState(UNIT_STATE_CASTING)
+                || _bot->IsNonMeleeSpellCasted(false);
             bool reissue = _chaseGuid != target->GetGUID()
                 || moveType != CHASE_MOTION_TYPE
                 || _bot->IsStopped();
-            if (reissue)
+            if (reissue && !casting)
             {
                 if (BotMovement::MoveChase(_bot, target, 0.0f))
                     _chaseGuid = target->GetGUID();
@@ -698,6 +700,8 @@ bool PlayerbotAI::HandleCombat()
         }
         else
             _chaseGuid = target->GetGUID();
+
+        _bot->Attack(target, true);
 
         if (inMelee)
         {
@@ -709,10 +713,11 @@ bool PlayerbotAI::HandleCombat()
         }
         else if (GetCombatRole() == CombatRole::Tank && _tankMode)
         {
-            // Tanks can throw a taunt / ranged threat while closing.
+            // While closing: only fire a taunt / gap-closer. Do not plant for AoE —
+            // that left tanks standing still throwing threat spells off the healer.
             if (!_bot->HasInArc(static_cast<float>(M_PI), target))
                 _bot->SetInFront(target);
-            DoTankExtras(target);
+            DoTankExtras(target, /*closing=*/true);
         }
 
         return true;
@@ -860,13 +865,23 @@ bool PlayerbotAI::HandleCombatCastOnly()
 }
 
 // Target priority (AC Values: pull / tank / rti / dps / current):
-//   1) Pull / forced command target
-//   2) Tanks: peel mobs off healers/party, then hold the pack
-//   3) Own attackers
-//   4) Group combat: RTI mark → least-HP dps assist → tank victim
-//   5) Grind (explicit) / self-bot selected unit
+//   1) Tanks: urgent peels (mob on healer/DPS) — beats pull/forced/RTI
+//   2) Pull / forced command target
+//   3) Tanks: hold pack / remaining peels
+//   4) Own attackers
+//   5) Group combat: RTI mark → least-HP dps assist → tank victim
+//   6) Grind (explicit) / self-bot selected unit
 Unit* PlayerbotAI::SelectTarget()
 {
+    // Healer/DPS under attack always outranks skull / pull focus.
+    if (GetCombatRole() == CombatRole::Tank && _tankMode)
+        if (Unit* peel = SelectTankTarget())
+            if (IsUrgentTankPeel(peel))
+            {
+                _targets.SetCurrentTarget(peel);
+                return peel;
+            }
+
     if (Unit* pull = _targets.GetPullTarget(this))
         return pull;
     if (Unit* forced = GetForcedTarget())
@@ -905,6 +920,7 @@ Unit* PlayerbotAI::SelectTarget()
     }
 
     // AC dps assist: damage bots without +dps assist only fight forced/own aggro.
+    // Tanks/healers may still fall through to RTI when no peel target was found.
     bool const canAssist = (GetCombatRole() != CombatRole::Damage) || _dpsAssist || _grind;
 
     if (canAssist)
@@ -1324,72 +1340,150 @@ Unit* PlayerbotAI::SelectTankTarget()
     Unit* best = nullptr;
     int bestScore = -1;
 
+    auto consider = [&](Unit* attacker, Player* threatenedMember)
+    {
+        if (!attacker || !attacker->IsAlive() || !_bot->IsValidAttackTarget(attacker))
+            return;
+        if (!_bot->IsWithinDistInMap(attacker, 60.0f))
+            return;
+
+        int memberPriority = threatenedMember ? ScoreTankPeelMember(threatenedMember) : 1;
+        Unit* victim = attacker->GetVictim();
+        int score = 0;
+        if (victim && victim != _bot)
+            score += 1000 + memberPriority * 100;
+        else if (victim == _bot)
+            score += 100; // already on us — still a candidate for multi-target
+        else
+            score += 50;
+
+        // Prefer closer when scores tie.
+        score -= int(_bot->GetDistance(attacker));
+
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = attacker;
+        }
+    };
+
     for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
     {
         Player* member = itr->GetSource();
         if (!member || !member->IsAlive() || !_bot->IsInMap(member))
             continue;
 
-        // Score the member's role so peels off healers beat peels off DPS.
-        int memberPriority = 1;
-        {
-            // Cheap role guess from our own GetCombatRole mapping isn't available
-            // for other players' AI; use class/spec heuristics via specialization.
-            uint32 specId = member->GetTalentSpecialization(member->GetActiveSpec());
-            uint8 cls = member->getClass();
-            uint32 const* specs = GetClassSpecializations(cls);
-            bool isHeal = false;
-            bool isTank = false;
-            if (specs)
-            {
-                switch (cls)
-                {
-                    case CLASS_PALADIN: isTank = (specId == specs[1]); isHeal = (specId == specs[0]); break;
-                    case CLASS_WARRIOR: isTank = (specId == specs[2]); break;
-                    case CLASS_DEATH_KNIGHT: isTank = (specId == specs[0]); break;
-                    case CLASS_DRUID: isTank = (specId == specs[2]); isHeal = (specId == specs[3]); break;
-                    case CLASS_MONK: isTank = (specId == specs[0]); isHeal = (specId == specs[1]); break;
-                    case CLASS_PRIEST: isHeal = (specId != specs[2]); break;
-                    case CLASS_SHAMAN: isHeal = (specId == specs[2]); break;
-                    default: break;
-                }
-            }
-            if (isHeal)
-                memberPriority = 3;
-            else if (!isTank)
-                memberPriority = 2;
-            else
-                memberPriority = 0; // already on us / another tank
-        }
-
         for (Unit* attacker : member->getAttackers())
+            consider(attacker, member);
+    }
+
+    // Healing threat can put a mob on a healer before getAttackers() fills in.
+    // Also catch hostiles whose current victim is a group ally.
+    {
+        std::list<Unit*> nearby;
+        Skyfire::AnyUnfriendlyUnitInObjectRangeCheck check(_bot, _bot, 40.0f);
+        Skyfire::UnitListSearcher<Skyfire::AnyUnfriendlyUnitInObjectRangeCheck> searcher(_bot, nearby, check);
+        _bot->VisitNearbyObject(40.0f, searcher);
+        for (Unit* unit : nearby)
         {
-            if (!attacker || !attacker->IsAlive() || !_bot->IsValidAttackTarget(attacker))
+            if (!unit || !unit->IsAlive())
                 continue;
-            if (!_bot->IsWithinDistInMap(attacker, 60.0f))
+            Unit* victim = unit->GetVictim();
+            if (!victim || victim == _bot)
                 continue;
-
-            Unit* victim = attacker->GetVictim();
-            int score = 0;
-            if (victim && victim != _bot)
-                score += 1000 + memberPriority * 100;
-            else if (victim == _bot)
-                score += 100; // already on us — still a candidate for multi-target
-            else
-                score += 50;
-
-            // Prefer closer when scores tie.
-            score -= int(_bot->GetDistance(attacker));
-
-            if (score > bestScore)
-            {
-                bestScore = score;
-                best = attacker;
-            }
+            Player* ally = victim->ToPlayer();
+            if (!ally || !_bot->IsInMap(ally) || !group->IsMember(ally->GetGUID()))
+                continue;
+            consider(unit, ally);
         }
     }
 
     return best;
+}
+
+int PlayerbotAI::ScoreTankPeelMember(Player* member) const
+{
+    if (!member)
+        return 1;
+
+    uint32 specId = member->GetTalentSpecialization(member->GetActiveSpec());
+    uint8 cls = member->getClass();
+    uint32 const* specs = GetClassSpecializations(cls);
+    bool isHeal = false;
+    bool isTank = false;
+    if (specs)
+    {
+        switch (cls)
+        {
+            case CLASS_PALADIN: isTank = (specId == specs[1]); isHeal = (specId == specs[0]); break;
+            case CLASS_WARRIOR: isTank = (specId == specs[2]); break;
+            case CLASS_DEATH_KNIGHT: isTank = (specId == specs[0]); break;
+            case CLASS_DRUID: isTank = (specId == specs[2]); isHeal = (specId == specs[3]); break;
+            case CLASS_MONK: isTank = (specId == specs[0]); isHeal = (specId == specs[1]); break;
+            case CLASS_PRIEST: isHeal = (specId != specs[2]); break;
+            case CLASS_SHAMAN: isHeal = (specId == specs[2]); break;
+            default: break;
+        }
+    }
+    if (isHeal)
+        return 3;
+    if (!isTank)
+        return 2;
+    return 0; // another tank
+}
+
+bool PlayerbotAI::IsUrgentTankPeel(Unit* target) const
+{
+    if (!target || !_bot)
+        return false;
+    Unit* victim = target->GetVictim();
+    if (!victim || victim == _bot)
+        return false;
+    Player* ally = victim->ToPlayer();
+    if (!ally || !_bot->IsInMap(ally))
+        return false;
+    Group* group = _bot->GetGroup();
+    if (!group || !group->IsMember(ally->GetGUID()))
+        return false;
+    // Do not treat "on another tank" as urgent — hold the pack instead.
+    return ScoreTankPeelMember(ally) > 0;
+}
+
+void PlayerbotAI::DoTankExtras(Unit* target, bool closing)
+{
+    if (!target || _bot->HasUnitState(UNIT_STATE_CASTING))
+        return;
+
+    // Taunt when the current focus mob is hitting someone else.
+    Unit* victim = target->GetVictim();
+    if (victim && victim != _bot)
+    {
+        uint32 taunt = GetTauntSpell();
+        // Righteous Defense is cast on the ally being attacked, not the mob.
+        if (taunt == 31789)
+        {
+            if (Player* ally = victim->ToPlayer())
+                if (BotRotation::CanTryCast(_bot, taunt) && BotRotation::CastSpell(_bot, ally, taunt))
+                    return;
+        }
+        else if (taunt && BotRotation::CanTryCast(_bot, taunt))
+        {
+            if (BotRotation::CastSpell(_bot, target, taunt))
+                return;
+        }
+    }
+
+    // While running in, do not plant for AoE — chase + auto-attack build threat.
+    if (closing)
+        return;
+
+    // Multi-target: drop an AoE / ranged threat ability when 2+ hostiles are nearby.
+    if (BotRotation::CountNearbyEnemies(_bot, 10.0f) >= 2)
+    {
+        if (uint32 aoe = GetAoeThreatSpell())
+            if (BotRotation::CanTryCast(_bot, aoe) && BotRotation::CastSpell(_bot, target, aoe))
+                return;
+    }
 }
 
 Unit* PlayerbotAI::SelectGroupThreatTarget()
@@ -1644,39 +1738,6 @@ uint32 PlayerbotAI::GetHealSpell() const
             return BotRotation::SpellReady(_bot, 115175) ? 115175 : 0; // Soothing Mist
         default:
             return 0;
-    }
-}
-
-void PlayerbotAI::DoTankExtras(Unit* target)
-{
-    if (!target || _bot->HasUnitState(UNIT_STATE_CASTING))
-        return;
-
-    // Taunt when the current focus mob is hitting someone else.
-    Unit* victim = target->GetVictim();
-    if (victim && victim != _bot)
-    {
-        uint32 taunt = GetTauntSpell();
-        // Righteous Defense is cast on the ally being attacked, not the mob.
-        if (taunt == 31789)
-        {
-            if (Player* ally = victim->ToPlayer())
-                if (BotRotation::CanTryCast(_bot, taunt) && BotRotation::CastSpell(_bot, ally, taunt))
-                    return;
-        }
-        else if (taunt && BotRotation::CanTryCast(_bot, taunt))
-        {
-            if (BotRotation::CastSpell(_bot, target, taunt))
-                return;
-        }
-    }
-
-    // Multi-target: drop an AoE / ranged threat ability when 2+ hostiles are nearby.
-    if (BotRotation::CountNearbyEnemies(_bot, 10.0f) >= 2)
-    {
-        if (uint32 aoe = GetAoeThreatSpell())
-            if (BotRotation::CanTryCast(_bot, aoe) && BotRotation::CastSpell(_bot, target, aoe))
-                return;
     }
 }
 

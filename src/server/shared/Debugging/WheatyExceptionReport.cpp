@@ -502,10 +502,20 @@ void WheatyExceptionReport::GenerateExceptionReport(
     _tprintf(_T("Flags:%08X\r\n"), pCtx->EFlags);
 #endif
 
-    SymSetOptions(SYMOPT_DEFERRED_LOADS);
+    // Prefer symbols beside the exe (deploy worldserver.pdb with worldserver.exe).
+    // Without a matching PDB, stacks stay as bare RVAs — RelWithDebInfo alone is not enough.
+    TCHAR symbolSearchPath[MAX_PATH * 2] = { 0 };
+    if (GetModuleFileName(NULL, symbolSearchPath, MAX_PATH))
+    {
+        TCHAR* slash = _tcsrchr(symbolSearchPath, _T('\\'));
+        if (slash)
+            *slash = _T('\0');
+    }
+
+    SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
 
     // Initialize DbgHelp
-    if (!SymInitialize(GetCurrentProcess(), 0, TRUE))
+    if (!SymInitialize(GetCurrentProcess(), symbolSearchPath[0] ? symbolSearchPath : 0, TRUE))
     {
         _tprintf(_T("\n\rCRITICAL ERROR.\n\r Couldn't initialize the symbol handler for process.\n\rError [%s].\n\r\n\r"),
             ErrorMessage(GetLastError()));

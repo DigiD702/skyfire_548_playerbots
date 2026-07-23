@@ -76,13 +76,21 @@ void PlayerbotMgr::LoadConfig()
         _joinLfgLevelRange = 20;
 
     _autoCreateOnStartup = sConfigMgr->GetBoolDefault("Playerbots.AutoCreate.OnStartup", false);
+    _deleteRandomBotAccounts = sConfigMgr->GetBoolDefault("Playerbots.DeleteRandomBotAccounts", false);
     _autoAccountCount = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.AccountCount", 0));
     _autoPassword = sConfigMgr->GetStringDefault("Playerbots.AutoCreate.AccountPassword", "password");
     _autoCharsPerAccount = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.CharactersPerAccount", 1));
     _autoAlliancePct = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.AlliancePct", 50));
     _autoTankPct = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.TankPct", 20));
     _autoHealerPct = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.HealerPct", 20));
-    _autoLevel = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.Level", 1));
+
+    // Legacy AutoCreate.Level seeds Min/Max when those keys are omitted.
+    uint32 const legacyLevel = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.Level", 1));
+    _autoMinLevel = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.MinLevel", int32(legacyLevel)));
+    _autoMaxLevel = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.MaxLevel", int32(legacyLevel)));
+
+    _gearMinQuality = sConfigMgr->GetIntDefault("Playerbots.Gear.MinQuality", int(ITEM_QUALITY_UNCOMMON));
+    _gearMaxQuality = sConfigMgr->GetIntDefault("Playerbots.Gear.MaxQuality", int(ITEM_QUALITY_EPIC));
 
     // Optional numeric thresholds (strategies themselves are runtime co/nc only).
     _restHealthPct = float(sConfigMgr->GetFloatDefault("Playerbots.Rest.HealthPct", 50.0f));
@@ -101,7 +109,19 @@ void PlayerbotMgr::LoadConfig()
     if (_autoHealerPct > 100) _autoHealerPct = 100;
     if (_autoTankPct + _autoHealerPct > 100) _autoHealerPct = 100 - _autoTankPct;
     if (_autoCharsPerAccount > 11) _autoCharsPerAccount = 11;   // realm cap
-    if (_autoLevel < 1) _autoLevel = 1;
+    if (_autoMinLevel < 1) _autoMinLevel = 1;
+    if (_autoMaxLevel < 1) _autoMaxLevel = 1;
+    if (_autoMaxLevel < _autoMinLevel)
+        std::swap(_autoMinLevel, _autoMaxLevel);
+    {
+        uint32 const maxPlayerLevel = uint32(sWorld->getIntConfig(WorldIntConfigs::CONFIG_MAX_PLAYER_LEVEL));
+        if (_autoMinLevel > maxPlayerLevel) _autoMinLevel = maxPlayerLevel;
+        if (_autoMaxLevel > maxPlayerLevel) _autoMaxLevel = maxPlayerLevel;
+    }
+    if (_gearMinQuality < int(ITEM_QUALITY_POOR)) _gearMinQuality = int(ITEM_QUALITY_POOR);
+    if (_gearMaxQuality > int(ITEM_QUALITY_LEGENDARY)) _gearMaxQuality = int(ITEM_QUALITY_LEGENDARY);
+    if (_gearMinQuality > _gearMaxQuality)
+        std::swap(_gearMinQuality, _gearMaxQuality);
     if (_restHealthPct < 1.0f) _restHealthPct = 1.0f;
     if (_restHealthPct > 100.0f) _restHealthPct = 100.0f;
     if (_restManaPct < 1.0f) _restManaPct = 1.0f;
@@ -122,9 +142,9 @@ void PlayerbotMgr::LoadConfig()
     _candidatesLoaded = false;
 
     if (_enabled)
-        SF_LOG_INFO("modules", "[mod-playerbots] Enabled (random bots: %s, max: %u, account prefix: '%s', LFG join: %s).",
+        SF_LOG_INFO("modules", "[mod-playerbots] Enabled (random bots: %s, max: %u, account prefix: '%s', LFG join: %s, levels %u-%u, gear quality %d-%d).",
             _randomBotsEnabled ? "on" : "off", _maxRandomBots, _accountPrefix.c_str(),
-            _joinLfg ? "on" : "off");
+            _joinLfg ? "on" : "off", _autoMinLevel, _autoMaxLevel, _gearMinQuality, _gearMaxQuality);
     else
         SF_LOG_INFO("modules", "[mod-playerbots] Disabled via configuration.");
 }
@@ -641,6 +661,89 @@ void PlayerbotMgr::LogoutAllBots()
     _selfBots.clear();
 }
 
+bool PlayerbotMgr::CanDeleteBotAccounts(std::string* errorOut) const
+{
+    auto fail = [&](char const* msg) -> bool
+    {
+        if (errorOut)
+            *errorOut = msg;
+        return false;
+    };
+
+    if (_accountPrefix.empty())
+        return fail("Playerbots.RandomBots.AccountPrefix is empty; refusing wipe.");
+    if (_accountPrefix.size() < 3)
+        return fail("AccountPrefix is shorter than 3 characters; refusing wipe.");
+
+    // Guard against accidentally wiping the whole account table.
+    std::string upper = _accountPrefix;
+    std::transform(upper.begin(), upper.end(), upper.begin(),
+        [](unsigned char c) { return char(std::toupper(c)); });
+    if (upper == "ADMIN" || upper == "GM" || upper == "PLAYER" || upper == "ACCOUNT")
+        return fail("AccountPrefix looks unsafe; refusing wipe.");
+
+    return true;
+}
+
+uint32 PlayerbotMgr::DeleteBotAccounts(std::string* report)
+{
+    std::string error;
+    if (!CanDeleteBotAccounts(&error))
+    {
+        SF_LOG_ERROR("modules", "[mod-playerbots] %s", error.c_str());
+        if (report)
+            *report = error;
+        return 0;
+    }
+
+    // Drop live bot sessions first so DeleteAccount does not race logouts.
+    LogoutAllBots();
+
+    QueryResult accounts = LoginDatabase.PQuery(
+        "SELECT id, username FROM account WHERE username LIKE '%s%%'", _accountPrefix.c_str());
+    if (!accounts)
+    {
+        std::string msg = "No bot accounts found for prefix '" + _accountPrefix + "'.";
+        SF_LOG_INFO("modules", "[mod-playerbots] %s", msg.c_str());
+        if (report)
+            *report = msg;
+        _candidates.clear();
+        _candidatesLoaded = false;
+        return 0;
+    }
+
+    uint32 deleted = 0;
+    do
+    {
+        uint32 const accountId = (*accounts)[0].GetUInt32();
+        std::string const username = (*accounts)[1].GetString();
+        AccountOpResult res = AccountMgr::DeleteAccount(accountId);
+        if (res == AccountOpResult::AOR_OK)
+        {
+            ++deleted;
+            SF_LOG_INFO("modules", "[mod-playerbots] Deleted bot account '%s' (id %u).",
+                username.c_str(), accountId);
+        }
+        else
+        {
+            SF_LOG_ERROR("modules", "[mod-playerbots] Failed to delete bot account '%s' (id %u, error %u).",
+                username.c_str(), accountId, uint32(res));
+        }
+    } while (accounts->NextRow());
+
+    _candidates.clear();
+    _candidatesLoaded = false;
+
+    std::ostringstream ss;
+    ss << "Deleted " << deleted << " bot account(s) with prefix '" << _accountPrefix
+       << "'. Set Playerbots.DeleteRandomBotAccounts = 0 before the next restart, "
+       << "then run .playerbots create (or enable AutoCreate.OnStartup).";
+    SF_LOG_INFO("modules", "[mod-playerbots] %s", ss.str().c_str());
+    if (report)
+        *report = ss.str();
+    return deleted;
+}
+
 void PlayerbotMgr::DestroyBotAI(uint64 characterGuid)
 {
     auto it = _ai.find(characterGuid);
@@ -927,16 +1030,16 @@ namespace
     //
     // Filter by RequiredLevel near the bot's level (not ItemLevel <= level+25):
     // MoP ilvl is hundreds at 90, so an ItemLevel cap wrongly forces ~TBC gear.
-    // maxQuality caps ITEM_QUALITY_* (default epic) so testers can request rare/etc.
+    // minQuality/maxQuality are ITEM_QUALITY_* bounds from conf or init override.
     std::vector<uint32> QueryItemEntries(Player* bot, std::string const& where, uint32 primaryStat,
-        uint32 exclude, int maxQuality)
+        uint32 exclude, int minQuality, int maxQuality)
     {
         uint32 const level    = bot->getLevel();
         uint32 const classBit = 1u << (bot->getClass() - 1);
         uint32 const raceBit  = 1u << (bot->getRace() - 1);
         uint32 const minReq   = level > 10 ? (level - 10) : 1;
-        int const qualityCap  = std::max(0, std::min(maxQuality, int(ITEM_QUALITY_LEGENDARY)));
-        int const qualityMin  = qualityCap >= int(ITEM_QUALITY_UNCOMMON) ? int(ITEM_QUALITY_UNCOMMON) : qualityCap;
+        int qualityCap = std::max(0, std::min(maxQuality, int(ITEM_QUALITY_LEGENDARY)));
+        int qualityMin = std::max(0, std::min(minQuality, qualityCap));
 
         std::ostringstream q;
         q << "SELECT entry FROM item_template WHERE " << where
@@ -1258,20 +1361,31 @@ namespace
         return bot->EquipNewItem(dest, entry, true) != nullptr;
     }
 
-    // Equips the best item matching the WHERE clause that the bot can actually
-    // use, walking the candidate list so a slot is only left empty when nothing
-    // is equippable. Prefers items with the spec's primary stat, then any. The
-    // exclude entry keeps paired slots (rings/trinkets) distinct. Returns the
-    // equipped entry, or 0.
+    // Equips a strong item matching the WHERE clause that the bot can actually
+    // use. Among the top ilvl candidates, pick randomly so bots do not all wear
+    // the identical BiS-looking template. Prefers primary-stat items, then any.
+    // The exclude entry keeps paired slots (rings/trinkets) distinct.
     uint32 EquipBestForSlot(Player* bot, std::string const& where, uint32 primaryStat, uint32 exclude,
-        int maxQuality)
+        int minQuality, int maxQuality)
     {
         uint32 const passStats[2] = { primaryStat, 0 };
         int const passes = primaryStat ? 2 : 1;
+        constexpr size_t kRandomPool = 8;
 
         for (int p = 0; p < passes; ++p)
         {
-            std::vector<uint32> const entries = QueryItemEntries(bot, where, passStats[p], exclude, maxQuality);
+            std::vector<uint32> entries = QueryItemEntries(bot, where, passStats[p], exclude,
+                minQuality, maxQuality);
+            if (entries.empty())
+                continue;
+
+            size_t const pool = std::min(entries.size(), kRandomPool);
+            for (size_t i = 0; i + 1 < pool; ++i)
+            {
+                size_t const j = i + size_t(std::rand() % int(pool - i));
+                std::swap(entries[i], entries[j]);
+            }
+
             for (uint32 entry : entries)
                 if (EquipItemEntry(bot, entry))
                     return entry;
@@ -1293,14 +1407,14 @@ namespace
     }
 
     // Picks class/role-appropriate weapons (and shield/offhand/ranged).
-    void GearWeapons(Player* bot, BotRole role, uint32 specId, int maxQuality)
+    void GearWeapons(Player* bot, BotRole role, uint32 specId, int minQuality, int maxQuality)
     {
         uint8 const cls = bot->getClass();
         uint32 const primary = PrimaryStatForClassRole(cls, role, specId);
 
         auto equip = [&](std::string const& where) -> bool
         {
-            return EquipBestForSlot(bot, where, primary, 0, maxQuality) != 0;
+            return EquipBestForSlot(bot, where, primary, 0, minQuality, maxQuality) != 0;
         };
 
         std::string const oneH   = "class=2 AND InventoryType IN (13,21)";
@@ -1356,21 +1470,22 @@ namespace
 
                     std::string const dagger =
                         "class=2 AND subclass=15 AND InventoryType IN (13,21,22)";
-                    uint32 const mh = EquipBestForSlot(bot, dagger, primary, 0, maxQuality);
+                    uint32 const mh = EquipBestForSlot(bot, dagger, primary, 0, minQuality, maxQuality);
                     uint32 oh = 0;
                     if (mh)
-                        oh = EquipBestForSlot(bot, dagger, primary, mh, maxQuality);
+                        oh = EquipBestForSlot(bot, dagger, primary, mh, minQuality, maxQuality);
 
                     // Last resort: any 1H if the dagger pool is empty, but still
                     // force Dual Wield so an off-hand slot can fill.
                     if (!mh)
-                        EquipBestForSlot(bot, oneH + " AND subclass IN (0,4,7,13,15)", primary, 0, maxQuality);
+                        EquipBestForSlot(bot, oneH + " AND subclass IN (0,4,7,13,15)", primary, 0,
+                            minQuality, maxQuality);
                     if (!oh)
                         EquipBestForSlot(bot, oneH + " AND subclass IN (0,4,7,13,15)", primary,
                             bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND)
                                 ? bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND)->GetEntry()
                                 : 0,
-                            maxQuality);
+                            minQuality, maxQuality);
                 }
                 else
                 {
@@ -1428,8 +1543,8 @@ namespace
         }
     }
 
-    // Fills every gear slot with the best level/class/spec-appropriate items.
-    void GearBot(Player* bot, BotRole role, uint32 specId, int maxQuality)
+    // Fills every gear slot with level/class/spec-appropriate items.
+    void GearBot(Player* bot, BotRole role, uint32 specId, int minQuality, int maxQuality)
     {
         uint8 const cls = bot->getClass();
         uint32 const primary = PrimaryStatForClassRole(cls, role, specId);
@@ -1442,7 +1557,7 @@ namespace
         // entry (used to place two distinct rings/trinkets).
         auto equipOne = [&](std::string const& where, uint32 exclude) -> uint32
         {
-            return EquipBestForSlot(bot, where, primary, exclude, maxQuality);
+            return EquipBestForSlot(bot, where, primary, exclude, minQuality, maxQuality);
         };
 
         equipOne(armorRange + " AND InventoryType=1", 0);        // head
@@ -1462,7 +1577,7 @@ namespace
         uint32 trinket1 = equipOne("class=4 AND InventoryType=12", 0);
         equipOne("class=4 AND InventoryType=12", trinket1);
 
-        GearWeapons(bot, role, specId, maxQuality);
+        GearWeapons(bot, role, specId, minQuality, maxQuality);
     }
 
     // Rest is spell-based (Refreshment 128701) — no bag food/drink.
@@ -1616,10 +1731,18 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverr
     LearnRidingAndMounts(bot);
 
     // Gear the bot for the (possibly newly assigned) role/spec at its level.
-    int const qualityCap = std::max(0, std::min(maxItemQuality, int(ITEM_QUALITY_LEGENDARY)));
-    SF_LOG_INFO("modules", "[mod-playerbots]   '%s': initializing equipment (max quality %s)...",
-        bot->GetName().c_str(), QualityName(qualityCap));
-    GearBot(bot, role, specId, qualityCap);
+    int const qualityCap = maxItemQuality < 0
+        ? _gearMaxQuality
+        : std::max(0, std::min(maxItemQuality, int(ITEM_QUALITY_LEGENDARY)));
+    int qualityFloor = _gearMinQuality;
+    if (maxItemQuality >= 0)
+        qualityFloor = std::min(qualityFloor, qualityCap);
+    if (qualityFloor > qualityCap)
+        qualityFloor = qualityCap;
+
+    SF_LOG_INFO("modules", "[mod-playerbots]   '%s': initializing equipment (quality %s-%s)...",
+        bot->GetName().c_str(), QualityName(qualityFloor), QualityName(qualityCap));
+    GearBot(bot, role, specId, qualityFloor, qualityCap);
     GiveRestConsumables(bot);
 
     bot->SaveToDB();
@@ -1628,10 +1751,10 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverr
         it->second->ResetStrategiesToRoleDefaults();
 
     SF_LOG_INFO("modules",
-        "[mod-playerbots] Initialized bot '%s': level %u %s %s, spec %s (%s), gear <= %s.",
+        "[mod-playerbots] Initialized bot '%s': level %u %s %s, spec %s (%s), gear %s-%s.",
         bot->GetName().c_str(), bot->getLevel(),
         SafeRaceName(bot->getRace()), SafeClassName(bot->getClass()),
-        SpecName(specId), RoleName(role), QualityName(qualityCap));
+        SpecName(specId), RoleName(role), QualityName(qualityFloor), QualityName(qualityCap));
 }
 
 uint32 PlayerbotMgr::InitializeAllBots(int roleOverride, uint32 specOverride, int maxItemQuality)
@@ -1718,7 +1841,13 @@ bool PlayerbotMgr::CreateOneCharacter(uint32 accountId)
 
     uint8 expansion = uint8(sWorld->getIntConfig(WorldIntConfigs::CONFIG_EXPANSION));
     uint32 maxLevel = sWorld->getIntConfig(WorldIntConfigs::CONFIG_MAX_PLAYER_LEVEL);
-    uint8 level = uint8(std::min<uint32>(_autoLevel, maxLevel));
+    uint32 minL = std::min(_autoMinLevel, maxLevel);
+    uint32 maxL = std::min(_autoMaxLevel, maxLevel);
+    if (maxL < minL)
+        std::swap(minL, maxL);
+    uint8 level = uint8(minL);
+    if (maxL > minL)
+        level = uint8(minL + uint32(std::rand() % int(maxL - minL + 1)));
 
     WorldSession* sess = new WorldSession(accountId, nullptr, AccountTypes::SEC_PLAYER, expansion,
         0, LOCALE_enUS, 0, false, false);
@@ -1741,5 +1870,24 @@ bool PlayerbotMgr::CreateOneCharacter(uint32 accountId)
 
     SF_LOG_INFO("modules", "[mod-playerbots] Created bot '%s' (GUID %u, %s, race %u, class %u, level %u) on account %u.",
         name.c_str(), guid, alliance ? "Alliance" : "Horde", race, cls, level, accountId);
+
+    // Auto-init gear/spells so new bots are LFG-ready without a manual init pass.
+    uint64 const fullGuid = MAKE_NEW_GUID(guid, 0, HIGHGUID_PLAYER);
+    std::string spawnError;
+    if (AddBot(fullGuid, &spawnError))
+    {
+        if (auto it = _bots.find(fullGuid); it != _bots.end())
+        {
+            if (Player* bot = it->second ? it->second->GetPlayer() : nullptr)
+                InitializeBot(bot, int(role), specId, -1);
+        }
+        RemoveBot(fullGuid);
+    }
+    else
+    {
+        SF_LOG_ERROR("modules", "[mod-playerbots] Created '%s' but could not auto-init: %s",
+            name.c_str(), spawnError.c_str());
+    }
+
     return true;
 }

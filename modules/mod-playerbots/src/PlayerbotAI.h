@@ -147,6 +147,9 @@ private:
     CombatRole GetCombatRole() const;
     bool IsRangedClass() const;
     bool GroupInCombat() const;
+    // True when this hostile is currently beating on a non-tank group ally.
+    bool IsUrgentTankPeel(Unit* target) const;
+    int ScoreTankPeelMember(Player* member) const;
     float HealthPct() const;
     float ManaPct() const;
     bool UsesMana() const;
@@ -163,7 +166,7 @@ private:
     bool TryAutoMarkRti();
     uint32 GetHealSpell() const;
     void DoRotation(Unit* target);
-    void DoTankExtras(Unit* target);
+    void DoTankExtras(Unit* target, bool closing = false);
 
     void ReplyTo(Player* from, std::string const& text);
 

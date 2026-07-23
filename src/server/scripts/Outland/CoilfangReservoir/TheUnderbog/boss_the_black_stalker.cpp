@@ -64,6 +64,7 @@ public:
             check_Timer = 5000;
             LevitatedTarget = 0;
             LevitatedTarget_Timer = 0;
+            InAir = false;
             Striders.clear();
         }
 
@@ -74,11 +75,13 @@ public:
             if (summon && summon->GetEntry() == ENTRY_SPORE_STRIDER)
             {
                 Striders.push_back(summon->GetGUID());
-                if (Unit* target = SelectTarget(SELECT_TARGET_RANDOM, 1))
-                    summon->AI()->AttackStart(target);
-                else
-                    if (me->GetVictim())
-                        summon->AI()->AttackStart(me->GetVictim());
+                if (CreatureAI* ai = summon->AI())
+                {
+                    if (Unit* target = SelectTarget(SELECT_TARGET_RANDOM, 1))
+                        ai->AttackStart(target);
+                    else if (me->GetVictim())
+                        ai->AttackStart(me->GetVictim());
+                }
             }
         }
 
@@ -114,19 +117,16 @@ public:
                 SporeStriders_Timer = 10000+rand()%5000;
             } else SporeStriders_Timer -= diff;
 
-            // Levitate
+            // Levitate (do not early-return from UpdateAI — that skips melee/other timers)
             if (LevitatedTarget)
             {
                 if (LevitatedTarget_Timer <= diff)
                 {
                     if (Unit* target = Unit::GetUnit(*me, LevitatedTarget))
                     {
-                        if (!target->HasAura(SPELL_LEVITATE))
-                        {
+                        if (!target->IsAlive() || !target->HasAura(SPELL_LEVITATE))
                             LevitatedTarget = 0;
-                            return;
-                        }
-                        if (InAir)
+                        else if (InAir)
                         {
                             target->AddAura(SPELL_SUSPENSION, target);
                             LevitatedTarget = 0;
