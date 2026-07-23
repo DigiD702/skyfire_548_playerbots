@@ -21,6 +21,7 @@ namespace
         FEROCIOUS_BITE      = 22568,
         TIGERS_FURY         = 5217,
         BERSERK             = 106951,
+        INCARNATION_KOTJ    = 102543,
         THRASH_CAT          = 106830,
         SWIPE_CAT           = 62078,
         FAERIE_FIRE         = 770,
@@ -49,6 +50,8 @@ uint32 SelectFeral(Context const& ctx)
 
     if (HasAuraUp(bot, TIGERS_FURY) && CanTryCast(bot, BERSERK))
         return BERSERK;
+    if (HasAuraUp(bot, BERSERK) && CanTryCast(bot, INCARNATION_KOTJ))
+        return INCARNATION_KOTJ;
 
     if ((!HasAuraUp(bot, SAVAGE_ROAR) || AuraRemains(bot, SAVAGE_ROAR) <= 3.0f)
         && cp > 0 && CanTryCast(bot, SAVAGE_ROAR))
@@ -110,8 +113,13 @@ uint32 SelectBalance(Context const& ctx)
         WRATH               = 5176,
         STARFALL            = 48505,
         CELESTIAL_ALIGNMENT = 112071,
+        INCARNATION_ELUNE   = 102560,
         HURRICANE           = 16914,
         SHOOTING_STARS      = 93400,
+        ECLIPSE_SOLAR       = 48517,
+        ECLIPSE_LUNAR       = 48518,
+        WILD_MUSHROOM       = 88747,
+        WILD_MUSHROOM_DETONATE = 88751,
     };
 
     if (!HasAuraUp(bot, MARK_OF_THE_WILD) && CanTryCast(bot, MARK_OF_THE_WILD))
@@ -120,18 +128,28 @@ uint32 SelectBalance(Context const& ctx)
     if (!HasAuraUp(bot, MOONKIN_FORM) && CanTryCast(bot, MOONKIN_FORM))
         return MOONKIN_FORM;
 
+    // Burst: CA first, then Incarnation while CA/eclipse is up.
     if (CanTryCast(bot, CELESTIAL_ALIGNMENT))
         return CELESTIAL_ALIGNMENT;
+    if ((HasAuraUp(bot, CELESTIAL_ALIGNMENT) || HasAuraUp(bot, ECLIPSE_LUNAR)
+        || HasAuraUp(bot, ECLIPSE_SOLAR)) && CanTryCast(bot, INCARNATION_ELUNE))
+        return INCARNATION_ELUNE;
 
     if (ctx.enemies >= 3 && CanTryCast(bot, STARFALL))
         return STARFALL;
+    if (ctx.enemies >= 3 && CanTryCast(bot, WILD_MUSHROOM_DETONATE))
+        return WILD_MUSHROOM_DETONATE;
+    if (ctx.enemies >= 2 && CanTryCast(bot, WILD_MUSHROOM))
+        return WILD_MUSHROOM;
     if (ctx.enemies >= 4 && CanTryCast(bot, HURRICANE))
         return HURRICANE;
 
-    if ((!HasAuraUp(target, MOONFIRE) || AuraRemains(target, MOONFIRE) <= 3.0f)
+    // Keep both DoTs rolling; refresh earlier under CA.
+    float const dotPad = HasAuraUp(bot, CELESTIAL_ALIGNMENT) ? 6.0f : 3.0f;
+    if ((!HasAuraUp(target, MOONFIRE) || AuraRemains(target, MOONFIRE) <= dotPad)
         && CanTryCast(bot, MOONFIRE))
         return MOONFIRE;
-    if ((!HasAuraUp(target, SUNFIRE) || AuraRemains(target, SUNFIRE) <= 3.0f)
+    if ((!HasAuraUp(target, SUNFIRE) || AuraRemains(target, SUNFIRE) <= dotPad)
         && CanTryCast(bot, SUNFIRE))
         return SUNFIRE;
 
@@ -139,7 +157,14 @@ uint32 SelectBalance(Context const& ctx)
         && CanTryCast(bot, STARSURGE))
         return STARSURGE;
 
-    // Alternate fillers; without eclipse tracking Starfire is a safe default.
+    // Eclipse-aware fillers (CA treats both as valid).
+    bool const lunar = HasAuraUp(bot, ECLIPSE_LUNAR) || HasAuraUp(bot, CELESTIAL_ALIGNMENT);
+    bool const solar = HasAuraUp(bot, ECLIPSE_SOLAR);
+    if (lunar && CanTryCast(bot, STARFIRE))
+        return STARFIRE;
+    if (solar && CanTryCast(bot, WRATH))
+        return WRATH;
+
     if (CanTryCast(bot, STARFIRE))
         return STARFIRE;
     if (CanTryCast(bot, WRATH))

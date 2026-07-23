@@ -141,6 +141,7 @@ uint32 SelectMarksmanship(Context const& ctx)
         RAPID_FIRE          = 3045,
         STAMPEDE            = 121818,
         DIRE_BEAST          = 120679,
+        MURDER_OF_CROWS     = 131894,
         GLAIVE_TOSS         = 117050,
         BARRAGE             = 120360,
     };
@@ -154,6 +155,8 @@ uint32 SelectMarksmanship(Context const& ctx)
         return STAMPEDE;
     if (CanTryCast(bot, DIRE_BEAST))
         return DIRE_BEAST;
+    if (CanTryCast(bot, MURDER_OF_CROWS))
+        return MURDER_OF_CROWS;
 
     if (ctx.targetHealthPct <= 20.0f && CanTryCast(bot, KILL_SHOT))
         return KILL_SHOT;
@@ -170,6 +173,10 @@ uint32 SelectMarksmanship(Context const& ctx)
 
     if (CanTryCast(bot, CHIMERA_SHOT))
         return CHIMERA_SHOT;
+
+    // Careful Aim window (target above 80%): dump Aimed Shot.
+    if (ctx.targetHealthPct >= 80.0f && focus >= 50 && CanTryCast(bot, AIMED_SHOT))
+        return AIMED_SHOT;
 
     if (focus >= 50 && CanTryCast(bot, AIMED_SHOT))
         return AIMED_SHOT;

@@ -77,13 +77,20 @@ namespace
             case 12472:  // Icy Veins
             case 31687:  // Summon Water Elemental
             case 103958: // Metamorphosis
-            case 80240:  // Havoc
             case 49016:  // Unholy Frenzy
             case 63560:  // Dark Transformation
             case 51533:  // Feral Spirit
             case 1126:   // Mark of the Wild
             case 108683: // Fire and Brimstone
             case 18499:  // Berserker Rage
+            case 107574: // Avatar
+            case 12292:  // Bloodbath
+            case 114207: // Skull Banner
+            case 102560: // Incarnation: Chosen of Elune
+            case 102543: // Incarnation: King of the Jungle
+            case 1856:   // Vanish
+            case 1949:   // Hellfire
+            case 88751:  // Wild Mushroom: Detonate
             case 57330:  // Horn of Winter
             case 46584:  // Raise Dead
             case 113858: // Dark Soul: Instability
@@ -189,6 +196,32 @@ uint32 CountNearbyEnemies(Player* bot, float range)
     return count ? count : 1;
 }
 
+Unit* FindSecondaryEnemy(Player* bot, Unit* exclude, float range)
+{
+    if (!bot)
+        return nullptr;
+
+    std::list<Unit*> list;
+    Skyfire::AnyUnfriendlyUnitInObjectRangeCheck check(bot, bot, range);
+    Skyfire::UnitListSearcher<Skyfire::AnyUnfriendlyUnitInObjectRangeCheck> searcher(bot, list, check);
+    bot->VisitNearbyObject(range, searcher);
+
+    Unit* best = nullptr;
+    float bestDist = 0.0f;
+    for (Unit* u : list)
+    {
+        if (!u || u == exclude || !u->IsAlive() || !bot->IsValidAttackTarget(u))
+            continue;
+        float const dist = bot->GetDistance(u);
+        if (!best || dist < bestDist)
+        {
+            best = u;
+            bestDist = dist;
+        }
+    }
+    return best;
+}
+
 float AuraRemains(Unit* unit, uint32 spellId)
 {
     if (!unit)
@@ -288,6 +321,15 @@ bool CastSpell(Player* bot, Unit* enemy, uint32 spellId)
     Unit* castTarget = IsSelfCast(spellId) ? static_cast<Unit*>(bot) : enemy;
     if (!castTarget)
         return false;
+
+    // Havoc marks a *secondary* target so Chaos Bolt / Incinerate cleave onto it.
+    if (spellId == 80240) // Havoc
+    {
+        if (Unit* secondary = FindSecondaryEnemy(bot, enemy, 40.0f))
+            castTarget = secondary;
+        else
+            return false;
+    }
 
     if (castTarget != bot)
         PrepareHostileCast(bot, castTarget);
@@ -438,6 +480,7 @@ bool IsBursting(Player* bot)
         113858, // Dark Soul: Instability
         106951, // Berserk (Feral)
         102543, // Incarnation: King of the Jungle
+        102560, // Incarnation: Chosen of Elune
         112071, // Celestial Alignment
         116740, // Tigereye Brew
         115288, // Energizing Brew

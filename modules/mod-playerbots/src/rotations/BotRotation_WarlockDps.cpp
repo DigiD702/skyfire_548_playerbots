@@ -23,6 +23,8 @@ namespace
         DARK_SOUL_INSTABILITY = 113858,
         DARK_INTENT         = 109773,
         SUMMON_IMP          = 688,
+        SUMMON_INFERNAL     = 1122,
+        SUMMON_DOOMGUARD    = 18540,
         LIFE_TAP            = 1454,
         BACKDRAFT           = 117828,
         FIRE_AND_BRIMSTONE  = 108683,
@@ -38,8 +40,10 @@ namespace
         TOUCH_OF_CHAOS      = 103964,
         DOOM                = 603,
         VOID_RAY            = 115422,
+        HELLFIRE            = 1949,
         DARK_SOUL_KNOWLEDGE = 113861,
         SUMMON_FELGUARD     = 30146,
+        SUMMON_DOOMGUARD_DEMO = 18540,
         MOLTEN_CORE         = 122351,
         DEMONIC_FURY_CAP    = 1000, // resource threshold for meta dump
     };
@@ -62,6 +66,16 @@ uint32 SelectDestruction(Context const& ctx)
 
     if (!HasAuraUp(bot, DARK_SOUL_INSTABILITY) && CanTryCast(bot, DARK_SOUL_INSTABILITY))
         return DARK_SOUL_INSTABILITY;
+
+    // Major pet CD: Infernal on AoE, Doomguard on ST.
+    if (ctx.enemies >= 3 && CanTryCast(bot, SUMMON_INFERNAL))
+        return SUMMON_INFERNAL;
+    if (ctx.enemies < 3 && CanTryCast(bot, SUMMON_DOOMGUARD))
+        return SUMMON_DOOMGUARD;
+
+    // Havoc on a second target so Chaos Bolt / Incinerate cleave.
+    if (ctx.enemies >= 2 && FindSecondaryEnemy(bot, target, 40.0f) && CanTryCast(bot, HAVOC))
+        return HAVOC;
 
     if (ctx.enemies >= 3 && CanTryCast(bot, FIRE_AND_BRIMSTONE))
         return FIRE_AND_BRIMSTONE;
@@ -109,6 +123,9 @@ uint32 SelectDemonology(Context const& ctx)
     if (!HasAuraUp(bot, DARK_SOUL_KNOWLEDGE) && CanTryCast(bot, DARK_SOUL_KNOWLEDGE))
         return DARK_SOUL_KNOWLEDGE;
 
+    if (CanTryCast(bot, SUMMON_DOOMGUARD_DEMO))
+        return SUMMON_DOOMGUARD_DEMO;
+
     if (!meta && fury >= 800 && CanTryCast(bot, METAMORPHOSIS))
         return METAMORPHOSIS;
 
@@ -119,6 +136,8 @@ uint32 SelectDemonology(Context const& ctx)
             return DOOM;
         if (ctx.enemies >= 2 && CanTryCast(bot, VOID_RAY))
             return VOID_RAY;
+        if (ctx.enemies >= 3 && CanTryCast(bot, HELLFIRE))
+            return HELLFIRE;
         if (CanTryCast(bot, TOUCH_OF_CHAOS))
             return TOUCH_OF_CHAOS;
     }
@@ -135,6 +154,9 @@ uint32 SelectDemonology(Context const& ctx)
 
     if (ctx.targetHealthPct <= 25.0f && CanTryCast(bot, SOUL_FIRE))
         return SOUL_FIRE;
+
+    if (ctx.enemies >= 3 && !meta && CanTryCast(bot, HELLFIRE))
+        return HELLFIRE;
 
     if (CanTryCast(bot, SHADOW_BOLT))
         return SHADOW_BOLT;

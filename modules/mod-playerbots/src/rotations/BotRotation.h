@@ -72,6 +72,8 @@ namespace BotRotation
 
     // Helpers used by per-spec lists.
     uint32 CountNearbyEnemies(Player* bot, float range);
+    // Nearest valid hostile other than `exclude` (for Havoc / multi-DoT).
+    Unit* FindSecondaryEnemy(Player* bot, Unit* exclude, float range);
     float AuraRemains(Unit* unit, uint32 spellId);
     bool HasAuraUp(Unit* unit, uint32 spellId);
     uint32 AuraStacks(Unit* unit, uint32 spellId);

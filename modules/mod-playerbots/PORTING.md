@@ -162,9 +162,10 @@ Remaining for later phases:
   ranged DPS (`BotFormation` + `BotMovement::MoveFollowLeader`).
 * [TODO] Richer AC actions (flee manager, RTI icons, pull sequences).
 * [DONE] Class/raid buff maintenance (self + party equivalents), recommended
-  major/minor glyphs on `.playerbots init` (3+3 per spec). Still TODO: deeper
-  cooldowns/DoTs/AoE on existing DPS lines, trinket sync with major CDs,
-  glyph-aware conditional lines.
+  major/minor glyphs on `.playerbots init` (3+3 per spec).
+* [DONE] Deeper cooldowns/DoTs/AoE on thinner DPS lines (Balance, Destro/Demo,
+  Subtlety, MM, Arms, Feral). Still TODO: trinket sync polish, glyph-aware
+  conditional lines.
 * [DONE] Party resurrection: Priest/Pala/Shaman/Druid/Monk OOC rez, Druid
   Rebirth / DK Raise Ally in combat; dead bots auto-accept rez requests.
 * [TODO] Point movement / travel to arbitrary destinations (for questing,
@@ -221,7 +222,9 @@ for future updates.
 * [DONE] All 34 MoP specializations have combat (or heal) priority lists.
 * Healer specs also have `*Dps` damage lines for `co +healer dps`.
 * Trinkets sync with burst windows; Elemental/Assassination/Mage lines deepened
-  (AoE, bombs, Ascendance Lava Beam, Marked for Death).
+  (AoE, bombs, Ascendance Lava Beam, Marked for Death). Balance/Destro/Demo/
+  Subtlety/MM/Arms/Feral also deepened (Incarnation, Havoc, Infernal/Doomguard,
+  Hellfire, Vanish/MfD, Murder of Crows, Avatar/Skull Banner).
 * [DONE] `.playerbots init` applies recommended major/minor glyphs per spec;
   `TryMaintainBuffs` keeps MotW/Fort/Brilliance/shouts/blessings/etc. up.
 * [TODO] Further SimC-faithful tuning, glyph-aware rotation branches, and

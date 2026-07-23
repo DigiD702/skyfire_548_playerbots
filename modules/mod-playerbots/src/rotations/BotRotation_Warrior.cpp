@@ -21,6 +21,9 @@ namespace
         SLAM                = 1464,
         EXECUTE             = 5308,
         RECKLESSNESS        = 1719,
+        AVATAR              = 107574,
+        BLOODBATH           = 12292,
+        SKULL_BANNER        = 114207,
         THUNDER_CLAP        = 6343,
         SWEEPING_STRIKES    = 12328,
         BLOODTHIRST         = 23881,
@@ -54,8 +57,14 @@ uint32 SelectArms(Context const& ctx)
     if (AuraRemains(target, COLOSSUS_SMASH) < 1.5f && CanTryCast(bot, COLOSSUS_SMASH))
         return COLOSSUS_SMASH;
 
+    if (cs && CanTryCast(bot, AVATAR))
+        return AVATAR;
     if (cs && CanTryCast(bot, RECKLESSNESS))
         return RECKLESSNESS;
+    if ((HasAuraUp(bot, RECKLESSNESS) || HasAuraUp(bot, AVATAR)) && CanTryCast(bot, SKULL_BANNER))
+        return SKULL_BANNER;
+    if (CanTryCast(bot, BLOODBATH))
+        return BLOODBATH;
 
     if (CanTryCast(bot, BERSERKER_RAGE))
         return BERSERKER_RAGE;

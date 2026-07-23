@@ -188,6 +188,9 @@ uint32 SelectSubtlety(Context const& ctx)
         FAN_OF_KNIVES       = 51723,
         CRIMSON_TEMPEST     = 121411,
         SHADOW_BLADES       = 121471,
+        MARKED_FOR_DEATH    = 137619,
+        VANISH              = 1856,
+        FIND_WEAKNESS       = 91021,
     };
 
     if (CanTryCast(bot, SHADOW_BLADES))
@@ -196,6 +199,14 @@ uint32 SelectSubtlety(Context const& ctx)
         return SHADOW_DANCE;
     if (CanTryCast(bot, PREMEDITATION))
         return PREMEDITATION;
+
+    // Vanish into Ambush when Find Weakness is missing and Dance is down.
+    if (!HasAuraUp(bot, SHADOW_DANCE) && !HasAuraUp(target, FIND_WEAKNESS)
+        && !bot->HasStealthAura() && CanTryCast(bot, VANISH))
+        return VANISH;
+
+    if (cp <= 1 && CanTryCast(bot, MARKED_FOR_DEATH))
+        return MARKED_FOR_DEATH;
 
     if ((!HasAuraUp(bot, SLICE_AND_DICE) || AuraRemains(bot, SLICE_AND_DICE) <= 2.0f)
         && cp >= 1 && CanTryCast(bot, SLICE_AND_DICE))
@@ -215,8 +226,13 @@ uint32 SelectSubtlety(Context const& ctx)
     if (ctx.enemies >= 4 && CanTryCast(bot, FAN_OF_KNIVES))
         return FAN_OF_KNIVES;
 
-    if (HasAuraUp(bot, SHADOW_DANCE) && CanTryCast(bot, AMBUSH))
+    if ((HasAuraUp(bot, SHADOW_DANCE) || bot->HasStealthAura()) && CanTryCast(bot, AMBUSH))
         return AMBUSH;
+
+    // Hemorrhage maintains the bleed when not behind the target for Backstab.
+    if ((!HasAuraUp(target, HEMORRHAGE) || AuraRemains(target, HEMORRHAGE) <= 3.0f)
+        && CanTryCast(bot, HEMORRHAGE))
+        return HEMORRHAGE;
 
     if (CanTryCast(bot, BACKSTAB))
         return BACKSTAB;
