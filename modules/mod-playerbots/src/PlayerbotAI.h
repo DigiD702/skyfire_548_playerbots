@@ -106,6 +106,8 @@ private:
     bool HandleCombat();
     bool HandleCombatCastOnly();
     bool HandleHealing();
+    bool TryAcceptResurrect();
+    bool HandleResurrect();
     bool HandleRest();
     bool HandleLoot();
     void HandleFollow();

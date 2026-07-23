@@ -368,7 +368,14 @@ void PlayerbotAI::UpdateAI(uint32 diff)
     HandleInteractions();
 
     if (!_bot->IsAlive())
-        return; // TODO: corpse release / resurrection handling
+    {
+        TryAcceptResurrect();
+        return;
+    }
+
+    // Rez dead party members before buffs / combat (OOC rez or battle-rez).
+    if (HandleResurrect())
+        return;
 
     // Keep raid/self buffs topped up out of combat when not mid-cast.
     if (!_bot->IsInCombat() && _bot->getAttackers().empty()
@@ -1066,6 +1073,49 @@ bool PlayerbotAI::ShouldThrottleThreat(Unit* target) const
 
     // Stop damaging when we hold ~80%+ of the current top threat.
     return myThreat >= topThreat * 0.80f;
+}
+
+bool PlayerbotAI::TryAcceptResurrect()
+{
+    if (!_bot || _bot->IsAlive())
+        return false;
+    if (!_bot->IsRessurectRequested())
+        return false;
+
+    _bot->ResurectUsingRequestData();
+    return true;
+}
+
+bool PlayerbotAI::HandleResurrect()
+{
+    if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
+        return true;
+
+    Player* dead = BotRotation::FindPartyMemberToResurrect(_bot);
+    if (!dead)
+        return false;
+
+    uint32 rezId = BotRotation::SelectResurrectSpell(_bot);
+    if (!rezId)
+        return false;
+
+    constexpr float REZ_RANGE = 30.0f;
+    if (!_bot->IsWithinDistInMap(dead, REZ_RANGE))
+    {
+        if (!_clientControlled)
+        {
+            _bot->GetMotionMaster()->Clear();
+            _bot->GetMotionMaster()->MoveChase(dead, 0.0f);
+            _chaseGuid = dead->GetGUID();
+        }
+        return true;
+    }
+
+    if (!_clientControlled && !_bot->IsWithinMeleeRange(dead))
+        _bot->StopMoving();
+
+    _bot->SetSelection(dead->GetGUID());
+    return BotRotation::CastHealSpell(_bot, dead, rezId);
 }
 
 bool PlayerbotAI::HandleHealing()

@@ -58,6 +58,10 @@ namespace BotRotation
     bool TryRacial(Player* bot, Unit* targetOrSelf);
     bool TryTrinkets(Player* bot);
     bool TryMaintainBuffs(Player* bot);
+    // OOC class rez, or combat battle-rez (Rebirth / Raise Ally). 0 if none.
+    uint32 SelectResurrectSpell(Player* bot);
+    // Nearest dead party member still as a corpse (not released) awaiting rez.
+    Player* FindPartyMemberToResurrect(Player* bot);
     bool IsBursting(Player* bot);
     bool HasGlyphSpell(Player* bot, uint32 glyphSpellId);
 

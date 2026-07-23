@@ -568,6 +568,77 @@ namespace
     }
 }
 
+Player* FindPartyMemberToResurrect(Player* bot)
+{
+    if (!bot)
+        return nullptr;
+
+    Group* group = bot->GetGroup();
+    if (!group)
+        return nullptr;
+
+    Player* best = nullptr;
+    float bestDist = 0.0f;
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || member == bot || !member->IsInWorld())
+            continue;
+        if (member->IsAlive() || member->IsRessurectRequested())
+            continue;
+        // Released ghosts sit at the graveyard — only rez unreleased corpses.
+        if (member->getDeathState() != DeathState::CORPSE)
+            continue;
+        if (member->GetMap() != bot->GetMap())
+            continue;
+
+        float const dist = bot->GetDistance(member);
+        if (!best || dist < bestDist)
+        {
+            best = member;
+            bestDist = dist;
+        }
+    }
+    return best;
+}
+
+uint32 SelectResurrectSpell(Player* bot)
+{
+    if (!bot)
+        return 0;
+
+    // Combat: battle rez only (long CD). OOC: standard class resurrection.
+    if (bot->IsInCombat())
+    {
+        switch (bot->getClass())
+        {
+            case CLASS_DRUID:
+                if (CanTryCast(bot, 20484)) // Rebirth
+                    return 20484;
+                break;
+            case CLASS_DEATH_KNIGHT:
+                if (CanTryCast(bot, 61999)) // Raise Ally
+                    return 61999;
+                break;
+            default:
+                break;
+        }
+        return 0;
+    }
+
+    uint32 spellId = 0;
+    switch (bot->getClass())
+    {
+        case CLASS_PRIEST:  spellId = 2006;   break; // Resurrection
+        case CLASS_PALADIN: spellId = 7328;   break; // Redemption
+        case CLASS_SHAMAN:  spellId = 2008;   break; // Ancestral Spirit
+        case CLASS_DRUID:   spellId = 50769;  break; // Revive
+        case CLASS_MONK:    spellId = 115178; break; // Resuscitate
+        default:            return 0;
+    }
+    return CanTryCast(bot, spellId) ? spellId : 0;
+}
+
 bool TryMaintainBuffs(Player* bot)
 {
     if (!bot || bot->HasUnitState(UNIT_STATE_CASTING) || bot->IsNonMeleeSpellCasted(false))

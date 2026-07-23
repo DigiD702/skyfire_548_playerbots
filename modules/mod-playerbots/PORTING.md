@@ -165,6 +165,8 @@ Remaining for later phases:
   major/minor glyphs on `.playerbots init` (3+3 per spec). Still TODO: deeper
   cooldowns/DoTs/AoE on existing DPS lines, trinket sync with major CDs,
   glyph-aware conditional lines.
+* [DONE] Party resurrection: Priest/Pala/Shaman/Druid/Monk OOC rez, Druid
+  Rebirth / DK Raise Ally in combat; dead bots auto-accept rez requests.
 * [TODO] Point movement / travel to arbitrary destinations (for questing,
   objectives, and dungeon navigation).
 * [TODO] Expand the co/nc strategy set further (aoe/boost/cc/avoid aoe, etc.).
