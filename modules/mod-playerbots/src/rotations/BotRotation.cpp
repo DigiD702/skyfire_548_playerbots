@@ -244,6 +244,8 @@ void PrepareHostileCast(Player* bot, Unit* castTarget)
 {
     if (!bot || !castTarget || castTarget == bot)
         return;
+    if (bot->IsNonMeleeSpellCasted(false) || bot->HasUnitState(UNIT_STATE_CASTING))
+        return;
 
     if (!bot->IsStopped())
         bot->StopMoving();
@@ -309,11 +311,15 @@ bool CastHealSpell(Player* bot, Player* ally, uint32 spellId)
 
     if (castTarget != bot)
     {
-        if (!bot->IsStopped())
-            bot->StopMoving();
-        bot->SetSelection(castTarget->GetGUID());
-        if (!bot->HasInArc(static_cast<float>(M_PI), castTarget))
-            bot->SetInFront(castTarget);
+        // StopMoving interrupts an in-progress cast — only plant when idle.
+        if (!bot->IsNonMeleeSpellCasted(false) && !bot->HasUnitState(UNIT_STATE_CASTING))
+        {
+            if (!bot->IsStopped())
+                bot->StopMoving();
+            bot->SetSelection(castTarget->GetGUID());
+            if (!bot->HasInArc(static_cast<float>(M_PI), castTarget))
+                bot->SetInFront(castTarget);
+        }
     }
 
     bot->CastSpell(castTarget, spellId, false);

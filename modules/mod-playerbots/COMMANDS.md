@@ -157,8 +157,8 @@ Send these as the message text (case-insensitive).
 | `passive` | Do not assist or pull; still fight back if attacked. |
 | `aggressive` / `aggro` | Resume normal assist behaviour. |
 | `attack` | Attack the **issuer’s** current target. |
-| `tank attack` | Same, but only bots whose active spec is a tank role. |
-| `dps attack` | Same, but only damage-spec bots. |
+| `tank attack` | Tank-spec bots pull your target; other bots hold until a mob is actually hitting the party, then auto-assist (lowest-HP first). Use `passive` to stay out. |
+| `dps attack` | Damage-role bots attack your target. |
 | `maintenance` | Re-run init (spec + gear) on that bot. |
 | `autogear` | Same as `maintenance`. |
 | `eat` / `drink` / `food` | Sit and use bag food/drink (or fallback regen) until nearly full. Self-bots: AI will not stand you up or interrupt clicked food/drink; regen continues past the start threshold. |
@@ -173,8 +173,8 @@ Strategies are **role-gated** from the bot's current specialization:
 | Role | Combat (`co`) strategies |
 | --- | --- |
 | **Tank** | `tank` (peel + hold threat), `tank assist`, `dps` (tank plays as DPS / low threat) |
-| **Healer** | `heal` (strict heal), `healer dps`, `save mana` |
-| **DPS** | `dps`, `threat` (pause damage at ~80% of tank threat) |
+| **Healer** | `heal` (strict heal), `healer dps`, `save mana`, `wait for attack` (optional) |
+| **DPS** | `dps`, `dps assist` (party assist; default on), `threat`, `wait for attack` (default on — delay open) |
 | **All** | `passive`, `grind` |
 
 | Non-combat (`nc`) | Effect |
@@ -184,6 +184,17 @@ Strategies are **role-gated** from the bot's current specialization:
 | `loot` | Loot corpses |
 | `passive` / `grind` | Same shared flags |
 
+Chat shortcuts rewrite strategy packs like AzerothCore (not just one bool):
+
+| Shortcut | Pack (approx.) |
+| --- | --- |
+| `follow` | NC `+follow,-passive,-grind`; combat `-stay,-passive,-grind` |
+| `stay` | NC/combat `+stay,-passive` (combat also `-follow`) |
+| `flee` | both `+follow,-stay,+passive` then run to master |
+| `grind` | NC `+grind,-passive,-stay` (+ combat grind) |
+| `passive` / `aggressive` | `+passive` / `-passive` on both engines |
+| `reset` | role-default strategy sets |
+
 Wrong-role strategies are rejected (`!healer dps(wrong role)`) so `/p co +healer dps` only changes healers.
 
 ```
@@ -192,12 +203,13 @@ Wrong-role strategies are rejected (`!healer dps(wrong role)`) so `/p co +healer
 /p @heal co +healer dps
 /p @tank co +tank
 /p @dps co +threat
+/p @dps co -dps assist
 /p nc +food
 ```
 
 Bots always whisper their `co:` and `nc:` state back.
 
-Default on attach/init: tanks `+tank +tank assist`, healers `+heal +save mana`, DPS `+dps +threat`, everyone `+food +follow +loot`.
+Default on attach/init: tanks `+tank +tank assist`, healers `+heal +save mana`, DPS `+dps +dps assist +threat`, everyone `+food +follow +loot`.
 
 
 ### Party role filters

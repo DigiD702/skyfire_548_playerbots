@@ -162,3 +162,12 @@ Playerbots.Rest.ManaPct = 50
 #        Default:     60
 
 Playerbots.SaveMana.Threshold = 60
+
+#
+#    Playerbots.WaitForAttack.Seconds
+#        Description: With co +wait for attack (default on for DPS), non-tanks
+#                     delay opening damage this many seconds after combat starts
+#                     so the tank can establish threat. Fight-back still immediate.
+#        Default:     5
+
+Playerbots.WaitForAttack.Seconds = 5

@@ -88,6 +88,7 @@ void PlayerbotMgr::LoadConfig()
     _restHealthPct = float(sConfigMgr->GetFloatDefault("Playerbots.Rest.HealthPct", 50.0f));
     _restManaPct = float(sConfigMgr->GetFloatDefault("Playerbots.Rest.ManaPct", 50.0f));
     _saveManaThreshold = float(sConfigMgr->GetFloatDefault("Playerbots.SaveMana.Threshold", 60.0f));
+    _waitForAttackSeconds = uint32(sConfigMgr->GetIntDefault("Playerbots.WaitForAttack.Seconds", 5));
 
     // Clamp to sane ranges so bad config can't create invalid characters.
     if (_autoAlliancePct > 100) _autoAlliancePct = 100;
@@ -102,6 +103,7 @@ void PlayerbotMgr::LoadConfig()
     if (_restManaPct > 100.0f) _restManaPct = 100.0f;
     if (_saveManaThreshold < 1.0f) _saveManaThreshold = 1.0f;
     if (_saveManaThreshold > 100.0f) _saveManaThreshold = 100.0f;
+    if (_waitForAttackSeconds > 30) _waitForAttackSeconds = 30;
 
     // Force a candidate reload so prefix changes take effect on .reload config.
     _candidatesLoaded = false;
@@ -457,6 +459,9 @@ void PlayerbotMgr::HandleBotGroupChat(Player* from, Group* group, std::string co
 
     // Optional "@tank "/ "@dps "/ "@heal "/ "@ranged " prefix filters who hears the order.
     std::string text = msg;
+    while (!text.empty() && text[0] == ' ')
+        text.erase(text.begin());
+
     std::string filter;
     if (!text.empty() && text[0] == '@')
     {
@@ -482,6 +487,13 @@ void PlayerbotMgr::HandleBotGroupChat(Player* from, Group* group, std::string co
         && (text.compare(0, 2, "co") == 0 || text.compare(0, 2, "nc") == 0)
         && (text.size() == 2 || text[2] == ' ' || text[2] == '?'));
 
+    // "@tank attack" strips to filter=tank + text=attack. Map that to tank-only
+    // engage and make everyone else hold assist so melee DPS don't pile in.
+    bool const tankOnlyPull = (filter == "tank" && (text == "attack" || text == "tank attack"))
+        || (filter.empty() && text == "tank attack");
+    bool const dpsOnlyPull = (filter == "dps" && (text == "attack" || text == "dps attack"))
+        || (filter.empty() && text == "dps attack");
+
     auto deliver = [&](Player* member)
     {
         if (!member)
@@ -489,6 +501,22 @@ void PlayerbotMgr::HandleBotGroupChat(Player* from, Group* group, std::string co
         auto it = _ai.find(member->GetGUID());
         if (it == _ai.end() || !it->second)
             return;
+
+        if (tankOnlyPull)
+        {
+            if (it->second->MatchesRoleFilter("tank"))
+                it->second->HandleChatCommand(from, "tank attack", false);
+            else
+                it->second->SetHoldAssist(true);
+            return;
+        }
+        if (dpsOnlyPull)
+        {
+            if (it->second->MatchesRoleFilter("dps"))
+                it->second->HandleChatCommand(from, "dps attack", false);
+            return;
+        }
+
         if (!filter.empty() && !it->second->MatchesRoleFilter(filter))
             return;
         // Party orders are silent except co/nc (bots whisper their strategy state).
@@ -1424,40 +1452,9 @@ namespace
         GearWeapons(bot, role, specId, maxQuality);
     }
 
-    // Level-scaled conjured food (+ water for mana users) so bots can eat/drink
-    // between pulls instead of relying only on direct regen.
-    void GiveRestConsumables(Player* bot)
+    // Rest is spell-based (Refreshment 128701) — no bag food/drink.
+    void GiveRestConsumables(Player* /*bot*/)
     {
-        if (!bot)
-            return;
-
-        uint8 const level = bot->getLevel();
-        uint32 food = 65500; // Conjured Mana Cookie (34)
-        if (level >= 90)
-            food = 80610;    // Conjured Mana Pudding
-        else if (level >= 85)
-            food = 65499;    // Conjured Mana Cake
-        else if (level >= 80)
-            food = 43523;    // Conjured Mana Strudel
-        else if (level >= 74)
-            food = 43518;    // Conjured Mana Pie
-        else if (level >= 64)
-            food = 65517;    // Conjured Mana Lollipop
-        else if (level >= 54)
-            food = 65516;    // Conjured Mana Cupcake
-        else if (level >= 44)
-            food = 65515;    // Conjured Mana Brownie
-
-        bot->StoreNewItemInBestSlots(food, 20);
-
-        if (bot->GetMaxPower(POWER_MANA) > 0)
-        {
-            uint32 drink = 58257; // Highland Spring Water (85+)
-            if (level < 85)
-                drink = food; // refreshment food covers both below MoP water
-            if (drink != food)
-                bot->StoreNewItemInBestSlots(drink, 20);
-        }
     }
 }
 

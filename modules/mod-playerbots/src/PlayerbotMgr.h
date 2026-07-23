@@ -70,6 +70,7 @@ public:
     float GetRestHealthPct() const { return _restHealthPct; }
     float GetRestManaPct() const { return _restManaPct; }
     float GetSaveManaThreshold() const { return _saveManaThreshold; }
+    uint32 GetWaitForAttackSeconds() const { return _waitForAttackSeconds; }
 
     // Provisions bot accounts (prefix + n) and fills them with characters using
     // the configured faction/role ratios and start level. Incremental: existing
@@ -139,6 +140,7 @@ private:
     float _restHealthPct = 50.0f;
     float _restManaPct = 50.0f;
     float _saveManaThreshold = 60.0f;
+    uint32 _waitForAttackSeconds = 5;
 
     uint32 _loginTimer = 0;
     bool _candidatesLoaded = false;

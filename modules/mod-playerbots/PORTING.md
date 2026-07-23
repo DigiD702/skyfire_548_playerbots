@@ -141,16 +141,42 @@ Remaining for later phases:
 * [DONE] Self-bot mode (`.playerbots self`): attach cast-only AI to a real
   logged-in player. Client keeps movement; AI casts fillers / per-spec rotations.
   `.playerbots init` with no args gears yourself and grouped bots.
+* [DONE] **Thin AC-style strategy engine** (`src/engine/BotStrategyEngine`):
+  * Named strategy sets per `BotState` (Combat / NonCombat), source of truth for
+    `co` / `nc` (+/-/~/?, comma lists).
+  * Chat shortcuts apply AC packs: `follow`, `stay`, `flee`, `grind`, `passive`,
+    `aggressive`, `reset` rewrite both engines like AC `ChatShortcutActions`.
+  * Procedural AI still reads synced flags (`_passive`, `_stay`, …) so MoP
+    rotations and movement keep working.
+  * DPS default includes `+dps assist` (group assist); `-dps assist` = own
+    aggro / forced targets only.
+* [DONE] **Trigger → Action → Queue** (`src/engine/BotAiEngine` + Action/Trigger/
+  Queue/Multiplier): AC-shaped tick selects combat/rest/follow/stay/loot/wander.
+  `PassiveMultiplier` zeroes combat when `+passive`. MoP `rotations/` unchanged.
+* [DONE] **Target Values** (`BotTargetValues`): pull / current / dps (least HP) /
+  tank / assist-tank — SelectTarget reads these like AC AiObjectContext values.
+* [DONE] **wait for attack** (`co +wait for attack`, default on for DPS): non-tanks
+  hold damage for `Playerbots.WaitForAttack.Seconds` after combat starts; still
+  fight back if attacked. Tanks ignore. Disable with `co -wait for attack`.
+* [DONE] **Role formations**: follow angle/distance by tank / healer / melee DPS /
+  ranged DPS (`BotFormation` + `BotMovement::MoveFollowLeader`).
+* [TODO] Richer AC actions (flee manager, RTI icons, pull sequences).
 * [TODO] Deeper cooldowns/DoTs/AoE on existing DPS lines, trinket sync with
   major CDs, glyph-aware conditional lines.
 * [TODO] Point movement / travel to arbitrary destinations (for questing,
   objectives, and dungeon navigation).
 * [TODO] Expand the co/nc strategy set further (aoe/boost/cc/avoid aoe, etc.).
-  Role-gated tank/heal/dps strategies, self-whisper, and food regen are live.
+  Role-gated tank/heal/dps strategies, self-whisper, and spell refreshment are live.
 * [TODO] AC wiki backlog (later): RTSC/aedm, loot lists (`ll`), item/vendor
   chat ops, glyphs, raid-specific strats, Multibot addon protocol.
 * [TODO] Non-combat behaviour remaining: sell junk to vendors,
   mounts, gossip/quest NPC interaction.
+
+## Reference tree
+
+Upstream AC module checked into the repo root as `mod-playerbots/` (study /
+command semantics). SkyFire runtime module remains `modules/mod-playerbots/`.
+Do not compile the root tree into worldserver.
 
 ## Phase 4 - Feature testing targets (the reason for this port) (IN PROGRESS)
 
@@ -164,11 +190,12 @@ for future updates.
   first healer-capable heals, rest dps) so a bot party forms a valid composition
   without communicating. Core exposes `LFGMgr::GetActiveProposalIdForPlayer` so
   the module can find a bot's pending proposal to accept.
-* [DONE] Between-pull food: socket bots sit + regen (bag food/drink when present,
-  direct HP/mana fallback always), wait for party resources, no grind pulls in
-  instances while drinking.
+* [DONE] Between-pull food: socket + self-bots sit and cast Refreshment
+  (`128701`, HP+mana) — no bag food/drink. Cancels at full resources.
 * [IN PROGRESS] In-dungeon behaviour: tank assist / threat throttle / party rest
   between pulls. Boss/trash scripting still thin — depends on deeper rotations.
+* [DONE] Loot rolls: bots auto Need/Greed/Pass on GROUP_LOOT / NEED_BEFORE_GREED
+  (LFG). Corpse loot peels briefly when OOC with `nc +loot`.
 * [TODO] LFR: bots fill raid finder queues (auto-accept the LFR prompt/roles).
 * [TODO] Random battlegrounds / rated battlegrounds and arenas.
 * [TODO] Open-world grinding/questing for population.

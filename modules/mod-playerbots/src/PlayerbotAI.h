@@ -11,23 +11,32 @@
 *
 * Strategies (AC-style co/nc) are role-gated: tanks never take healer flags,
 * healers never take tank flags, etc. Class rotations still run underneath.
+*
+* Decision loop: BotAiEngine (Trigger → Queue → Multiplier → Action). Spell
+* selection stays in rotations/; the engine picks combat/rest/follow/stay/loot.
 */
 
 #ifndef _SF_PLAYERBOT_AI_H
 #define _SF_PLAYERBOT_AI_H
 
+#include "engine/BotStrategyEngine.h"
+#include "engine/BotTargetValues.h"
 #include "Define.h"
+#include <memory>
 #include <string>
+#include <unordered_set>
 
 class Player;
 class Unit;
 class Creature;
+class BotAiEngine;
 
 class PlayerbotAI
 {
 public:
     // clientControlled: real player keeps WASD; AI only casts (self-bot mode).
     explicit PlayerbotAI(Player* bot, bool clientControlled = false);
+    ~PlayerbotAI();
 
     void UpdateAI(uint32 diff);
 
@@ -38,6 +47,8 @@ public:
 
     // Role filter for "@tank attack" style group orders (tank/heal/dps/ranged).
     bool MatchesRoleFilter(std::string const& filter) const;
+    void SetHoldAssist(bool hold) { _holdAssist = hold; }
+    bool IsHoldAssist() const { return _holdAssist; }
 
     // LFG role mask (tank/healer/damage) from the bot's active specialization.
     uint8 ComputeLfgRole();
@@ -52,6 +63,38 @@ public:
 
     // Re-apply role-default strategies (after init/spec change).
     void ResetStrategiesToRoleDefaults();
+
+    BotStrategyEngine& GetStrategyEngine() { return _strategies; }
+    BotStrategyEngine const& GetStrategyEngine() const { return _strategies; }
+    bool HasStrategy(std::string const& name, BotState state) const { return _strategies.Has(name, state); }
+
+    // --- Public hooks for BotAiEngine / Values / Formation ---
+    bool RunCombat();
+    bool RunCombatCastOnly();
+    bool RunRest();
+    void RunFollow();
+    void RunStay();
+    bool RunLoot();
+    void RunWander();
+    void RunVendor();
+    bool IsGroupInCombatPublic() const;
+    bool ShouldFollowPublic() const;
+    bool NeedsRestPublic() const;
+    bool IsForceResting() const { return _forceRest || _resting; }
+    void RebuildAiEngine();
+
+    Unit* SelectLowestHpGroupEnemyPublic();
+    Unit* SelectAssistTankTargetPublic();
+    Unit* SelectTankTargetPublic();
+    // 0=tank, 1=healer, 2=damage
+    int GetCombatRolePublic() const;
+    bool IsRangedClassPublic() const;
+    bool ShouldWaitForAttack() const;
+    // True when attack / tank attack / pull target is set — engage even while OOC.
+    bool HasEngageTarget() const;
+    bool HasNearbyLootPublic() const;
+    BotTargetValues& GetTargetValues() { return _targets; }
+    BotTargetValues const& GetTargetValues() const { return _targets; }
 
 private:
     // Coarse combat role used by filters and strategy gating.
@@ -74,13 +117,15 @@ private:
     void StopResting();
     bool StartRefreshment();
     bool HasFoodOrDrinkAura() const;
-    bool TryUseFoodOrDrinkItem();
+    bool CastRefreshmentSpell();
     void ApplyDirectRestRegen();
+    void CancelRestConsumables();
     bool PartyNeedsRest() const;
+    bool HandleLootRolls();
 
     // AC-style co / nc strategy engine (role-gated).
     bool HandleStrategyCommand(Player* from, std::string const& cmd, bool acknowledge);
-    bool ApplyStrategyChange(bool combat, char op, std::string const& name, std::string& report);
+    void SyncFlagsFromStrategies();
     std::string FormatStrategies(bool combat) const;
     bool StrategyAllowed(bool combat, std::string const& name) const;
 
@@ -124,26 +169,36 @@ private:
     uint64 _followGuid;
     uint64 _lootGuid;
     uint32 _wanderTimer;
+    // Corpses skipped after a full-bag loot attempt (still open once for rolls).
+    std::unordered_set<uint64> _lootBagFullSkip;
+    // Corpses we already opened so group rolls could start.
+    std::unordered_set<uint64> _lootRollOpened;
 
-    // --- Non-combat (nc) ---
+    BotStrategyEngine _strategies;
+    std::unique_ptr<BotAiEngine> _aiEngine;
+    BotTargetValues _targets;
+    time_t _combatStartTime = 0;
+
+    // --- Flags synced from _strategies (procedural AI still reads these) ---
     bool _stay;          // nc stay (implies not follow)
     bool _food;          // nc food
     bool _loot;          // nc loot
 
-    // --- Shared ---
     bool _passive;       // co/nc passive
     bool _grind;         // co/nc grind
 
-    // --- Combat (co), role-gated ---
     bool _tankMode;      // tank role: peel + hold threat (off = play as DPS)
     bool _tankAssist;    // tank role: peel allies
     bool _dpsMode;       // damage role marker / tank-as-dps
+    bool _dpsAssist;     // damage: assist party (AC dps assist)
     bool _threat;        // damage: throttle when high on threat
     bool _healerDps;     // healer: damage when nobody needs heals
     bool _saveMana;      // healer: efficient heals when low mana
+    bool _waitForAttack; // non-tanks delay DPS after combat starts
 
     bool _forceRest;
     bool _resting;
+    bool _holdAssist;    // @tank attack: hold until tank/party engages, then assist
     uint64 _forcedTargetGuid;
 
     bool _lfgRoleResponded;

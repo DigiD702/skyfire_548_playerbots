@@ -5,6 +5,9 @@
 
 #include "PlayerbotAI.h"
 #include "PlayerbotMgr.h"
+#include "engine/BotAiEngine.h"
+#include "engine/BotFormation.h"
+#include "engine/BotMovement.h"
 #include "rotations/BotRotation.h"
 #include "Bag.h"
 #include "CellImpl.h"
@@ -23,7 +26,9 @@
 #include "Map.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
 #include "Opcodes.h"
+#include <unordered_set>
 #include "PetDefines.h"
 #include "Player.h"
 #include "SharedDefines.h"
@@ -40,6 +45,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
+#include <ctime>
 #include <list>
 #include <sstream>
 #include <string>
@@ -50,6 +56,11 @@ namespace
     // How often (ms) the bot re-evaluates its behaviour. Kept coarse to keep the
     // per-tick cost of large bot populations low.
     constexpr uint32 BOT_AI_UPDATE_INTERVAL = 500;
+
+    // Conjured Mana Pudding wrapper (item cast). Actual seated regen auras:
+    constexpr uint32 BOT_REFRESHMENT_SPELL = 128701;
+    constexpr uint32 BOT_FOOD_AURA_SPELL = 104935;   // Food (OBS_MOD_HEALTH)
+    constexpr uint32 BOT_DRINK_AURA_SPELL = 92800;   // Drink (MOD_POWER_REGEN via periodic dummy)
 
     // Follow a little further out than pets so a party of bots doesn't stack on
     // the leader.
@@ -64,7 +75,9 @@ namespace
     constexpr float BOT_CAST_DIST = 25.0f;
 
     // How far a bot will walk to loot a corpse or reach a repairer.
-    constexpr float BOT_LOOT_SEEK_DIST = 30.0f;
+    // Keep loot near the group — long seeks cause follow↔loot thrash.
+    constexpr float BOT_LOOT_SEEK_DIST = 25.0f;
+    constexpr float BOT_LOOT_LEADER_RADIUS = 40.0f;
     constexpr float BOT_REPAIR_SEEK_DIST = 20.0f;
 
     // Solo idle wander: radius around the bot and pause between picks.
@@ -79,10 +92,67 @@ namespace
     // Strategy enable/disable is runtime co/nc only — not config.
     constexpr float BOT_REST_REGEN_PCT = 0.15f;
 
-    // Matches AELootCreatureCheck / isAllowedToLoot for bot corpse scavenging.
+    bool CanFitLootItem(Player* looter, uint32 itemId, uint32 count)
+    {
+        if (!looter || !itemId || !count)
+            return false;
+        ItemPosCountVec dest;
+        return looter->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, count) == EQUIP_ERR_OK;
+    }
+
+    // Free loot the bot can actually put in bags (or gold). Does not include
+    // roll-blocked threshold items — those are opened once to start rolls.
+    bool HasStorableFreeLoot(Player* looter, Loot* loot)
+    {
+        if (!looter || !loot || loot->isLooted())
+            return false;
+        if (loot->gold)
+            return true;
+        for (LootItem const& item : loot->items)
+        {
+            if (item.is_looted || item.is_blocked)
+                continue;
+            if (CanFitLootItem(looter, item.itemid, item.count))
+                return true;
+        }
+        return false;
+    }
+
+    bool HasPendingLootRolls(Loot* loot)
+    {
+        return loot && loot->hasOverThresholdItem();
+    }
+
+    // Skip corpses that only have roll-blocked threshold items (LFG NBG thrash),
+    // or free loot the bot cannot store (full bags) after already opening for rolls.
+    bool HasTakeableLoot(Player* looter, Creature* creature,
+        std::unordered_set<uint64> const* bagFullSkip = nullptr,
+        std::unordered_set<uint64> const* rollOpened = nullptr)
+    {
+        if (!looter || !creature || creature->IsAlive() || !looter->isAllowedToLoot(creature))
+            return false;
+        Loot* loot = &creature->loot;
+        if (!loot || loot->isLooted())
+            return false;
+
+        uint64 const guid = creature->GetGUID();
+        bool const pendingRolls = HasPendingLootRolls(loot);
+        bool const needOpenForRolls = pendingRolls && (!rollOpened || !rollOpened->count(guid));
+        if (needOpenForRolls)
+            return true;
+
+        if (bagFullSkip && bagFullSkip->count(guid) && !HasStorableFreeLoot(looter, loot))
+            return false;
+
+        return HasStorableFreeLoot(looter, loot);
+    }
+
     struct BotLootCreatureCheck
     {
-        BotLootCreatureCheck(Player* looter, float range) : _looter(looter), _range(range) { }
+        BotLootCreatureCheck(Player* looter, float range,
+            std::unordered_set<uint64> const* bagFullSkip,
+            std::unordered_set<uint64> const* rollOpened)
+            : _looter(looter), _range(range), _bagFullSkip(bagFullSkip), _rollOpened(rollOpened) { }
 
         bool operator()(Creature* creature) const
         {
@@ -90,11 +160,13 @@ namespace
                 return false;
             if (!_looter->IsWithinDist(creature, _range))
                 return false;
-            return _looter->isAllowedToLoot(creature);
+            return HasTakeableLoot(_looter, creature, _bagFullSkip, _rollOpened);
         }
 
         Player* _looter;
         float _range;
+        std::unordered_set<uint64> const* _bagFullSkip;
+        std::unordered_set<uint64> const* _rollOpened;
     };
 
     struct BotRepairerCheck
@@ -120,46 +192,153 @@ PlayerbotAI::PlayerbotAI(Player* bot, bool clientControlled)
       _followGuid(0), _lootGuid(0), _wanderTimer(0),
       _stay(false), _food(true), _loot(true),
       _passive(false), _grind(false),
-      _tankMode(false), _tankAssist(false), _dpsMode(false), _threat(false),
-      _healerDps(false), _saveMana(false),
-      _forceRest(false), _resting(false),
+      _tankMode(false), _tankAssist(false), _dpsMode(false), _dpsAssist(false),
+      _threat(false), _healerDps(false), _saveMana(false), _waitForAttack(false),
+      _forceRest(false), _resting(false), _holdAssist(false),
       _forcedTargetGuid(0), _lfgRoleResponded(false), _lfgProposalResponded(false)
 {
     ResetStrategiesToRoleDefaults();
+    _aiEngine = std::make_unique<BotAiEngine>(this);
 }
+
+PlayerbotAI::~PlayerbotAI() = default;
 
 void PlayerbotAI::ResetStrategiesToRoleDefaults()
 {
-    _stay = false;
-    _food = true;
-    _loot = true;
-    _passive = false;
-    _grind = false;
+    CombatRole const role = GetCombatRole();
+    _strategies.ResetToRoleDefaults(role == CombatRole::Tank, role == CombatRole::Healer);
+    SyncFlagsFromStrategies();
     _forceRest = false;
+    _holdAssist = false;
+    ClearForcedTarget();
+}
 
-    _tankMode = false;
-    _tankAssist = false;
-    _dpsMode = false;
-    _threat = false;
-    _healerDps = false;
-    _saveMana = false;
+void PlayerbotAI::SyncFlagsFromStrategies()
+{
+    _food = _strategies.Has("food", BotState::NonCombat);
+    _loot = _strategies.Has("loot", BotState::NonCombat);
+    _stay = _strategies.Has("stay", BotState::NonCombat)
+        || _strategies.Has("stay", BotState::Combat);
+    if (_strategies.Has("follow", BotState::NonCombat))
+        _stay = false;
 
+    _passive = _strategies.Has("passive", BotState::Combat)
+        || _strategies.Has("passive", BotState::NonCombat);
+    _grind = _strategies.Has("grind", BotState::Combat)
+        || _strategies.Has("grind", BotState::NonCombat);
+
+    _tankMode = _strategies.Has("tank", BotState::Combat);
+    _tankAssist = _strategies.Has("tank assist", BotState::Combat);
+    _dpsMode = _strategies.Has("dps", BotState::Combat);
+    _dpsAssist = _strategies.Has("dps assist", BotState::Combat);
+    _threat = _strategies.Has("threat", BotState::Combat);
+    _healerDps = _strategies.Has("healer dps", BotState::Combat);
+    _saveMana = _strategies.Has("save mana", BotState::Combat);
+    _waitForAttack = _strategies.Has("wait for attack", BotState::Combat);
+    if (_strategies.Has("heal", BotState::Combat))
+        _healerDps = false;
+
+    // Tank without explicit +dps stays in tank mode.
+    if (GetCombatRole() == CombatRole::Tank && !_strategies.Has("dps", BotState::Combat))
+        _tankMode = true;
+    if (GetCombatRole() == CombatRole::Damage && !_dpsMode)
+        _dpsMode = true; // damage bots always "dps" unless somehow cleared
+
+    RebuildAiEngine();
+}
+
+void PlayerbotAI::RebuildAiEngine()
+{
+    if (_aiEngine)
+        _aiEngine->Rebuild();
+}
+
+bool PlayerbotAI::RunCombat() { return HandleCombat(); }
+bool PlayerbotAI::RunCombatCastOnly() { return HandleCombatCastOnly(); }
+bool PlayerbotAI::RunRest() { return HandleRest(); }
+void PlayerbotAI::RunFollow() { HandleFollow(); }
+void PlayerbotAI::RunStay() { HandleStay(); }
+bool PlayerbotAI::RunLoot() { return HandleLoot(); }
+void PlayerbotAI::RunWander() { HandleWander(); }
+void PlayerbotAI::RunVendor() { HandleVendor(); }
+bool PlayerbotAI::IsGroupInCombatPublic() const { return GroupInCombat(); }
+
+Unit* PlayerbotAI::SelectLowestHpGroupEnemyPublic() { return SelectLowestHpGroupEnemy(); }
+Unit* PlayerbotAI::SelectAssistTankTargetPublic() { return SelectAssistTankTarget(); }
+Unit* PlayerbotAI::SelectTankTargetPublic() { return SelectTankTarget(); }
+
+int PlayerbotAI::GetCombatRolePublic() const
+{
     switch (GetCombatRole())
     {
-        case CombatRole::Tank:
-            _tankMode = true;
-            _tankAssist = true;
-            break;
-        case CombatRole::Healer:
-            _healerDps = false; // strict heal in dungeons
-            _saveMana = true;
-            break;
-        case CombatRole::Damage:
-        default:
-            _dpsMode = true;
-            _threat = true; // keep threat low vs tank
-            break;
+        case CombatRole::Tank:   return 0;
+        case CombatRole::Healer: return 1;
+        default:                 return 2;
     }
+}
+
+bool PlayerbotAI::IsRangedClassPublic() const { return IsRangedClass(); }
+
+bool PlayerbotAI::HasEngageTarget() const
+{
+    if (_forcedTargetGuid && GetForcedTarget())
+        return true;
+    if (_targets.GetPullGuid())
+        return _targets.GetPullTarget(const_cast<PlayerbotAI*>(this)) != nullptr;
+    return false;
+}
+
+bool PlayerbotAI::ShouldWaitForAttack() const
+{
+    if (!_waitForAttack || !_bot)
+        return false;
+    // Explicit attack/pull orders never wait — engage immediately.
+    if (HasEngageTarget())
+        return false;
+    // Tanks never wait — they are the pull.
+    if (GetCombatRole() == CombatRole::Tank && _tankMode)
+        return false;
+    // Always fight back if something is hitting us.
+    if (!_bot->getAttackers().empty())
+        return false;
+    if (!GroupInCombat() && !_bot->IsInCombat())
+        return false;
+    if (!_combatStartTime)
+        return false;
+    uint32 const waitSec = sPlayerbotMgr->GetWaitForAttackSeconds();
+    return (time(nullptr) - _combatStartTime) < time_t(waitSec);
+}
+
+bool PlayerbotAI::ShouldFollowPublic() const
+{
+    if (!_bot || _clientControlled || _stay)
+        return false;
+    if (HasEngageTarget())
+        return false;
+    Group* group = _bot->GetGroup();
+    if (!group)
+        return false;
+    uint64 const leaderGuid = group->GetLeaderGUID();
+    return leaderGuid && leaderGuid != _bot->GetGUID();
+}
+
+bool PlayerbotAI::NeedsRestPublic() const
+{
+    if (!_bot)
+        return false;
+    // Never report rest need while fighting — self-bot was sitting mid-pull when
+    // mana dipped and IsInCombat alone flickered false between casts.
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+        return false;
+    if (HasEngageTarget())
+        return false;
+    if (_forceRest || _resting)
+        return true;
+    float const hpPct = HealthPct();
+    float const manaPct = ManaPct();
+    bool const needHp = hpPct < sPlayerbotMgr->GetRestHealthPct();
+    bool const needMana = UsesMana() && manaPct < sPlayerbotMgr->GetRestManaPct();
+    return needHp || needMana || HasFoodOrDrinkAura();
 }
 
 void PlayerbotAI::UpdateAI(uint32 diff)
@@ -167,10 +346,11 @@ void PlayerbotAI::UpdateAI(uint32 diff)
     if (!_bot || !_bot->IsInWorld())
         return;
 
-    // Invites must react immediately - they time out if bots only answer on
-    // the coarse AI interval. LFG role/proposal responses run from
+    // Invites / loot rolls must react immediately — they time out if bots only
+    // answer on the coarse AI interval. LFG role/proposal responses run from
     // PlayerbotMgr::Update on the world thread (not here on map workers).
     HandlePendingInvites();
+    HandleLootRolls();
 
     _updateTimer += diff;
     if (_updateTimer < BOT_AI_UPDATE_INTERVAL)
@@ -185,50 +365,43 @@ void PlayerbotAI::UpdateAI(uint32 diff)
 
     _updateTimer = 0;
 
-    // Self-bot: client owns movement. Cast in combat; allow food regen OOC.
-    if (_clientControlled)
-    {
-        if (!_bot->IsAlive())
-            return;
-        if (HandleCombatCastOnly())
-            return;
-        HandleRest();
-        return;
-    }
-
     HandleInteractions();
 
     if (!_bot->IsAlive())
         return; // TODO: corpse release / resurrection handling
 
-    if (HandleCombat())
-        return; // engaged: combat drives movement
-
-    // Out of combat: eat/drink before follow/wander when ordered or low resources.
-    if (HandleRest())
+    // AC-style Trigger → Action → Queue. MoP rotations run inside the combat action.
+    if (_aiEngine && _aiEngine->DoNextAction())
         return;
 
+    // Fallback if the engine queued nothing useful (should be rare).
+    if (_clientControlled)
+    {
+        if (HandleCombatCastOnly())
+            return;
+        // Self-bot: never auto-drink while combat is active (engine RestAction
+        // is also gated; keep the fallback aligned).
+        if (!_bot->IsInCombat() && !GroupInCombat() && _bot->getAttackers().empty())
+            HandleRest();
+        return;
+    }
+
+    if (HandleCombat())
+        return;
+    if (HandleRest())
+        return;
     if (_stay)
     {
         HandleStay();
         HandleVendor();
         return;
     }
-
-    // Grouped non-leaders stick with the leader. Solo / group-leader bots wander.
-    // Loot and repair walks are solo-only — otherwise they cancel MoveFollow and
-    // look like leftover random movement after the bot was invited.
-    Group* group = _bot->GetGroup();
-    uint64 leaderGuid = group ? group->GetLeaderGUID() : 0;
-    bool const followLeader = leaderGuid && leaderGuid != _bot->GetGUID();
-
-    if (!followLeader && HandleLoot())
-        return;
-
-    if (followLeader)
+    if (ShouldFollowPublic())
         HandleFollow();
     else
     {
+        if (HandleLoot())
+            return;
         HandleWander();
         HandleVendor();
     }
@@ -369,8 +542,36 @@ uint8 PlayerbotAI::ComputeLfgRole()
 // position for the class, and run the rotation.
 bool PlayerbotAI::HandleCombat()
 {
+    // Drop refreshment the moment combat is relevant — do not stay seated.
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+    {
+        if (_resting || _bot->IsSitState() || HasFoodOrDrinkAura())
+            StopResting();
+    }
+
+    // Track group/self combat start for wait-for-attack (AC WaitForAttackStrategy).
+    if (_bot->IsInCombat() || GroupInCombat())
+    {
+        if (!_combatStartTime)
+            _combatStartTime = time(nullptr);
+    }
+    else if (_combatStartTime)
+    {
+        _combatStartTime = 0;
+        _targets.OnCombatEnded();
+    }
+
+    // Non-tanks with +wait for attack hold DPS until the tank has threat time.
+    if (ShouldWaitForAttack())
+    {
+        if (!_clientControlled && !_stay)
+            HandleFollow();
+        return true;
+    }
+
     // Between pulls: sit/drink with the party instead of chasing the next pack.
-    if (!_bot->IsInCombat() && !GroupInCombat() && _food && PartyNeedsRest())
+    // Explicit attack/pull orders always engage — don't stall for drinks.
+    if (!HasEngageTarget() && !_bot->IsInCombat() && !GroupInCombat() && _food && PartyNeedsRest())
         return false;
 
     if (GetCombatRole() == CombatRole::Healer)
@@ -401,9 +602,13 @@ bool PlayerbotAI::HandleCombat()
         if (_forcedTargetGuid)
             ClearForcedTarget();
 
-        // Nothing to fight: drop any lingering attack/chase so we can follow.
+        // Nothing to fight: drop lingering attack/chase/selection so we don't
+        // keep facing a corpse like a stuck loot attempt.
         if (_bot->GetVictim())
             _bot->AttackStop();
+        if (Unit* selected = _bot->GetSelectedUnit())
+            if (!selected->IsAlive())
+                _bot->SetSelection(0);
         _chaseGuid = 0;
         return false;
     }
@@ -430,9 +635,8 @@ bool PlayerbotAI::HandleCombat()
                 || _bot->IsStopped();
             if (reissue)
             {
-                _bot->GetMotionMaster()->Clear();
-                _bot->GetMotionMaster()->MoveChase(target, 0.0f);
-                _chaseGuid = target->GetGUID();
+                if (BotMovement::MoveChase(_bot, target, 0.0f))
+                    _chaseGuid = target->GetGUID();
             }
         }
         else
@@ -462,6 +666,8 @@ bool PlayerbotAI::HandleCombat()
     float const dist = _bot->GetDistance(target);
     bool const inRange = dist <= BOT_CAST_DIST;
     bool const hasLos = _bot->IsWithinLOSInMap(target);
+    bool const casting = _bot->IsNonMeleeSpellCasted(false)
+        || _bot->HasUnitState(UNIT_STATE_CASTING);
 
     // Ensure we are not in a melee-attack state (chase _reachTarget can force it).
     if (_bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
@@ -473,16 +679,13 @@ bool PlayerbotAI::HandleCombat()
 
     if (inRange && hasLos)
     {
-        if (!_bot->IsStopped())
-            _bot->StopMoving();
-        if (_bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
+        // Never StopMoving / Clear while casting — that interrupts the spell.
+        if (!casting)
         {
-            _bot->GetMotionMaster()->Clear();
-            _bot->GetMotionMaster()->MoveIdle();
+            BotMovement::StopAndIdle(_bot);
+            _bot->SetSelection(target->GetGUID());
+            BotMovement::FaceUnit(_bot, target);
         }
-        _bot->SetSelection(target->GetGUID());
-        if (!_bot->HasInArc(static_cast<float>(M_PI), target))
-            _bot->SetInFront(target);
 
         _chaseGuid = target->GetGUID();
         DoRotation(target);
@@ -517,9 +720,16 @@ bool PlayerbotAI::HandleCombat()
 // range with LoS; they steer into position themselves.
 bool PlayerbotAI::HandleCombatCastOnly()
 {
+    // Drop refreshment as soon as combat is relevant.
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+    {
+        if (_resting || _bot->IsSitState() || HasFoodOrDrinkAura())
+            StopResting();
+    }
+
     // Seated / mid-cast OOC: never clear rest or start a rotation — that cancelled
     // clicked food/drink and wiped eat/drink state every AI tick.
-    if (!_bot->IsInCombat() && _bot->getAttackers().empty())
+    if (!_bot->IsInCombat() && _bot->getAttackers().empty() && !GroupInCombat())
     {
         if (_bot->IsSitState() || _bot->IsNonMeleeSpellCasted(false) || HasFoodOrDrinkAura())
             return false;
@@ -572,51 +782,78 @@ bool PlayerbotAI::HandleCombatCastOnly()
     return true;
 }
 
-// Target priority (player mouseover is NOT used — only "attack"/"tank attack"
-// forced targets come from chat commands):
-//   1) Forced command target
+// Target priority (AC Values: pull / tank / dps / current):
+//   1) Pull / forced command target
 //   2) Tanks: peel mobs off healers/party, then hold the pack
 //   3) Own attackers
-//   4) Group combat: prefer the tank's target, else lowest-HP mob on the party
+//   4) Group combat: dps assist → least-HP; else tank victim
 //   5) Grind (explicit) / self-bot selected unit
 Unit* PlayerbotAI::SelectTarget()
 {
+    if (Unit* pull = _targets.GetPullTarget(this))
+        return pull;
     if (Unit* forced = GetForcedTarget())
+    {
+        _targets.SetCurrentTarget(forced);
         return forced;
+    }
 
     // Tanks in tank-mode own peel / pack selection.
     if (GetCombatRole() == CombatRole::Tank && _tankMode)
-        if (Unit* tankTarget = SelectTankTarget())
+        if (Unit* tankTarget = _targets.GetTankTarget(this))
+        {
+            _targets.SetCurrentTarget(tankTarget);
             return tankTarget;
+        }
 
     for (Unit* attacker : _bot->getAttackers())
         if (attacker && attacker->IsAlive() && _bot->IsValidAttackTarget(attacker))
+        {
+            _holdAssist = false; // got aggro — fight back
+            _targets.SetCurrentTarget(attacker);
             return attacker;
+        }
 
     // Passive bots only fight back; they do not assist or pull.
     if (_passive)
         return nullptr;
 
-    // Party fight: stick with the tank's target when possible, otherwise burn
-    // the lowest-HP mob already attacking someone in the group.
-    if (Unit* tankAssist = SelectAssistTankTarget())
-        return tankAssist;
+    // @tank attack: non-tanks hold until a mob is actually swinging on the party.
+    if (_holdAssist)
+    {
+        if (SelectGroupThreatTarget())
+            _holdAssist = false;
+        else
+            return nullptr;
+    }
 
-    if (Unit* groupThreat = SelectGroupThreatTarget())
-        return groupThreat;
+    // AC dps assist: damage bots without +dps assist only fight forced/own aggro.
+    bool const canAssist = (GetCombatRole() != CombatRole::Damage) || _dpsAssist || _grind;
 
-    if (Unit* execute = SelectLowestHpGroupEnemy())
-        return execute;
+    if (canAssist)
+    {
+        if (Unit* dps = _targets.GetDpsTarget(this))
+        {
+            _targets.SetCurrentTarget(dps);
+            return dps;
+        }
+        if (Unit* tankAssist = _targets.GetAssistTankTarget(this))
+        {
+            _targets.SetCurrentTarget(tankAssist);
+            return tankAssist;
+        }
+    }
 
     if (_grind)
     {
-        // Never open-world grind-pull inside dungeons/raids — that yanks the party
-        // into trash while healers are drinking.
         Map* map = _bot->GetMap();
         bool const inInstance = map && map->IsInstance();
         if (!inInstance && !PartyNeedsRest())
             if (Unit* grind = SelectGrindTarget())
+            {
+                _targets.SetCurrentTarget(grind);
                 return grind;
+            }
     }
 
     // Self-bot only: the real player's selected unit while they are in combat.
@@ -624,7 +861,10 @@ Unit* PlayerbotAI::SelectTarget()
     {
         if (Unit* selected = _bot->GetSelectedUnit())
             if (selected->IsAlive() && _bot->IsValidAttackTarget(selected))
+            {
+                _targets.SetCurrentTarget(selected);
                 return selected;
+            }
     }
 
     return nullptr;
@@ -656,11 +896,13 @@ void PlayerbotAI::SetForcedTarget(Unit* target)
 {
     _forcedTargetGuid = target ? target->GetGUID() : 0;
     _chaseGuid = 0;
+    _targets.SetPullTarget(target);
 }
 
 void PlayerbotAI::ClearForcedTarget()
 {
     _forcedTargetGuid = 0;
+    _targets.SetPullTarget(nullptr);
 }
 
 PlayerbotAI::CombatRole PlayerbotAI::GetCombatRole() const
@@ -767,10 +1009,10 @@ uint32 PlayerbotAI::GetFillerSpell() const
 
 void PlayerbotAI::DoRotation(Unit* target)
 {
-    if (!target)
+    if (!target || !target->IsAlive())
         return;
 
-    if (_bot->HasUnitState(UNIT_STATE_CASTING))
+    if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
         return;
 
     // DPS threat strategy: pause damage if we are about to rip aggro from the tank.
@@ -821,7 +1063,7 @@ bool PlayerbotAI::ShouldThrottleThreat(Unit* target) const
 
 bool PlayerbotAI::HandleHealing()
 {
-    if (_bot->HasUnitState(UNIT_STATE_CASTING))
+    if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
         return true;
 
     // Kick / racial / trinket before heals when a hostile is available.
@@ -1167,7 +1409,12 @@ uint32 PlayerbotAI::GetHealSpell() const
     else if (_bot->GetMaxHealth())
         lowestPct = 100.0f * float(_bot->GetHealth()) / float(_bot->GetMaxHealth());
 
+    // Fallback only — prefer SelectNextHeal. No big heals above ~65%.
     bool const urgent = lowestPct < 40.0f;
+    bool const big = lowestPct < 65.0f;
+    bool const topOff = lowestPct < 85.0f;
+    if (!topOff)
+        return 0;
 
     switch (_bot->getClass())
     {
@@ -1176,29 +1423,37 @@ uint32 PlayerbotAI::GetHealSpell() const
                 return 19750; // Flash of Light
             if (BotRotation::SpellReady(_bot, 20473))
                 return 20473; // Holy Shock
-            return BotRotation::SpellReady(_bot, 635) ? 635 : 19750; // Holy Light / FoL
+            if (big && BotRotation::SpellReady(_bot, 635))
+                return 635; // Holy Light
+            return 0;
         case CLASS_PRIEST:
             if (urgent && BotRotation::SpellReady(_bot, 2061))
                 return 2061; // Flash Heal
-            if (BotRotation::SpellReady(_bot, 2060))
-                return 2060; // Heal
-            return 2061;
+            if (big && BotRotation::SpellReady(_bot, 2060))
+                return 2060; // Heal / Greater Heal
+            if (BotRotation::SpellReady(_bot, 139))
+                return 139; // Renew
+            return 0;
         case CLASS_SHAMAN:
             if (urgent && BotRotation::SpellReady(_bot, 8004))
                 return 8004; // Healing Surge
-            if (BotRotation::SpellReady(_bot, 77472))
+            if (big && BotRotation::SpellReady(_bot, 77472))
                 return 77472; // Greater Healing Wave
-            return BotRotation::SpellReady(_bot, 331) ? 331 : 8004;
+            if (topOff && BotRotation::SpellReady(_bot, 331))
+                return 331; // Healing Wave
+            return 0;
         case CLASS_DRUID:
             if (urgent && BotRotation::SpellReady(_bot, 8936))
                 return 8936; // Regrowth
-            if (BotRotation::SpellReady(_bot, 5185))
+            if (big && BotRotation::SpellReady(_bot, 5185))
                 return 5185; // Healing Touch
-            return BotRotation::SpellReady(_bot, 774) ? 774 : 5185; // Rejuvenation
+            if (BotRotation::SpellReady(_bot, 774))
+                return 774; // Rejuvenation
+            return 0;
         case CLASS_MONK:
-            if (BotRotation::SpellReady(_bot, 116694))
+            if (big && BotRotation::SpellReady(_bot, 116694))
                 return 116694; // Surging Mist
-            return 115175; // Soothing Mist
+            return BotRotation::SpellReady(_bot, 115175) ? 115175 : 0; // Soothing Mist
         default:
             return 0;
     }
@@ -1278,11 +1533,23 @@ bool PlayerbotAI::HandleLoot()
     if (_lootGuid)
     {
         Creature* corpse = _bot->GetMap()->GetCreature(_lootGuid);
-        if (!corpse || corpse->IsAlive() || !_bot->isAllowedToLoot(corpse))
+        if (!corpse || corpse->IsAlive()
+            || !HasTakeableLoot(_bot, corpse, &_lootBagFullSkip, &_lootRollOpened))
         {
             _lootGuid = 0;
             return false;
         }
+
+        // Do not open while a real player is already looking at this corpse.
+        Player* leader = nullptr;
+        if (Group* group = _bot->GetGroup())
+        {
+            if (uint64 const leaderGuid = group->GetLeaderGUID())
+                if (leaderGuid != _bot->GetGUID())
+                    leader = ObjectAccessor::FindPlayer(leaderGuid);
+        }
+        if (leader && leader->GetLootGUID() == corpse->GetGUID())
+            return true;
 
         if (!_bot->IsWithinDistInMap(corpse, INTERACTION_DISTANCE))
         {
@@ -1291,21 +1558,50 @@ bool PlayerbotAI::HandleLoot()
             return true;
         }
 
-        // In range: open loot, take everything (incl. money), then release.
-        _bot->SendLoot(corpse->GetGUID(), LootType::LOOT_CORPSE);
+        // In range: open loot (starts group rolls), take free loot that fits.
+        // Never StoreLootItem on roll-blocked slots — that calls SendLootRelease
+        // and aborts Need/Greed.
+        uint64 const corpseGuid = corpse->GetGUID();
+        _bot->SendLoot(corpseGuid, LootType::LOOT_CORPSE);
+        if (HasPendingLootRolls(&corpse->loot))
+            _lootRollOpened.insert(corpseGuid);
 
         Loot* loot = &corpse->loot;
         uint32 maxSlot = loot->GetMaxSlotInLootFor(_bot);
+        bool storedOrTookGold = false;
+        bool sawFreeItem = false;
+        bool bagFull = false;
         for (uint32 slot = 0; slot < maxSlot; ++slot)
-            _bot->StoreLootItem(uint8(slot), loot, corpse->GetGUID());
+        {
+            LootItem* item = loot->LootItemInSlot(slot, _bot);
+            if (!item || item->is_blocked)
+                continue;
+            sawFreeItem = true;
+            if (!CanFitLootItem(_bot, item->itemid, item->count))
+            {
+                bagFull = true;
+                continue;
+            }
+            _bot->StoreLootItem(uint8(slot), loot, corpseGuid);
+            storedOrTookGold = true;
+        }
 
         if (loot->gold)
         {
             WorldPacket money(CMSG_LOOT_MONEY);
             _bot->GetSession()->HandleLootMoneyOpcode(money);
+            storedOrTookGold = true;
         }
 
-        _bot->GetSession()->DoLootRelease(corpse->GetGUID());
+        _bot->GetSession()->DoLootRelease(corpseGuid);
+
+        // Full bags and nothing stored: do not keep pathing back to this corpse.
+        // Rolls were opened above if needed; HandleLootRolls covers voting.
+        if (bagFull && !storedOrTookGold && sawFreeItem)
+            _lootBagFullSkip.insert(corpseGuid);
+        else if (storedOrTookGold)
+            _lootBagFullSkip.erase(corpseGuid);
+
         _lootGuid = 0;
         _followGuid = 0;
         return false;
@@ -1331,14 +1627,29 @@ bool PlayerbotAI::HandleLoot()
 Creature* PlayerbotAI::FindNearbyLoot()
 {
     std::list<Creature*> corpses;
-    BotLootCreatureCheck check(_bot, BOT_LOOT_SEEK_DIST);
+    BotLootCreatureCheck check(_bot, BOT_LOOT_SEEK_DIST, &_lootBagFullSkip, &_lootRollOpened);
     Skyfire::CreatureListSearcher<BotLootCreatureCheck> searcher(_bot, corpses, check);
     _bot->VisitNearbyGridObject(BOT_LOOT_SEEK_DIST, searcher);
+
+    // Prefer corpses near the group leader so bots don't march off to distant
+    // sparkles while follow keeps yanking them back.
+    Player* leader = nullptr;
+    if (Group* group = _bot->GetGroup())
+    {
+        uint64 const leaderGuid = group->GetLeaderGUID();
+        if (leaderGuid && leaderGuid != _bot->GetGUID())
+            leader = ObjectAccessor::FindPlayer(leaderGuid);
+    }
 
     Creature* best = nullptr;
     float bestDist = BOT_LOOT_SEEK_DIST + 1.0f;
     for (Creature* c : corpses)
     {
+        if (leader && leader->IsInWorld() && leader->GetMap() == _bot->GetMap())
+        {
+            if (leader->GetDistance(c) > BOT_LOOT_LEADER_RADIUS)
+                continue;
+        }
         float d = _bot->GetDistance(c);
         if (d < bestDist)
         {
@@ -1347,6 +1658,60 @@ Creature* PlayerbotAI::FindNearbyLoot()
         }
     }
     return best;
+}
+
+bool PlayerbotAI::HasNearbyLootPublic() const
+{
+    if (!_bot || !_loot || _clientControlled)
+        return false;
+    if (_bot->IsInCombat() || GroupInCombat())
+        return false;
+    if (_lootGuid)
+        return true;
+    return const_cast<PlayerbotAI*>(this)->FindNearbyLoot() != nullptr;
+}
+
+bool PlayerbotAI::HandleLootRolls()
+{
+    if (!_bot || !_bot->IsInWorld())
+        return false;
+
+    Group* group = _bot->GetGroup();
+    if (!group || !group->isRollLootActive())
+        return false;
+
+    bool voted = false;
+    for (Roll* roll : group->GetRolls())
+    {
+        if (!roll || !roll->isValid())
+            continue;
+
+        auto voteItr = roll->playerVote.find(_bot->GetGUID());
+        if (voteItr == roll->playerVote.end() || voteItr->second != RollType::MAX_ROLL_TYPE)
+            continue;
+
+        RollType vote = RollType::ROLL_GREED;
+        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(roll->itemid))
+        {
+            // Simple heuristic: greed on most loot; need on usable weapons/armor
+            // the bot can equip (keeps LFG thresholds moving).
+            if (proto->Class == ITEM_CLASS_WEAPON || proto->Class == ITEM_CLASS_ARMOR)
+            {
+                if (_bot->CanUseItem(proto) == EQUIP_ERR_OK)
+                    vote = RollType::ROLL_NEED;
+            }
+        }
+
+        // Master loot / FFA rolls still expect a vote so the timer clears.
+        LootMethod const method = group->GetLootMethod();
+        if (method == LootMethod::MASTER_LOOT || method == LootMethod::FREE_FOR_ALL)
+            vote = RollType::ROLL_PASS;
+
+        group->CountRollVote(_bot->GetGUID(), roll->itemGUID, vote);
+        voted = true;
+        break; // one vote per tick
+    }
+    return voted;
 }
 
 // Out of combat, keep formation on the group leader. If the leader is on
@@ -1362,14 +1727,17 @@ void PlayerbotAI::HandleFollow()
 
     // Cancel solo wander state so a mid-walk / pause never resumes after invite.
     _wanderTimer = 0;
-    _lootGuid = 0;
+
+    // Mid-loot path: do not overwrite POINT motion with MoveFollow (that causes
+    // the loot↔follow thrash when a corpse is still in seek range).
+    if (_lootGuid)
+        return;
 
     if (!leader || !leader->IsInWorld() || !leader->IsAlive())
     {
         if (_followGuid)
         {
-            _bot->GetMotionMaster()->Clear();
-            _bot->GetMotionMaster()->MoveIdle();
+            BotMovement::StopAndIdle(_bot);
             _followGuid = 0;
         }
         return;
@@ -1383,16 +1751,30 @@ void PlayerbotAI::HandleFollow()
         return;
     }
 
+    // Never interrupt casts for follow adjustments (AC Follow/ChaseCastStop pitfall).
+    if (BotMovement::IsCasting(_bot))
+        return;
+
+    float const dist = _bot->GetDistance(leader);
     MovementGeneratorType const moveType = _bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
-    if (_followGuid != leaderGuid || moveType != FOLLOW_MOTION_TYPE)
+
+    // Catch up when far / follow lost. When already in range, park Idle — do NOT
+    // mirror the master's facing, and clear dead target selection.
+    if (_followGuid != leaderGuid || dist > BOT_FOLLOW_DIST + 3.5f
+        || (moveType != FOLLOW_MOTION_TYPE && moveType != IDLE_MOTION_TYPE && !_bot->IsStopped()))
     {
-        // Clear first so an in-progress wander MovePoint/spline is fully stopped
-        // before Follow takes over (Mutate alone left bots mid-wander visually).
-        _bot->GetMotionMaster()->Clear();
-        float angle = float(_bot->GetGUIDLow() % 16) / 16.0f * TWO_PI;
-        _bot->GetMotionMaster()->MoveFollow(leader, BOT_FOLLOW_DIST, angle);
+    if (BotMovement::MoveFollowLeader(_bot, leader,
+            BotFormation::FollowDistance(this), BotFormation::FollowAngle(this)))
+    {
         _followGuid = leaderGuid;
         _chaseGuid = 0;
+    }
+    }
+    else if (dist <= BOT_FOLLOW_DIST + 2.5f
+        && (moveType == FOLLOW_MOTION_TYPE || !_bot->IsStopped()))
+    {
+        BotMovement::StopAndIdle(_bot);
+        BotMovement::ClearDeadSelection(_bot);
     }
 }
 
@@ -1573,9 +1955,9 @@ void PlayerbotAI::StopResting()
     _resting = false;
     if (!_bot)
         return;
-    // Self-bot owns stand/sit (AFK sit, manual food/drink). Never yank them up.
-    if (_clientControlled)
-        return;
+    // Drop food/drink before standing — leftover OBS_MOD_POWER refreshment ticks
+    // were spiking displayed mana toward 100% while already in combat.
+    CancelRestConsumables();
     if (_bot->getStandState() != UNIT_STAND_STATE_STAND)
         _bot->SetStandState(UNIT_STAND_STATE_STAND);
 }
@@ -1584,6 +1966,13 @@ bool PlayerbotAI::HasFoodOrDrinkAura() const
 {
     if (!_bot)
         return false;
+
+    // Explicit refreshment aura IDs (do not require NOT_SEATED — some MoP
+    // wrappers omit that flag and we must not re-cast every AI tick).
+    if (_bot->HasAura(BOT_REFRESHMENT_SPELL)
+        || _bot->HasAura(BOT_FOOD_AURA_SPELL)
+        || _bot->HasAura(BOT_DRINK_AURA_SPELL))
+        return true;
 
     Unit::AuraApplicationMap const& auras = _bot->GetAppliedAuras();
     for (Unit::AuraApplicationMap::const_iterator itr = auras.begin(); itr != auras.end(); ++itr)
@@ -1594,19 +1983,40 @@ bool PlayerbotAI::HasFoodOrDrinkAura() const
         SpellInfo const* info = app->GetBase()->GetSpellInfo();
         if (!info)
             continue;
-        // Food/drink buffs break if you stand (NOT_SEATED interrupt).
         if (!(info->AuraInterruptFlags & AURA_INTERRUPT_FLAG_NOT_SEATED))
             continue;
-        if (info->HasAura(SPELL_AURA_OBS_MOD_HEALTH) || info->HasAura(SPELL_AURA_MOD_POWER_REGEN))
+        if (info->HasAura(SPELL_AURA_OBS_MOD_HEALTH)
+            || info->HasAura(SPELL_AURA_MOD_POWER_REGEN)
+            || info->HasAura(SPELL_AURA_MOD_POWER_REGEN_PERCENT)
+            || info->HasAura(SPELL_AURA_PERIODIC_ENERGIZE)
+            || info->HasAura(SPELL_AURA_MOD_INCREASE_ENERGY_PERCENT)
+            || info->HasAura(SPELL_AURA_OBS_MOD_POWER))
             return true;
     }
     return false;
 }
 
-bool PlayerbotAI::TryUseFoodOrDrinkItem()
+void PlayerbotAI::CancelRestConsumables()
+{
+    if (!_bot)
+        return;
+    // Only interrupt while seated (food/drink cast). StopResting() runs every
+    // combat tick — interrupting here was canceling Lightning Bolt / heals after
+    // ~1s and also canceling the player's own casts in self-bot mode.
+    if (_bot->IsSitState() && _bot->IsNonMeleeSpellCasted(false))
+        _bot->InterruptNonMeleeSpells(false);
+    _bot->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_NOT_SEATED);
+    _bot->RemoveAurasDueToSpell(BOT_REFRESHMENT_SPELL);
+    _bot->RemoveAurasDueToSpell(BOT_FOOD_AURA_SPELL);
+    _bot->RemoveAurasDueToSpell(BOT_DRINK_AURA_SPELL);
+}
+
+bool PlayerbotAI::CastRefreshmentSpell()
 {
     if (!_bot || _bot->IsInCombat())
         return false;
+    // Already eating/drinking — never re-cast (re-casts stacked regen auras and
+    // dumped mana to 100% in one pulse, then HandleRest stood us up).
     if (_bot->IsNonMeleeSpellCasted(false) || HasFoodOrDrinkAura())
         return true;
 
@@ -1615,107 +2025,29 @@ bool PlayerbotAI::TryUseFoodOrDrinkItem()
     if (!needHp && !needMana)
         return false;
 
-    auto categoryOf = [](ItemTemplate const* proto) -> uint32
-    {
-        if (!proto)
-            return 0;
-        for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
-        {
-            if (proto->Spells[i].SpellId && proto->Spells[i].SpellCategory)
-                return proto->Spells[i].SpellCategory;
-        }
-        return 0;
-    };
+    if (_bot->getStandState() != UNIT_STAND_STATE_SIT)
+        _bot->SetStandState(UNIT_STAND_STATE_SIT);
 
-    auto prefer = [&](Item* item) -> int
-    {
-        if (!item)
-            return -1;
-        ItemTemplate const* proto = item->GetTemplate();
-        if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE || proto->SubClass != ITEM_SUBCLASS_FOOD_DRINK)
-            return -1;
-        if (_bot->CanUseItem(item) != EQUIP_ERR_OK)
-            return -1;
+    // Apply Food / Drink auras directly. CastSpell(false) often fails without an
+    // item cast context, so self-bot / socket bots sat but never gained the aura.
+    // Drink 92800 uses the core periodic-dummy → MOD_POWER_REGEN path.
+    if (needHp && sSpellMgr->GetSpellInfo(BOT_FOOD_AURA_SPELL))
+        _bot->AddAura(BOT_FOOD_AURA_SPELL, _bot);
+    if (needMana && sSpellMgr->GetSpellInfo(BOT_DRINK_AURA_SPELL))
+        _bot->AddAura(BOT_DRINK_AURA_SPELL, _bot);
 
-        uint32 const cat = categoryOf(proto);
-        // Higher score = better match for what we still need.
-        if (needHp && needMana)
-            return 3;
-        if (needMana && cat == SPELL_CATEGORY_DRINK)
-            return 3;
-        if (needHp && cat == SPELL_CATEGORY_FOOD)
-            return 3;
-        if (needMana && cat == SPELL_CATEGORY_FOOD)
-            return 1; // some foods also restore mana via refreshment
-        if (needHp && cat == SPELL_CATEGORY_DRINK)
-            return 0;
-        return 2;
-    };
-
-    Item* best = nullptr;
-    int bestScore = -1;
-
-    auto consider = [&](Item* item)
-    {
-        int const score = prefer(item);
-        if (score > bestScore)
-        {
-            bestScore = score;
-            best = item;
-        }
-    };
-
-    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
-        consider(_bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
-
-    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
-    {
-        if (Bag* container = _bot->GetBagByPos(bag))
-            for (uint32 slot = 0; slot < container->GetBagSize(); ++slot)
-                consider(_bot->GetItemByPos(bag, uint8(slot)));
-    }
-
-    if (!best || bestScore < 0)
+    // Non-mana classes that only need HP still get Food; mana users get both.
+    if (!needHp && !needMana)
         return false;
 
-    SpellCastTargets targets;
-    targets.SetUnitTarget(_bot);
-    _bot->CastItemUseSpell(best, targets, 1, 0);
-    // Only treat as success if a cast/aura actually started — otherwise fall
-    // through to direct regen (failed item use used to skip recovery entirely).
-    return _bot->IsNonMeleeSpellCasted(false) || HasFoodOrDrinkAura();
+    return HasFoodOrDrinkAura();
 }
 
 void PlayerbotAI::ApplyDirectRestRegen()
 {
-    if (!_bot)
-        return;
-    // Never fight the client or food/drink auras — SetPower/SetHealth every AI tick
-    // desyncs the mana bar (100% → real → 100% flicker).
-    if (_clientControlled)
-        return;
-    if (_bot->IsNonMeleeSpellCasted(false) || HasFoodOrDrinkAura())
-        return;
-
-    if (uint32 const maxHp = _bot->GetMaxHealth())
-    {
-        uint32 const cur = _bot->GetHealth();
-        if (cur < maxHp)
-        {
-            uint32 const gain = std::max<uint32>(1, uint32(float(maxHp) * BOT_REST_REGEN_PCT));
-            _bot->SetHealth(std::min(maxHp, cur + gain));
-        }
-    }
-    if (UsesMana())
-    {
-        int32 const maxMana = _bot->GetMaxPower(POWER_MANA);
-        int32 const cur = _bot->GetPower(POWER_MANA);
-        if (maxMana > 0 && cur < maxMana)
-        {
-            int32 const gain = std::max(1, int32(float(maxMana) * BOT_REST_REGEN_PCT));
-            _bot->SetPower(POWER_MANA, std::min(maxMana, cur + gain));
-        }
-    }
+    // Disabled: SetHealth/SetPower every AI tick fights food/drink aura ticks and
+    // causes the mana bar to flash 100% ↔ real value (self-bot and socket bots).
+    // Recovery is spell-based only (CastRefreshmentSpell / 128701).
 }
 
 bool PlayerbotAI::PartyNeedsRest() const
@@ -1762,14 +2094,10 @@ bool PlayerbotAI::StartRefreshment()
     if (!_bot)
         return false;
 
-    // Self-bot: only regen while the player is already sitting (they own movement).
-    // Never force sit/stand here — that interrupted AFK sit and clicked drinks.
-    if (_clientControlled)
-    {
-        if (_bot->getStandState() != UNIT_STAND_STATE_SIT)
-            return false;
-    }
-    else if (_bot->getStandState() != UNIT_STAND_STATE_SIT)
+    bool const wasSitting = _bot->IsSitState();
+
+    // Sit so refreshment auras can start (self-bot and socket bots).
+    if (_bot->getStandState() != UNIT_STAND_STATE_SIT)
         _bot->SetStandState(UNIT_STAND_STATE_SIT);
 
     if (!_clientControlled)
@@ -1781,18 +2109,24 @@ bool PlayerbotAI::StartRefreshment()
         if (_bot->GetVictim())
             _bot->AttackStop();
     }
-    _resting = true;
 
-    // Already eating/drinking: wait on the aura — do not SetPower (causes mana flicker).
+    // Already eating/drinking — wait on the aura (no SetPower).
     if (_bot->IsNonMeleeSpellCasted(false) || HasFoodOrDrinkAura())
+    {
+        _resting = true;
         return true;
+    }
 
-    // Prefer real bag food/drink.
-    if (TryUseFoodOrDrinkItem())
-        return true;
+    if (!CastRefreshmentSpell())
+    {
+        // Do not leave the bot seated with no regen (self-bot idle sit bug).
+        _resting = false;
+        if (!wasSitting && _bot->getStandState() != UNIT_STAND_STATE_STAND)
+            _bot->SetStandState(UNIT_STAND_STATE_STAND);
+        return false;
+    }
 
-    // Socket-bot fallback only when no consumable is active.
-    ApplyDirectRestRegen();
+    _resting = true;
     return true;
 }
 
@@ -1800,9 +2134,11 @@ bool PlayerbotAI::HandleRest()
 {
     if (!_bot)
         return false;
-    // Only block on *this* bot's combat — party combat must not stop drinking.
-    if (_bot->IsInCombat())
+    // Never sit/drink while anyone in the party is fighting (self-bot healers
+    // were parking mid-pull because only self-combat was checked).
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
     {
+        CancelRestConsumables();
         StopResting();
         return false;
     }
@@ -1812,20 +2148,18 @@ bool PlayerbotAI::HandleRest()
     bool const needHp = hpPct < sPlayerbotMgr->GetRestHealthPct();
     bool const needMana = UsesMana() && manaPct < sPlayerbotMgr->GetRestManaPct();
     bool const lowResources = needHp || needMana;
-    // Non-mana classes only care about HP; mana classes need both near full.
     bool const nearlyFull = hpPct >= 98.0f && (!UsesMana() || manaPct >= 98.0f);
-    bool const itemResting = HasFoodOrDrinkAura() || (_bot->IsSitState() && _bot->IsNonMeleeSpellCasted(false));
+    bool const itemResting = HasFoodOrDrinkAura() || _bot->IsNonMeleeSpellCasted(false)
+        || _bot->HasAura(BOT_REFRESHMENT_SPELL);
 
-    // Only THIS bot rests. Full / non-mana bots keep following while others drink.
-    // (PartyNeedsRest still gates new pulls in HandleCombat, not follow.)
     bool const shouldRest = _forceRest || _resting || (_food && lowResources) || itemResting;
 
     if (!shouldRest)
         return false;
 
-    // Done recovering — stand (socket bots) and resume follow/wander next tick.
-    if (nearlyFull && !itemResting)
+    if (nearlyFull)
     {
+        CancelRestConsumables();
         StopResting();
         return false;
     }
@@ -1835,227 +2169,28 @@ bool PlayerbotAI::HandleRest()
 
 std::string PlayerbotAI::FormatStrategies(bool combat) const
 {
-    std::string out;
-    auto add = [&](char const* name, bool on)
-    {
-        if (!out.empty())
-            out += ", ";
-        out += on ? "+" : "-";
-        out += name;
-    };
-
-    CombatRole const role = GetCombatRole();
-
-    if (combat)
-    {
-        add("passive", _passive);
-        add("grind", _grind);
-        switch (role)
-        {
-            case CombatRole::Tank:
-                add("tank", _tankMode);
-                add("tank assist", _tankAssist);
-                add("dps", !_tankMode);
-                break;
-            case CombatRole::Healer:
-                add("heal", !_healerDps);
-                add("healer dps", _healerDps);
-                add("save mana", _saveMana);
-                break;
-            case CombatRole::Damage:
-            default:
-                add("dps", _dpsMode);
-                add("threat", _threat);
-                break;
-        }
-    }
-    else
-    {
-        add("food", _food);
-        add("follow", !_stay);
-        add("stay", _stay);
-        add("loot", _loot);
-        add("passive", _passive);
-        add("grind", _grind);
-    }
-    return out;
+    return _strategies.Format(combat ? BotState::Combat : BotState::NonCombat);
 }
 
 bool PlayerbotAI::StrategyAllowed(bool combat, std::string const& name) const
 {
-    if (name == "passive" || name == "grind")
-        return true;
+    // Kept for callers; engine enforces the same gates.
+    CombatRole const role = GetCombatRole();
+    std::string n = name;
+    if (n == "tankassist") n = "tank assist";
+    if (n == "healdps" || n == "heal dps") n = "healer dps";
+    if (n == "savemana") n = "save mana";
+    if (n == "dpsassist") n = "dps assist";
 
+    if (n == "passive" || n == "grind")
+        return true;
     if (!combat)
-        return name == "food" || name == "follow" || name == "stay" || name == "loot";
-
-    switch (GetCombatRole())
-    {
-        case CombatRole::Tank:
-            return name == "tank" || name == "tank assist" || name == "tankassist" || name == "dps";
-        case CombatRole::Healer:
-            return name == "heal" || name == "healer dps" || name == "healdps"
-                || name == "heal dps" || name == "save mana" || name == "savemana";
-        case CombatRole::Damage:
-        default:
-            return name == "dps" || name == "threat";
-    }
-}
-
-bool PlayerbotAI::ApplyStrategyChange(bool combat, char op, std::string const& name, std::string& report)
-{
-    if (name.empty())
-        return false;
-
-    if (!StrategyAllowed(combat, name))
-    {
-        report += (report.empty() ? "" : ", ");
-        report += "!" + name + "(wrong role)";
-        return true;
-    }
-
-    bool enable = (op == '+');
-
-    auto setFlag = [&](bool& flag, char const* label)
-    {
-        if (op == '~')
-            flag = !flag;
-        else
-            flag = enable;
-        report += (report.empty() ? "" : ", ");
-        report += flag ? "+" : "-";
-        report += label;
-    };
-
-    if (!combat)
-    {
-        if (name == "food")
-        {
-            setFlag(_food, "food");
-            if (!_food)
-                StopResting();
-            return true;
-        }
-        if (name == "follow")
-        {
-            if (op == '~')
-                _stay = !_stay;
-            else
-                _stay = !enable;
-            if (!_stay)
-            {
-                _forceRest = false;
-                if (_bot->getStandState() != UNIT_STAND_STATE_STAND)
-                    _bot->SetStandState(UNIT_STAND_STATE_STAND);
-                _followGuid = 0;
-            }
-            report += (report.empty() ? "" : ", ");
-            report += (!_stay ? "+follow" : "+stay");
-            return true;
-        }
-        if (name == "stay")
-        {
-            setFlag(_stay, "stay");
-            if (_stay)
-            {
-                _grind = false;
-                ClearForcedTarget();
-                if (!_clientControlled)
-                {
-                    _bot->GetMotionMaster()->Clear();
-                    _bot->GetMotionMaster()->MoveIdle();
-                }
-                _followGuid = 0;
-                _chaseGuid = 0;
-            }
-            return true;
-        }
-        if (name == "loot")
-        {
-            setFlag(_loot, "loot");
-            if (!_loot)
-                _lootGuid = 0;
-            return true;
-        }
-        if (name == "passive")
-        {
-            setFlag(_passive, "passive");
-            return true;
-        }
-        if (name == "grind")
-        {
-            setFlag(_grind, "grind");
-            if (_grind) { _passive = false; _stay = false; }
-            return true;
-        }
-        return false;
-    }
-
-    if (name == "passive")
-    {
-        setFlag(_passive, "passive");
-        if (_passive) { _grind = false; ClearForcedTarget(); }
-        return true;
-    }
-    if (name == "grind")
-    {
-        setFlag(_grind, "grind");
-        if (_grind) { _passive = false; _stay = false; }
-        return true;
-    }
-    if (name == "tank")
-    {
-        setFlag(_tankMode, "tank");
-        _dpsMode = !_tankMode;
-        return true;
-    }
-    if (name == "tank assist" || name == "tankassist")
-    {
-        setFlag(_tankAssist, "tank assist");
-        return true;
-    }
-    if (name == "dps")
-    {
-        if (GetCombatRole() == CombatRole::Tank)
-        {
-            if (op == '~')
-                _tankMode = !_tankMode;
-            else
-                _tankMode = !enable;
-            _dpsMode = !_tankMode;
-            report += (report.empty() ? "" : ", ");
-            report += _tankMode ? "+tank" : "+dps";
-            return true;
-        }
-        setFlag(_dpsMode, "dps");
-        return true;
-    }
-    if (name == "threat")
-    {
-        setFlag(_threat, "threat");
-        return true;
-    }
-    if (name == "heal")
-    {
-        if (op == '~')
-            _healerDps = !_healerDps;
-        else
-            _healerDps = !enable;
-        report += (report.empty() ? "" : ", ");
-        report += !_healerDps ? "+heal" : "+healer dps";
-        return true;
-    }
-    if (name == "healer dps" || name == "healdps" || name == "heal dps")
-    {
-        setFlag(_healerDps, "healer dps");
-        return true;
-    }
-    if (name == "save mana" || name == "savemana")
-    {
-        setFlag(_saveMana, "save mana");
-        return true;
-    }
-    return false;
+        return n == "food" || n == "follow" || n == "stay" || n == "loot";
+    if (role == CombatRole::Tank)
+        return n == "tank" || n == "tank assist" || n == "dps";
+    if (role == CombatRole::Healer)
+        return n == "heal" || n == "healer dps" || n == "save mana" || n == "wait for attack";
+    return n == "dps" || n == "dps assist" || n == "threat" || n == "wait for attack";
 }
 
 bool PlayerbotAI::HandleStrategyCommand(Player* from, std::string const& cmd, bool /*acknowledge*/)
@@ -2090,60 +2225,47 @@ bool PlayerbotAI::HandleStrategyCommand(Player* from, std::string const& cmd, bo
     while (!body.empty() && body.back() == ' ')
         body.pop_back();
 
-    // Always whisper strategy info back (party orders used to be silent).
     auto reply = [&](std::string const& msg)
     {
         ReplyTo(from, msg);
     };
 
+    BotState const state = combat ? BotState::Combat : BotState::NonCombat;
+
     if (body.empty() || body == "?")
     {
         reply(std::string(combat ? "co: " : "nc: ") + FormatStrategies(combat));
-        // Also show the other bucket so players see full state in one ask.
         reply(std::string(combat ? "nc: " : "co: ") + FormatStrategies(!combat));
         return true;
     }
 
-    std::string report;
-    std::string unknown;
-    size_t pos = 0;
-    while (pos < body.size())
+    std::string const report = _strategies.ChangeStrategy(body, state);
+    SyncFlagsFromStrategies();
+
+    if (!_food)
+        StopResting();
+    if (_stay && !_clientControlled)
     {
-        size_t comma = body.find(',', pos);
-        std::string token = body.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
-        pos = (comma == std::string::npos) ? body.size() : comma + 1;
-
-        while (!token.empty() && token.front() == ' ')
-            token.erase(token.begin());
-        while (!token.empty() && token.back() == ' ')
-            token.pop_back();
-        if (token.empty())
-            continue;
-
-        char op = token[0];
-        if (op != '+' && op != '-' && op != '~')
-        {
-            unknown += (unknown.empty() ? "" : ", ") + token;
-            continue;
-        }
-
-        std::string name = token.substr(1);
-        while (!name.empty() && name.front() == ' ')
-            name.erase(name.begin());
-        while (!name.empty() && name.back() == ' ')
-            name.pop_back();
-
-        if (!ApplyStrategyChange(combat, op, name, report))
-            unknown += (unknown.empty() ? "" : ", ") + token;
+        ClearForcedTarget();
+        _bot->GetMotionMaster()->Clear();
+        _bot->GetMotionMaster()->MoveIdle();
+        _followGuid = 0;
+        _chaseGuid = 0;
     }
+    else if (!_stay)
+    {
+        _forceRest = false;
+        if (_bot->getStandState() != UNIT_STAND_STATE_STAND)
+            _bot->SetStandState(UNIT_STAND_STATE_STAND);
+        _followGuid = 0;
+    }
+    if (!_loot)
+        _lootGuid = 0;
+    if (_passive)
+        ClearForcedTarget();
 
-    // Use "co:" / "nc:" (no space) so status replies never re-parse as commands
-    // if they somehow re-enter OnChat (e.g. self-whisper before ReplyTo was fixed).
-    if (!report.empty())
-        reply(std::string(combat ? "co:" : "nc:") + report);
-    if (!unknown.empty())
-        reply(std::string("unknown: ") + unknown);
-
+    // "co:" / "nc:" (no space) so status replies never re-parse as commands.
+    reply(std::string(combat ? "co:" : "nc:") + report);
     reply(std::string(combat ? "co: " : "nc: ") + FormatStrategies(combat));
     return true;
 }
@@ -2218,8 +2340,8 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
             ack("Self-bot: you control movement.");
             return true;
         }
-        _stay = true;
-        _grind = false;
+        _strategies.ApplyStayPack();
+        SyncFlagsFromStrategies();
         ClearForcedTarget();
         if (_bot->GetVictim())
             _bot->AttackStop();
@@ -2239,9 +2361,10 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
             ack("Self-bot: you control movement.");
             return true;
         }
-        _stay = false;
-        _grind = false;
+        _strategies.ApplyFollowPack();
+        SyncFlagsFromStrategies();
         _forceRest = false;
+        _holdAssist = false;
         ClearForcedTarget();
         if (_bot->getStandState() != UNIT_STAND_STATE_STAND)
             _bot->SetStandState(UNIT_STAND_STATE_STAND);
@@ -2257,15 +2380,14 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
             ack("Self-bot: you control movement.");
             return true;
         }
-        _stay = false;
-        _grind = false;
-        _passive = false;
+        // AC flee pack: follow + passive (don't fight while running to master).
+        _strategies.ApplyFleePack();
+        SyncFlagsFromStrategies();
         ClearForcedTarget();
         if (_bot->GetVictim())
             _bot->AttackStop();
         _chaseGuid = 0;
         _followGuid = 0;
-        // Immediate run to the issuer (usually the group leader / master).
         TeleportToPlayer(from);
         ack("Fleeing to you.");
         return true;
@@ -2279,7 +2401,8 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
             return true;
         }
         TeleportToPlayer(from);
-        _stay = false;
+        _strategies.ApplyFollowPack();
+        SyncFlagsFromStrategies();
         _followGuid = 0;
         ack("Summoned.");
         return true;
@@ -2287,9 +2410,8 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
 
     if (cmd == "grind")
     {
-        _passive = false;
-        _grind = true;
-        _stay = false;
+        _strategies.ApplyGrindPack();
+        SyncFlagsFromStrategies();
         ClearForcedTarget();
         ack("Grinding.");
         return true;
@@ -2297,10 +2419,10 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
 
     if (cmd == "reset")
     {
-        _stay = false;
-        _passive = false;
-        _grind = false;
+        _strategies.ApplyResetPack();
+        SyncFlagsFromStrategies();
         _forceRest = false;
+        _holdAssist = false;
         ClearForcedTarget();
         if (_bot->GetVictim())
             _bot->AttackStop();
@@ -2311,7 +2433,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
             _bot->GetMotionMaster()->Clear();
             _bot->GetMotionMaster()->MoveIdle();
         }
-        if (_bot->IsNonMeleeSpellCasted(false))
+        if (_bot->IsSitState() && _bot->IsNonMeleeSpellCasted(false))
             _bot->InterruptNonMeleeSpells(false);
         if (_bot->getStandState() != UNIT_STAND_STATE_STAND)
             _bot->SetStandState(UNIT_STAND_STATE_STAND);
@@ -2334,8 +2456,10 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
             return true;
         }
         _forceRest = true;
-        _food = true;
-        _grind = false;
+        _strategies.Add("food", BotState::NonCombat);
+        _strategies.Remove("grind", BotState::NonCombat);
+        _strategies.Remove("grind", BotState::Combat);
+        SyncFlagsFromStrategies();
         ClearForcedTarget();
         if (_bot->GetVictim())
             _bot->AttackStop();
@@ -2345,47 +2469,47 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
             _bot->SetStandState(UNIT_STAND_STATE_SIT);
         StartRefreshment();
         ack(_clientControlled
-            ? "Eating/drinking (stay seated until full, or use your food/drink)."
-            : "Eating/drinking.");
+            ? "Refreshing (drink 92800 / food 104935; auto when low with nc +food; cancels at full)."
+            : "Refreshing.");
         return true;
     }
 
     if (cmd == "heal")
     {
-        std::string report;
-        ApplyStrategyChange(true, '+', "heal", report);
-        ack(report.empty() ? "heal not available for this role." : report.c_str());
+        std::string const report = _strategies.ChangeStrategy("+heal", BotState::Combat);
+        SyncFlagsFromStrategies();
+        ack(report.c_str());
         return true;
     }
 
     if (cmd == "healer dps" || cmd == "healdps" || cmd == "heal dps")
     {
-        std::string report;
-        ApplyStrategyChange(true, '+', "healer dps", report);
-        ack(report.empty() ? "healer dps not available for this role." : report.c_str());
+        std::string const report = _strategies.ChangeStrategy("+healer dps", BotState::Combat);
+        SyncFlagsFromStrategies();
+        ack(report.c_str());
         return true;
     }
 
     if (cmd == "save mana" || cmd == "savemana" || cmd == "save mana on")
     {
-        std::string report;
-        ApplyStrategyChange(true, '+', "save mana", report);
-        ack(report.empty() ? "save mana not available for this role." : report.c_str());
+        std::string const report = _strategies.ChangeStrategy("+save mana", BotState::Combat);
+        SyncFlagsFromStrategies();
+        ack(report.c_str());
         return true;
     }
 
     if (cmd == "save mana off" || cmd == "savemana off")
     {
-        std::string report;
-        ApplyStrategyChange(true, '-', "save mana", report);
-        ack(report.empty() ? "save mana not available for this role." : report.c_str());
+        std::string const report = _strategies.ChangeStrategy("-save mana", BotState::Combat);
+        SyncFlagsFromStrategies();
+        ack(report.c_str());
         return true;
     }
 
     if (cmd == "passive")
     {
-        _passive = true;
-        _grind = false;
+        _strategies.ApplyPassivePack();
+        SyncFlagsFromStrategies();
         ClearForcedTarget();
         if (_bot->GetVictim())
             _bot->AttackStop();
@@ -2402,7 +2526,9 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
 
     if (cmd == "aggressive" || cmd == "aggro")
     {
-        _passive = false;
+        _strategies.ApplyAggressivePack();
+        SyncFlagsFromStrategies();
+        _holdAssist = false;
         ack("Aggressive.");
         return true;
     }
@@ -2415,9 +2541,16 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
             ack("No valid target.");
             return true;
         }
-        _passive = false;
-        _grind = false;
+        _strategies.ApplyAggressivePack();
+        _strategies.Remove("grind", BotState::Combat);
+        _strategies.Remove("grind", BotState::NonCombat);
+        // Ordered attack: don't delay this pull.
+        _strategies.Remove("wait for attack", BotState::Combat);
+        SyncFlagsFromStrategies();
+        _holdAssist = false;
+        _combatStartTime = 0;
         SetForcedTarget(target);
+        StopResting();
         ack("Attacking.");
         return true;
     }
@@ -2432,9 +2565,15 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
             ack("No valid target.");
             return true;
         }
-        _passive = false;
-        _grind = false;
+        // AC TankAttackChatShortcut: -passive on both engines, then pull.
+        _strategies.ChangeStrategy("-passive", BotState::NonCombat);
+        _strategies.ChangeStrategy("-passive", BotState::Combat);
+        _strategies.Remove("wait for attack", BotState::Combat);
+        SyncFlagsFromStrategies();
+        _holdAssist = false;
+        _combatStartTime = 0;
         SetForcedTarget(target);
+        StopResting();
         ack("Tank attacking.");
         return true;
     }
@@ -2449,9 +2588,13 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
             ack("No valid target.");
             return true;
         }
-        _passive = false;
-        _grind = false;
+        _strategies.ApplyAggressivePack();
+        _strategies.Remove("wait for attack", BotState::Combat);
+        SyncFlagsFromStrategies();
+        _holdAssist = false;
+        _combatStartTime = 0;
         SetForcedTarget(target);
+        StopResting();
         ack("DPS attacking.");
         return true;
     }

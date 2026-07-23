@@ -1,5 +1,12 @@
 /*
  * Wave 4 healer priorities - simplified MoP / Hekili dungeon lines.
+ *
+ * Triage thresholds (ally HP%):
+ *   < 25%  critical  — CDs / instant saves
+ *   < 40%  urgent    — Flash / Surge / Regrowth
+ *   < 65%  big heal  — Greater Heal / Holy Light / GHW / Healing Touch
+ *   < 90%  maintenance — HoTs, shields, PoM, efficient small heals
+ * Above ~90% SelectHealTarget will not pick them at all.
  */
 
 #include "BotRotationLists.h"
@@ -20,6 +27,11 @@ namespace
             return true;
         return ctx.healTargetHealthPct < 30.0f;
     }
+
+    bool IsCritical(HealContext const& ctx) { return ctx.healTargetHealthPct < 25.0f; }
+    bool IsUrgent(HealContext const& ctx) { return ctx.healTargetHealthPct < 40.0f; }
+    bool NeedsBigHeal(HealContext const& ctx) { return ctx.healTargetHealthPct < 65.0f; }
+    bool NeedsMaintenance(HealContext const& ctx) { return ctx.healTargetHealthPct < 90.0f; }
 }
 
 uint32 SelectHolyPaladin(HealContext const& ctx)
@@ -27,7 +39,8 @@ uint32 SelectHolyPaladin(HealContext const& ctx)
     Player* bot = ctx.bot;
     Player* ally = ctx.healTarget;
     uint32 const hp = bot->GetPower(POWER_HOLY_POWER);
-    bool const urgent = ctx.healTargetHealthPct < 40.0f;
+    bool const urgent = IsUrgent(ctx);
+    bool const big = NeedsBigHeal(ctx);
 
     enum HolyPalaSpells : uint32
     {
@@ -56,18 +69,18 @@ uint32 SelectHolyPaladin(HealContext const& ctx)
 
     if (ctx.manaPct < 60.0f && CanTryCast(bot, DIVINE_PLEA))
         return DIVINE_PLEA;
-    if (CanTryCast(bot, DIVINE_FAVOR))
+    if (NeedsMaintenance(ctx) && CanTryCast(bot, DIVINE_FAVOR))
         return DIVINE_FAVOR;
-    if (CanTryCast(bot, AVENGING_WRATH))
+    if (NeedsMaintenance(ctx) && CanTryCast(bot, AVENGING_WRATH))
         return AVENGING_WRATH;
 
     if ((hp >= 3 || HasAuraUp(bot, DIVINE_PURPOSE)))
     {
         if (ctx.injuredAllies >= 3 && CanTryCast(bot, LIGHT_OF_DAWN))
             return LIGHT_OF_DAWN;
-        if (CanTryCast(bot, ETERNAL_FLAME))
+        if (NeedsMaintenance(ctx) && CanTryCast(bot, ETERNAL_FLAME))
             return ETERNAL_FLAME;
-        if (CanTryCast(bot, WORD_OF_GLORY))
+        if (NeedsMaintenance(ctx) && CanTryCast(bot, WORD_OF_GLORY))
             return WORD_OF_GLORY;
     }
 
@@ -76,19 +89,20 @@ uint32 SelectHolyPaladin(HealContext const& ctx)
 
     if (urgent && AllowExpensiveHeal(ctx) && CanTryCast(bot, FLASH_OF_LIGHT))
         return FLASH_OF_LIGHT;
-    if (CanTryCast(bot, HOLY_SHOCK))
+    if (NeedsMaintenance(ctx) && CanTryCast(bot, HOLY_SHOCK))
         return HOLY_SHOCK;
-    if (CanTryCast(bot, HOLY_LIGHT))
+    if (big && AllowExpensiveHeal(ctx) && CanTryCast(bot, HOLY_LIGHT))
         return HOLY_LIGHT;
 
-    return AllowExpensiveHeal(ctx) ? FLASH_OF_LIGHT : HOLY_LIGHT;
+    return 0;
 }
 
 uint32 SelectDiscipline(HealContext const& ctx)
 {
     Player* bot = ctx.bot;
     Player* ally = ctx.healTarget;
-    bool const urgent = ctx.healTargetHealthPct < 40.0f;
+    bool const urgent = IsUrgent(ctx);
+    bool const big = NeedsBigHeal(ctx);
 
     enum DiscSpells : uint32
     {
@@ -110,37 +124,39 @@ uint32 SelectDiscipline(HealContext const& ctx)
     if (!HasAuraUp(bot, POWER_WORD_FORT) && CanTryCast(bot, POWER_WORD_FORT))
         return POWER_WORD_FORT;
 
-    if (ctx.healTargetHealthPct < 30.0f && CanTryCast(bot, PAIN_SUPPRESSION))
+    if (IsCritical(ctx) && CanTryCast(bot, PAIN_SUPPRESSION))
         return PAIN_SUPPRESSION;
-    if (CanTryCast(bot, POWER_INFUSION))
+    if (NeedsMaintenance(ctx) && CanTryCast(bot, POWER_INFUSION))
         return POWER_INFUSION;
-    if (CanTryCast(bot, SPIRIT_SHELL))
+    if (NeedsMaintenance(ctx) && CanTryCast(bot, SPIRIT_SHELL))
         return SPIRIT_SHELL;
 
     if (urgent && !HasAuraUp(ally, POWER_WORD_SHIELD) && CanTryCast(bot, POWER_WORD_SHIELD))
         return POWER_WORD_SHIELD;
-    if (!HasAuraUp(ally, PRAYER_OF_MENDING) && CanTryCast(bot, PRAYER_OF_MENDING))
+    if (NeedsMaintenance(ctx) && !HasAuraUp(ally, PRAYER_OF_MENDING) && CanTryCast(bot, PRAYER_OF_MENDING))
         return PRAYER_OF_MENDING;
 
-    if (CanTryCast(bot, PENANCE))
+    if (NeedsMaintenance(ctx) && CanTryCast(bot, PENANCE))
         return PENANCE;
 
     if (urgent && AllowExpensiveHeal(ctx) && CanTryCast(bot, FLASH_HEAL))
         return FLASH_HEAL;
-    if (!urgent && CanTryCast(bot, GREATER_HEAL))
+    // Greater Heal only when someone is actually hurt — never as a top-off.
+    if (big && AllowExpensiveHeal(ctx) && CanTryCast(bot, GREATER_HEAL))
         return GREATER_HEAL;
-    if (!HasAuraUp(ally, RENEW) && CanTryCast(bot, RENEW))
+    if (NeedsMaintenance(ctx) && !HasAuraUp(ally, RENEW) && CanTryCast(bot, RENEW))
         return RENEW;
 
-    return AllowExpensiveHeal(ctx) ? FLASH_HEAL : GREATER_HEAL;
+    return 0;
 }
 
 uint32 SelectHolyPriest(HealContext const& ctx)
 {
     Player* bot = ctx.bot;
     Player* ally = ctx.healTarget;
-    bool const urgent = ctx.healTargetHealthPct < 40.0f;
-    bool const critical = ctx.healTargetHealthPct < 25.0f;
+    bool const urgent = IsUrgent(ctx);
+    bool const critical = IsCritical(ctx);
+    bool const big = NeedsBigHeal(ctx);
 
     enum HolyPriestSpells : uint32
     {
@@ -168,9 +184,9 @@ uint32 SelectHolyPriest(HealContext const& ctx)
     if (ctx.injuredAllies >= 4 && CanTryCast(bot, DIVINE_HYMN))
         return DIVINE_HYMN;
 
-    if (!HasAuraUp(ally, RENEW) && CanTryCast(bot, RENEW))
+    if (NeedsMaintenance(ctx) && !HasAuraUp(ally, RENEW) && CanTryCast(bot, RENEW))
         return RENEW;
-    if (!HasAuraUp(ally, PRAYER_OF_MENDING) && CanTryCast(bot, PRAYER_OF_MENDING))
+    if (NeedsMaintenance(ctx) && !HasAuraUp(ally, PRAYER_OF_MENDING) && CanTryCast(bot, PRAYER_OF_MENDING))
         return PRAYER_OF_MENDING;
 
     if (ctx.injuredAllies >= 3)
@@ -181,23 +197,25 @@ uint32 SelectHolyPriest(HealContext const& ctx)
             return PRAYER_OF_HEALING;
     }
 
-    if (CanTryCast(bot, HOLY_WORD_SERENITY))
+    if (NeedsMaintenance(ctx) && CanTryCast(bot, HOLY_WORD_SERENITY))
         return HOLY_WORD_SERENITY;
     if (urgent && AllowExpensiveHeal(ctx) && CanTryCast(bot, FLASH_HEAL))
         return FLASH_HEAL;
     if (urgent && CanTryCast(bot, BINDING_HEAL))
         return BINDING_HEAL;
-    if (CanTryCast(bot, HEAL))
+    // Efficient Heal is still a direct heal — gate below 65% like Greater.
+    if (big && AllowExpensiveHeal(ctx) && CanTryCast(bot, HEAL))
         return HEAL;
 
-    return AllowExpensiveHeal(ctx) ? FLASH_HEAL : HEAL;
+    return 0;
 }
 
 uint32 SelectRestorationShaman(HealContext const& ctx)
 {
     Player* bot = ctx.bot;
     Player* ally = ctx.healTarget;
-    bool const urgent = ctx.healTargetHealthPct < 40.0f;
+    bool const urgent = IsUrgent(ctx);
+    bool const big = NeedsBigHeal(ctx);
 
     enum RestoShamSpells : uint32
     {
@@ -218,12 +236,13 @@ uint32 SelectRestorationShaman(HealContext const& ctx)
     if (!HasAuraUp(ally, EARTH_SHIELD) && CanTryCast(bot, EARTH_SHIELD))
         return EARTH_SHIELD;
 
-    if (CanTryCast(bot, ASCENDANCE))
+    if (NeedsMaintenance(ctx) && CanTryCast(bot, ASCENDANCE))
         return ASCENDANCE;
     if (CanTryCast(bot, HEALING_STREAM_TOTEM))
         return HEALING_STREAM_TOTEM;
 
-    if ((!HasAuraUp(ally, RIPTIDE) || AuraRemains(ally, RIPTIDE) <= 3.0f)
+    if (NeedsMaintenance(ctx)
+        && (!HasAuraUp(ally, RIPTIDE) || AuraRemains(ally, RIPTIDE) <= 3.0f)
         && CanTryCast(bot, RIPTIDE))
         return RIPTIDE;
 
@@ -237,19 +256,20 @@ uint32 SelectRestorationShaman(HealContext const& ctx)
 
     if (urgent && AllowExpensiveHeal(ctx) && CanTryCast(bot, HEALING_SURGE))
         return HEALING_SURGE;
-    if (CanTryCast(bot, GREATER_HEALING_WAVE))
+    if (big && AllowExpensiveHeal(ctx) && CanTryCast(bot, GREATER_HEALING_WAVE))
         return GREATER_HEALING_WAVE;
-    if (CanTryCast(bot, HEALING_WAVE))
+    if (NeedsMaintenance(ctx) && ctx.healTargetHealthPct < 85.0f && CanTryCast(bot, HEALING_WAVE))
         return HEALING_WAVE;
 
-    return AllowExpensiveHeal(ctx) ? HEALING_SURGE : HEALING_WAVE;
+    return 0;
 }
 
 uint32 SelectRestorationDruid(HealContext const& ctx)
 {
     Player* bot = ctx.bot;
     Player* ally = ctx.healTarget;
-    bool const urgent = ctx.healTargetHealthPct < 40.0f;
+    bool const urgent = IsUrgent(ctx);
+    bool const big = NeedsBigHeal(ctx);
 
     enum RestoDruidSpells : uint32
     {
@@ -266,16 +286,18 @@ uint32 SelectRestorationDruid(HealContext const& ctx)
 
     if (!HasAuraUp(bot, MARK_OF_THE_WILD) && CanTryCast(bot, MARK_OF_THE_WILD))
         return MARK_OF_THE_WILD;
-    if (CanTryCast(bot, TREE_OF_LIFE))
+    if (NeedsMaintenance(ctx) && CanTryCast(bot, TREE_OF_LIFE))
         return TREE_OF_LIFE;
 
-    if ((!HasAuraUp(ally, LIFEBLOOM) || AuraStacks(ally, LIFEBLOOM) < 3
-        || AuraRemains(ally, LIFEBLOOM) <= 3.0f) && CanTryCast(bot, LIFEBLOOM))
+    if (NeedsMaintenance(ctx)
+        && (!HasAuraUp(ally, LIFEBLOOM) || AuraStacks(ally, LIFEBLOOM) < 3
+            || AuraRemains(ally, LIFEBLOOM) <= 3.0f) && CanTryCast(bot, LIFEBLOOM))
         return LIFEBLOOM;
-    if (!HasAuraUp(ally, REJUVENATION) && CanTryCast(bot, REJUVENATION))
+    if (NeedsMaintenance(ctx) && !HasAuraUp(ally, REJUVENATION) && CanTryCast(bot, REJUVENATION))
         return REJUVENATION;
 
-    if ((HasAuraUp(ally, REJUVENATION) || HasAuraUp(ally, REGROWTH))
+    if (NeedsMaintenance(ctx)
+        && (HasAuraUp(ally, REJUVENATION) || HasAuraUp(ally, REGROWTH))
         && CanTryCast(bot, SWIFTMEND))
         return SWIFTMEND;
 
@@ -286,10 +308,12 @@ uint32 SelectRestorationDruid(HealContext const& ctx)
         return NATURES_SWIFTNESS;
     if (urgent && AllowExpensiveHeal(ctx) && CanTryCast(bot, REGROWTH))
         return REGROWTH;
-    if (CanTryCast(bot, HEALING_TOUCH))
+    if (big && AllowExpensiveHeal(ctx) && CanTryCast(bot, HEALING_TOUCH))
         return HEALING_TOUCH;
+    if (NeedsMaintenance(ctx) && !HasAuraUp(ally, REJUVENATION) && CanTryCast(bot, REJUVENATION))
+        return REJUVENATION;
 
-    return REJUVENATION;
+    return 0;
 }
 
 uint32 SelectMistweaver(HealContext const& ctx)
@@ -297,45 +321,40 @@ uint32 SelectMistweaver(HealContext const& ctx)
     Player* bot = ctx.bot;
     Player* ally = ctx.healTarget;
     uint32 const chi = bot->GetPower(POWER_CHI);
-    bool const urgent = ctx.healTargetHealthPct < 40.0f;
+    bool const urgent = IsUrgent(ctx);
+    bool const big = NeedsBigHeal(ctx);
 
     enum MistweaverSpells : uint32
     {
-        LEGACY_EMPEROR      = 115921,
-        SURGING_MIST        = 116694,
         SOOTHING_MIST       = 115175,
+        SURGING_MIST        = 116694,
         ENVELOPING_MIST     = 124682,
         RENEWING_MIST       = 115151,
         UPLIFT              = 116670,
-        REVIVAL             = 115310,
         LIFE_COCOON         = 116849,
+        REVIVAL             = 115310,
         THUNDER_FOCUS_TEA   = 116680,
     };
 
-    if (!HasAuraUp(bot, LEGACY_EMPEROR) && CanTryCast(bot, LEGACY_EMPEROR))
-        return LEGACY_EMPEROR;
-
-    if (ctx.healTargetHealthPct < 30.0f && CanTryCast(bot, LIFE_COCOON))
+    if (IsCritical(ctx) && CanTryCast(bot, LIFE_COCOON))
         return LIFE_COCOON;
     if (ctx.injuredAllies >= 4 && CanTryCast(bot, REVIVAL))
         return REVIVAL;
-    if (CanTryCast(bot, THUNDER_FOCUS_TEA))
+
+    if (NeedsMaintenance(ctx) && CanTryCast(bot, THUNDER_FOCUS_TEA))
         return THUNDER_FOCUS_TEA;
-
-    if (!HasAuraUp(ally, RENEWING_MIST) && CanTryCast(bot, RENEWING_MIST))
+    if (NeedsMaintenance(ctx) && !HasAuraUp(ally, RENEWING_MIST) && CanTryCast(bot, RENEWING_MIST))
         return RENEWING_MIST;
-
-    if (chi >= 2 && ctx.injuredAllies >= 2 && CanTryCast(bot, UPLIFT))
+    if (ctx.injuredAllies >= 2 && chi >= 2 && CanTryCast(bot, UPLIFT))
         return UPLIFT;
-
+    if (big && chi >= 3 && !HasAuraUp(ally, ENVELOPING_MIST) && CanTryCast(bot, ENVELOPING_MIST))
+        return ENVELOPING_MIST;
     if (urgent && AllowExpensiveHeal(ctx) && CanTryCast(bot, SURGING_MIST))
         return SURGING_MIST;
-    if (chi >= 3 && !HasAuraUp(ally, ENVELOPING_MIST) && CanTryCast(bot, ENVELOPING_MIST))
-        return ENVELOPING_MIST;
-    if (CanTryCast(bot, SOOTHING_MIST))
+    if (NeedsMaintenance(ctx) && CanTryCast(bot, SOOTHING_MIST))
         return SOOTHING_MIST;
 
-    return AllowExpensiveHeal(ctx) ? SURGING_MIST : SOOTHING_MIST;
+    return 0;
 }
 
 } // namespace BotRotation
