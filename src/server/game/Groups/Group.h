@@ -241,6 +241,7 @@ public:
     void ChangeMembersGroup(uint64 guid, uint8 group);
     void ChangeMembersGroup(Player* player, uint8 group);
     void SetTargetIcon(uint8 id, ObjectGuid whoGuid, ObjectGuid targetGuid, uint8 Index);
+    uint64 GetTargetIcon(uint8 id) const;
     void SetGroupMemberFlag(uint64 guid, bool apply, GroupMemberFlags flag);
     void RemoveUniqueGroupMemberFlag(GroupMemberFlags flag);
 

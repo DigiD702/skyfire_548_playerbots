@@ -34,6 +34,49 @@ void BotTargetValues::OnCombatEnded()
     _currentGuid = 0;
 }
 
+void BotTargetValues::SetRti(std::string const& iconName)
+{
+    if (RtiIndexFromName(iconName) >= 0)
+        _rtiName = iconName;
+}
+
+int32 BotTargetValues::RtiIndexFromName(std::string const& name)
+{
+    if (name == "star")
+        return 0;
+    if (name == "circle")
+        return 1;
+    if (name == "diamond")
+        return 2;
+    if (name == "triangle")
+        return 3;
+    if (name == "moon")
+        return 4;
+    if (name == "square")
+        return 5;
+    if (name == "cross" || name == "x")
+        return 6;
+    if (name == "skull")
+        return 7;
+    return -1;
+}
+
+char const* BotTargetValues::RtiNameFromIndex(uint8 index)
+{
+    switch (index)
+    {
+        case 0: return "star";
+        case 1: return "circle";
+        case 2: return "diamond";
+        case 3: return "triangle";
+        case 4: return "moon";
+        case 5: return "square";
+        case 6: return "cross";
+        case 7: return "skull";
+        default: return "";
+    }
+}
+
 Unit* BotTargetValues::ResolveGuid(PlayerbotAI* ai, uint64 guid) const
 {
     if (!ai || !guid)
@@ -55,6 +98,30 @@ Unit* BotTargetValues::GetPullTarget(PlayerbotAI* ai) const
 Unit* BotTargetValues::GetCurrentTarget(PlayerbotAI* ai) const
 {
     return ResolveGuid(ai, _currentGuid);
+}
+
+Unit* BotTargetValues::GetRtiTarget(PlayerbotAI* ai) const
+{
+    if (!ai)
+        return nullptr;
+    Player* bot = ai->GetBot();
+    if (!bot)
+        return nullptr;
+    Group* group = bot->GetGroup();
+    if (!group)
+        return nullptr;
+
+    int32 const index = RtiIndexFromName(_rtiName);
+    if (index < 0)
+        return nullptr;
+
+    uint64 const guid = group->GetTargetIcon(uint8(index));
+    Unit* unit = ResolveGuid(ai, guid);
+    if (!unit)
+        return nullptr;
+    if (!bot->IsInMap(unit) || !bot->IsWithinDistInMap(unit, 80.0f, false))
+        return nullptr;
+    return unit;
 }
 
 Unit* BotTargetValues::GetDpsTarget(PlayerbotAI* ai) const

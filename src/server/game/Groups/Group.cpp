@@ -1787,6 +1787,13 @@ void Group::SetTargetIcon(uint8 id, ObjectGuid whoGuid, ObjectGuid targetGuid, u
     BroadcastPacket(&data, true);
 }
 
+uint64 Group::GetTargetIcon(uint8 id) const
+{
+    if (id >= TARGETICONCOUNT)
+        return 0;
+    return m_targetIcons[id];
+}
+
 void Group::SendTargetIconList(WorldSession* session)
 {
     if (!session)

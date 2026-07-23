@@ -793,11 +793,11 @@ bool PlayerbotAI::HandleCombatCastOnly()
     return true;
 }
 
-// Target priority (AC Values: pull / tank / dps / current):
+// Target priority (AC Values: pull / tank / rti / dps / current):
 //   1) Pull / forced command target
 //   2) Tanks: peel mobs off healers/party, then hold the pack
 //   3) Own attackers
-//   4) Group combat: dps assist → least-HP; else tank victim
+//   4) Group combat: RTI mark → least-HP dps assist → tank victim
 //   5) Grind (explicit) / self-bot selected unit
 Unit* PlayerbotAI::SelectTarget()
 {
@@ -843,6 +843,12 @@ Unit* PlayerbotAI::SelectTarget()
 
     if (canAssist)
     {
+        // Prefer the configured raid-target icon (default skull) for focus fire.
+        if (Unit* rti = _targets.GetRtiTarget(this))
+        {
+            _targets.SetCurrentTarget(rti);
+            return rti;
+        }
         if (Unit* dps = _targets.GetDpsTarget(this))
         {
             _targets.SetCurrentTarget(dps);
@@ -2382,7 +2388,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
 
     if (cmd == "help")
     {
-        ack("Orders: stay, follow, flee, leave, summon, grind, reset, passive, aggressive, attack, tank/dps attack, eat/drink, maintenance. Strategies: co/nc +name,-name,~name or co?/nc?. Filters: @tank/@dps/@heal/@ranged.");
+        ack("Orders: stay, follow, flee, leave, summon, grind, reset, passive, aggressive, attack, tank/dps attack, pull, rti, eat/drink, maintenance. Strategies: co/nc +name,-name,~name or co?/nc?. Filters: @tank/@dps/@heal/@ranged.");
         return true;
     }
 
@@ -2646,6 +2652,60 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
         SetForcedTarget(target);
         StopResting();
         ack("Tank attacking.");
+        return true;
+    }
+
+    // AC pull: tanks engage the master's target, or the configured RTI mark.
+    if (cmd == "pull")
+    {
+        if (GetCombatRole() != CombatRole::Tank)
+            return true;
+        Unit* target = from->GetSelectedUnit();
+        if (!target || !target->IsAlive() || !_bot->IsValidAttackTarget(target))
+            target = _targets.GetRtiTarget(this);
+        if (!target || !target->IsAlive() || !_bot->IsValidAttackTarget(target))
+        {
+            ack("No valid pull target.");
+            return true;
+        }
+        _strategies.ChangeStrategy("-passive", BotState::NonCombat);
+        _strategies.ChangeStrategy("-passive", BotState::Combat);
+        _strategies.Remove("wait for attack", BotState::Combat);
+        SyncFlagsFromStrategies();
+        _holdAssist = false;
+        _combatStartTime = 0;
+        SetForcedTarget(target);
+        StopResting();
+        ack("Pulling.");
+        return true;
+    }
+
+    // AC rti: set which raid icon bots prefer for focus fire (default skull).
+    if (cmd == "rti" || cmd == "rti ?" || cmd.rfind("rti ", 0) == 0)
+    {
+        if (cmd == "rti" || cmd == "rti ?")
+        {
+            std::string reply = "rti: " + _targets.GetRti();
+            ack(reply.c_str());
+            return true;
+        }
+        std::string icon = cmd.substr(4);
+        while (!icon.empty() && icon.front() == ' ')
+            icon.erase(icon.begin());
+        if (icon == "?" || icon.empty())
+        {
+            std::string reply = "rti: " + _targets.GetRti();
+            ack(reply.c_str());
+            return true;
+        }
+        if (BotTargetValues::RtiIndexFromName(icon) < 0)
+        {
+            ack("rti icons: star circle diamond triangle moon square cross skull");
+            return true;
+        }
+        _targets.SetRti(icon);
+        std::string reply = "rti: " + _targets.GetRti();
+        ack(reply.c_str());
         return true;
     }
 

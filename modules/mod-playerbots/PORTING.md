@@ -134,6 +134,8 @@ Remaining for later phases:
   * `attack` - all bots attack the issuer's current target.
   * `tank attack` / `dps attack` - same, filtered by the bot's combat role
     (from its active specialization).
+  * `pull` - tanks engage the issuer's target, or the configured RTI mark.
+  * `rti` / `rti skull|cross|…` - set which raid icon bots focus (default skull).
   * `maintenance` / `autogear` - re-run `InitializeBot` (spec + gear).
   * Party filters: `@tank` / `@dps` / `@heal` / `@ranged` before an order.
   * `help` - list orders (whisper reply). Whisper commands get a short ack;
@@ -160,7 +162,10 @@ Remaining for later phases:
   fight back if attacked. Tanks ignore. Disable with `co -wait for attack`.
 * [DONE] **Role formations**: follow angle/distance by tank / healer / melee DPS /
   ranged DPS (`BotFormation` + `BotMovement::MoveFollowLeader`).
-* [TODO] Richer AC actions (flee manager, RTI icons, pull sequences).
+* [DONE] Richer AC actions (first slice): raid-target icon preference (`rti skull`
+  etc., default skull) in SelectTarget, and tank `pull` (selected target or RTI).
+  Still TODO: combat flee kite / FleeManager, auto-mark RTI, sequenced pull
+  (reach + opener).
 * [DONE] Class/raid buff maintenance (self + party equivalents), recommended
   major/minor glyphs on `.playerbots init` (3+3 per spec).
 * [DONE] Deeper cooldowns/DoTs/AoE on thinner DPS lines (Balance, Destro/Demo,
