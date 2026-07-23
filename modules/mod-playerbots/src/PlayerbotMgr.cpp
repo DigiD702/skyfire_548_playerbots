@@ -1577,6 +1577,10 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverr
         SF_LOG_INFO("modules", "[mod-playerbots]   '%s': initializing talents...",
             bot->GetName().c_str());
         BotRotation::ApplyRecommendedTalents(bot);
+
+        SF_LOG_INFO("modules", "[mod-playerbots]   '%s': initializing glyphs...",
+            bot->GetName().c_str());
+        BotRotation::ApplyRecommendedGlyphs(bot);
     }
     else if (roleOverride >= 0)
     {

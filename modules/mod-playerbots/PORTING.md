@@ -161,8 +161,10 @@ Remaining for later phases:
 * [DONE] **Role formations**: follow angle/distance by tank / healer / melee DPS /
   ranged DPS (`BotFormation` + `BotMovement::MoveFollowLeader`).
 * [TODO] Richer AC actions (flee manager, RTI icons, pull sequences).
-* [TODO] Deeper cooldowns/DoTs/AoE on existing DPS lines, trinket sync with
-  major CDs, glyph-aware conditional lines.
+* [DONE] Class/raid buff maintenance (self + party equivalents), recommended
+  major/minor glyphs on `.playerbots init` (3+3 per spec). Still TODO: deeper
+  cooldowns/DoTs/AoE on existing DPS lines, trinket sync with major CDs,
+  glyph-aware conditional lines.
 * [TODO] Point movement / travel to arbitrary destinations (for questing,
   objectives, and dungeon navigation).
 * [TODO] Expand the co/nc strategy set further (aoe/boost/cc/avoid aoe, etc.).
@@ -218,4 +220,7 @@ for future updates.
 * Healer specs also have `*Dps` damage lines for `co +healer dps`.
 * Trinkets sync with burst windows; Elemental/Assassination/Mage lines deepened
   (AoE, bombs, Ascendance Lava Beam, Marked for Death).
-* [TODO] Further SimC-faithful tuning, glyph variants, and boss-specific holds.
+* [DONE] `.playerbots init` applies recommended major/minor glyphs per spec;
+  `TryMaintainBuffs` keeps MotW/Fort/Brilliance/shouts/blessings/etc. up.
+* [TODO] Further SimC-faithful tuning, glyph-aware rotation branches, and
+  boss-specific holds.

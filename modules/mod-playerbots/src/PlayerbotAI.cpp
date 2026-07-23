@@ -370,6 +370,12 @@ void PlayerbotAI::UpdateAI(uint32 diff)
     if (!_bot->IsAlive())
         return; // TODO: corpse release / resurrection handling
 
+    // Keep raid/self buffs topped up out of combat when not mid-cast.
+    if (!_bot->IsInCombat() && _bot->getAttackers().empty()
+        && !_bot->HasUnitState(UNIT_STATE_CASTING)
+        && BotRotation::TryMaintainBuffs(_bot))
+        return;
+
     // AC-style Trigger → Action → Queue. MoP rotations run inside the combat action.
     if (_aiEngine && _aiEngine->DoNextAction())
         return;
@@ -1019,9 +1025,10 @@ void PlayerbotAI::DoRotation(Unit* target)
     if (ShouldThrottleThreat(target))
         return;
 
-    // Interrupts first. During burst windows pop trinkets before fillers so they
-    // sync with Ascendance / Vendetta / Adrenaline Rush etc.
+    // Interrupts first. Keep raid/self buffs up, then sync trinkets to burst.
     if (BotRotation::TryInterrupt(_bot, target))
+        return;
+    if (BotRotation::TryMaintainBuffs(_bot))
         return;
     if (BotRotation::IsBursting(_bot) && BotRotation::TryTrinkets(_bot))
         return;
@@ -1067,6 +1074,9 @@ bool PlayerbotAI::HandleHealing()
         return true;
 
     // Kick / racial / trinket before heals when a hostile is available.
+    if (BotRotation::TryMaintainBuffs(_bot))
+        return true;
+
     Unit* utilityTarget = _bot->GetVictim();
     if (!utilityTarget || !utilityTarget->IsAlive() || !_bot->IsValidAttackTarget(utilityTarget))
     {

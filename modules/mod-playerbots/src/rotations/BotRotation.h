@@ -57,11 +57,14 @@ namespace BotRotation
     bool TryInterrupt(Player* bot, Unit* target);
     bool TryRacial(Player* bot, Unit* targetOrSelf);
     bool TryTrinkets(Player* bot);
+    bool TryMaintainBuffs(Player* bot);
     bool IsBursting(Player* bot);
     bool HasGlyphSpell(Player* bot, uint32 glyphSpellId);
 
     // Apply a fixed recommended talent spell loadout for Wave-1 DPS specs.
     void ApplyRecommendedTalents(Player* bot);
+    // Apply recommended major/minor glyphs for the bot's active specialization.
+    void ApplyRecommendedGlyphs(Player* bot);
 
     // Helpers used by per-spec lists.
     uint32 CountNearbyEnemies(Player* bot, float range);

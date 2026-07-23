@@ -519,6 +519,133 @@ bool TryTrinkets(Player* bot)
     return false;
 }
 
+namespace
+{
+    bool HasAnyAura(Unit* unit, std::initializer_list<uint32> ids)
+    {
+        if (!unit)
+            return false;
+        for (uint32 id : ids)
+            if (unit->HasAura(id))
+                return true;
+        return false;
+    }
+
+    bool TryCastBuff(Player* bot, uint32 spellId)
+    {
+        if (!CanTryCast(bot, spellId))
+            return false;
+        return CastSpell(bot, bot, spellId);
+    }
+
+    // True if every nearby group member (and the bot) already has a category aura.
+    // Solo: just the bot. Missing anyone in range → cast so raid-wide buffs refresh.
+    bool GroupCoveredByBuff(Player* bot, std::initializer_list<uint32> auraIds)
+    {
+        if (!bot)
+            return true;
+        if (!HasAnyAura(bot, auraIds))
+            return false;
+
+        Group* group = bot->GetGroup();
+        if (!group)
+            return true;
+
+        float const range = 40.0f;
+        for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+        {
+            Player* member = itr->GetSource();
+            if (!member || !member->IsInWorld() || !member->IsAlive() || member == bot)
+                continue;
+            if (member->GetMap() != bot->GetMap())
+                continue;
+            if (!bot->IsWithinDistInMap(member, range, false))
+                continue;
+            if (!HasAnyAura(member, auraIds))
+                return false;
+        }
+        return true;
+    }
+}
+
+bool TryMaintainBuffs(Player* bot)
+{
+    if (!bot || bot->HasUnitState(UNIT_STATE_CASTING) || bot->IsNonMeleeSpellCasted(false))
+        return false;
+
+    // Raid buff cast IDs vs applied aura IDs can differ (e.g. Legacy of the
+    // Emperor 115921 applies aura 117666). Always check the auras that stick.
+    std::initializer_list<uint32> const kStats = { 1126, 20217, 115921, 117666, 117667 };
+    std::initializer_list<uint32> const kStamina = { 21562, 469 };
+    std::initializer_list<uint32> const kAttackPower = { 6673, 57330 };
+    std::initializer_list<uint32> const kSpellPower = { 1459, 109773 };
+    std::initializer_list<uint32> const kMastery = { 19740 };
+    std::initializer_list<uint32> const kMeleeCrit = { 116781 };
+
+    switch (bot->getClass())
+    {
+        case CLASS_WARRIOR:
+        {
+            bool const preferStamina =
+                bot->GetTalentSpecialization(bot->GetActiveSpec()) == SPEC_WARRIOR_PROTECTION;
+            if (preferStamina)
+            {
+                if (!GroupCoveredByBuff(bot, kStamina) && TryCastBuff(bot, 469))
+                    return true;
+                if (!GroupCoveredByBuff(bot, kAttackPower) && TryCastBuff(bot, 6673))
+                    return true;
+            }
+            else
+            {
+                if (!GroupCoveredByBuff(bot, kAttackPower) && TryCastBuff(bot, 6673))
+                    return true;
+                if (!GroupCoveredByBuff(bot, kStamina) && TryCastBuff(bot, 469))
+                    return true;
+            }
+            break;
+        }
+        case CLASS_PALADIN:
+            // Only Blessing of Kings for the stats raid buff. Do not auto-cast
+            // Might — with MotW/Emperor up it would re-cast every tick (one
+            // blessing per pala + incomplete mastery coverage checks).
+            if (!GroupCoveredByBuff(bot, kStats) && TryCastBuff(bot, 20217))
+                return true;
+            break;
+        case CLASS_PRIEST:
+            if (!GroupCoveredByBuff(bot, kStamina) && TryCastBuff(bot, 21562))
+                return true;
+            if (!HasAuraUp(bot, 588) && !HasAuraUp(bot, 73413) && TryCastBuff(bot, 588))
+                return true;
+            break;
+        case CLASS_MAGE:
+            if (!GroupCoveredByBuff(bot, kSpellPower) && TryCastBuff(bot, 1459))
+                return true;
+            break;
+        case CLASS_WARLOCK:
+            if (!GroupCoveredByBuff(bot, kSpellPower) && TryCastBuff(bot, 109773))
+                return true;
+            break;
+        case CLASS_DRUID:
+            if (!GroupCoveredByBuff(bot, kStats) && TryCastBuff(bot, 1126))
+                return true;
+            break;
+        case CLASS_DEATH_KNIGHT:
+            if (!GroupCoveredByBuff(bot, kAttackPower) && TryCastBuff(bot, 57330))
+                return true;
+            break;
+        case CLASS_MONK:
+            if (!GroupCoveredByBuff(bot, kStats) && TryCastBuff(bot, 115921))
+                return true;
+            if (!GroupCoveredByBuff(bot, kMeleeCrit) && TryCastBuff(bot, 116781))
+                return true;
+            break;
+        default:
+            break;
+    }
+
+    return false;
+}
+
 bool TryCombatUtilities(Player* bot, Unit* enemy)
 {
     if (!bot)
