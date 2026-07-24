@@ -37,6 +37,7 @@
 #include "SharedDefines.h"
 #include "SpellAuraDefines.h"
 #include "SpellAuras.h"
+#include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "ThreatManager.h"
@@ -86,8 +87,6 @@ namespace
     constexpr float BOT_REPAIR_SEEK_DIST = 20.0f;
     constexpr float BOT_VENDOR_SEEK_DIST = 20.0f;
     constexpr float BOT_QUEST_SEEK_DIST = 20.0f;
-    constexpr float BOT_MOUNT_FOLLOW_DIST = 25.0f;
-    constexpr float BOT_DISMOUNT_FOLLOW_DIST = 15.0f;
 
     // Solo idle wander: radius around the bot and pause between picks.
     constexpr float BOT_WANDER_RADIUS = 18.0f;
@@ -372,7 +371,8 @@ bool PlayerbotAI::RunTravel()
     if (IsTravelArrived())
     {
         ClearTravelDestination();
-        TryDismount();
+        // Keep mount if master is still mounted; otherwise Sync will dismount.
+        SyncMountWithMaster();
         BotMovement::StopAndIdle(_bot);
         return true;
     }
@@ -380,14 +380,14 @@ bool PlayerbotAI::RunTravel()
     MovementGeneratorType const moveType = _bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
     if (moveType == POINT_MOTION_TYPE)
     {
-        TryMount();
+        SyncMountWithMaster();
         return true; // still walking the last MoveTo
     }
 
     if (BotMovement::MoveTo(_bot, _travel.x, _travel.y, _travel.z))
     {
         _travelFailCount = 0;
-        TryMount();
+        SyncMountWithMaster();
         return true;
     }
 
@@ -2813,6 +2813,10 @@ void PlayerbotAI::HandleFollow()
         return;
     }
 
+    // Mirror the master's mount before follow moves — remount must not lose to
+    // a ground MovePoint that runs first and cancels the cast.
+    SyncMountWithMaster();
+
     // Never interrupt casts for follow adjustments (AC Follow/ChaseCastStop pitfall).
     if (BotMovement::IsCasting(_bot))
         return;
@@ -2822,9 +2826,56 @@ void PlayerbotAI::HandleFollow()
     float const followDist = BotFormation::FollowDistance(this);
     float const followAngle = BotFormation::FollowAngle(this);
 
+    // Air follow only when the master is actually flying (not merely on a flyer on the ground).
+    bool const air = leader->HasUnitMovementFlag(MOVEMENTFLAG_FLYING)
+        || leader->HasUnitMovementFlag(MOVEMENTFLAG_DISABLE_GRAVITY);
+
+    if (air)
+    {
+        EnsureFlightMountCapability();
+        SetBotFlyingMovement(true);
+
+        float slotX = 0.0f, slotY = 0.0f, slotZ = 0.0f;
+        if (!BotMovement::ComputeFollowPoint(leader, _bot, followDist, followAngle,
+                slotX, slotY, slotZ, true))
+            return;
+
+        float const xyDist = _bot->GetDistance2d(leader);
+        float const zDelta = leader->GetPositionZ() - _bot->GetPositionZ();
+
+        // Far below / away — snap into the air near the master (follow can't climb).
+        if (xyDist > BOT_TELEPORT_DIST * 0.5f || std::fabs(zDelta) > 60.0f)
+        {
+            _bot->NearTeleportTo(slotX, slotY, slotZ, leader->GetOrientation());
+            if (_bot->GetSession() && _bot->GetSession()->IsBot())
+                _bot->GetSession()->FinalizeBotTeleport();
+            SetBotFlyingMovement(true);
+            _followGuid = leaderGuid;
+            _chaseGuid = 0;
+            return;
+        }
+
+        bool const needMove = xyDist > followDist + 2.5f
+            || std::fabs(zDelta) > 2.5f
+            || _followGuid != leaderGuid
+            || (moveType != POINT_MOTION_TYPE && !_bot->IsStopped());
+
+        if (needMove
+            && BotMovement::MovePoint(_bot, slotX, slotY, slotZ, /*generatePath=*/false))
+        {
+            _followGuid = leaderGuid;
+            _chaseGuid = 0;
+        }
+        return;
+    }
+
+    // Master landed — drop fly-idle / gravity-off so we ground-idle again.
+    if (_bot->HasUnitMovementFlag(MOVEMENTFLAG_FLYING) || _bot->IsLevitating())
+        SetBotFlyingMovement(false);
+
     float slotX = 0.0f, slotY = 0.0f, slotZ = 0.0f;
     bool const haveSlot = BotMovement::ComputeFollowPoint(leader, _bot, followDist, followAngle,
-        slotX, slotY, slotZ);
+        slotX, slotY, slotZ, false);
     float const slotDist = haveSlot
         ? _bot->GetDistance(slotX, slotY, slotZ)
         : dist;
@@ -2844,7 +2895,7 @@ void PlayerbotAI::HandleFollow()
         // continuous MoveFollow can slide into.
         bool moved = false;
         if (haveSlot && (dist > followDist + 1.5f || BotMovement::IsBadlyOffGround(_bot) || slotDist > 1.5f))
-            moved = BotMovement::MoveToFollowSlot(_bot, leader, followDist, followAngle);
+            moved = BotMovement::MoveToFollowSlot(_bot, leader, followDist, followAngle, false);
         if (!moved)
             moved = BotMovement::MoveFollowLeader(_bot, leader, followDist, followAngle);
         if (moved)
@@ -2858,18 +2909,13 @@ void PlayerbotAI::HandleFollow()
     {
         // Only park when the slot is valid and we are not clipped.
         if (BotMovement::IsBadlyOffGround(_bot) && haveSlot)
-            BotMovement::MoveToFollowSlot(_bot, leader, followDist, followAngle);
+            BotMovement::MoveToFollowSlot(_bot, leader, followDist, followAngle, false);
         else
         {
             BotMovement::StopAndIdle(_bot);
             BotMovement::ClearDeadSelection(_bot);
         }
     }
-
-    if (dist > BOT_MOUNT_FOLLOW_DIST)
-        TryMount();
-    else if (dist <= BOT_DISMOUNT_FOLLOW_DIST)
-        TryDismount();
 }
 
 // Solo bots pick a nearby ground point and walk there, then pause before the
@@ -3148,10 +3194,16 @@ bool PlayerbotAI::NeedsRepair() const
     return false;
 }
 
-uint32 PlayerbotAI::FindMountSpell() const
+uint32 PlayerbotAI::FindMountSpell(BotMountKind preferred) const
 {
     if (!_bot)
         return 0;
+
+    bool const wantFly = preferred >= BotMountKind::Flying;
+    uint32 bestId = 0;
+    int bestScore = -1;
+    uint32 anyId = 0;
+    int anyScore = -1;
 
     for (auto const& pair : _bot->GetSpellMap())
     {
@@ -3159,17 +3211,334 @@ uint32 PlayerbotAI::FindMountSpell() const
         if (!ps || ps->state == PLAYERSPELL_REMOVED || ps->disabled)
             continue;
         SpellInfo const* info = sSpellMgr->GetSpellInfo(pair.first);
-        if (!info || !info->HasAura(SPELL_AURA_MOUNTED))
+        BotMountKind const kind = ClassifyMountSpell(info);
+        if (kind == BotMountKind::None)
             continue;
-        return pair.first;
+
+        int const score = int(kind) * 1000 + int(GetMountSpellSpeedBonus(info));
+        if (score > anyScore)
+        {
+            anyScore = score;
+            anyId = pair.first;
+        }
+
+        if (preferred != BotMountKind::None)
+        {
+            bool const isFly = kind >= BotMountKind::Flying;
+            if (isFly != wantFly)
+                continue;
+        }
+
+        if (score > bestScore)
+        {
+            bestScore = score;
+            bestId = pair.first;
+        }
     }
-    return 0;
+
+    // Prefer a correct-family mount; only fall back to "any" when none exist.
+    return bestId ? bestId : ((preferred == BotMountKind::None) ? anyId : 0);
 }
 
-bool PlayerbotAI::TryMount()
+float PlayerbotAI::GetMountSpellSpeedBonus(SpellInfo const* info)
+{
+    if (!info)
+        return 0.0f;
+
+    float best = 0.0f;
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (info->Effects[i].IsAura(SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED)
+            || info->Effects[i].IsAura(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED))
+            best = std::max(best, float(info->Effects[i].BasePoints + 1));
+    }
+
+    // MoP mounts often put speed on MountCapability.SpeedModSpell, not the mount spell.
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (!info->Effects[i].IsAura(SPELL_AURA_MOUNTED))
+            continue;
+        uint32 const mountType = uint32(info->Effects[i].MiscValueB);
+        if (!mountType)
+            continue;
+        MountTypeEntry const* typeEntry = sMountTypeStore.LookupEntry(mountType);
+        if (!typeEntry)
+            continue;
+        for (uint32 c = 0; c < MAX_MOUNT_CAPABILITIES; ++c)
+        {
+            MountCapabilityEntry const* cap = sMountCapabilityStore.LookupEntry(typeEntry->MountCapability[c]);
+            if (!cap || !cap->SpeedModSpell)
+                continue;
+            if (SpellInfo const* speedInfo = sSpellMgr->GetSpellInfo(cap->SpeedModSpell))
+            {
+                for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+                {
+                    if (speedInfo->Effects[e].IsAura(SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED)
+                        || speedInfo->Effects[e].IsAura(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED))
+                        best = std::max(best, float(speedInfo->Effects[e].BasePoints + 1));
+                }
+            }
+        }
+    }
+    return best;
+}
+
+bool PlayerbotAI::MountSpellCanFly(SpellInfo const* info)
+{
+    if (!info)
+        return false;
+    if (info->HasAura(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED) || info->HasAura(SPELL_AURA_FLY))
+        return true;
+
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (!info->Effects[i].IsAura(SPELL_AURA_MOUNTED))
+            continue;
+        uint32 const mountType = uint32(info->Effects[i].MiscValueB);
+        if (!mountType)
+            continue;
+        MountTypeEntry const* typeEntry = sMountTypeStore.LookupEntry(mountType);
+        if (!typeEntry)
+            continue;
+        for (uint32 c = 0; c < MAX_MOUNT_CAPABILITIES; ++c)
+        {
+            MountCapabilityEntry const* cap = sMountCapabilityStore.LookupEntry(typeEntry->MountCapability[c]);
+            if (MountCapabilityIsFlight(cap))
+                return true;
+        }
+    }
+    return false;
+}
+
+bool PlayerbotAI::MountCapabilityIsFlight(MountCapabilityEntry const* cap)
+{
+    if (!cap)
+        return false;
+    if (cap->SpeedModSpell)
+    {
+        if (SpellInfo const* speedInfo = sSpellMgr->GetSpellInfo(cap->SpeedModSpell))
+        {
+            if (speedInfo->HasAura(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED)
+                || speedInfo->HasAura(SPELL_AURA_FLY)
+                || speedInfo->HasAura(SPELL_AURA_MOD_MOUNTED_FLIGHT_SPEED_ALWAYS)
+                || speedInfo->HasAura(SPELL_AURA_MOD_FLIGHT_SPEED_NOT_STACK)
+                || speedInfo->HasAura(SPELL_AURA_MOD_INCREASE_FLIGHT_SPEED))
+                return true;
+            // Explicit ground speed aura — not flight, even if flags are mixed.
+            if (speedInfo->HasAura(SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED)
+                || speedInfo->HasAura(SPELL_AURA_MOD_MOUNTED_SPEED_ALWAYS)
+                || speedInfo->HasAura(SPELL_AURA_MOD_MOUNTED_SPEED_NOT_STACK))
+                return false;
+        }
+    }
+    // Capability flag 0x2 = usable for flying (see Unit::GetMountCapability).
+    return (cap->Flags & 0x2) != 0;
+}
+
+MountCapabilityEntry const* PlayerbotAI::FindBotMountCapability(Player const* bot, uint32 mountType, bool preferFlight)
+{
+    if (!bot || !mountType)
+        return nullptr;
+
+    MountTypeEntry const* typeEntry = sMountTypeStore.LookupEntry(mountType);
+    if (!typeEntry)
+        return nullptr;
+
+    uint32 zoneId = 0, areaId = 0;
+    bot->GetZoneAndAreaId(zoneId, areaId);
+
+    MountCapabilityEntry const* best = nullptr;
+    int bestScore = -1;
+
+    for (uint32 i = 0; i < MAX_MOUNT_CAPABILITIES; ++i)
+    {
+        MountCapabilityEntry const* cap = sMountCapabilityStore.LookupEntry(typeEntry->MountCapability[i]);
+        if (!cap)
+            continue;
+        if (preferFlight && !cap->SpeedModSpell && !(cap->Flags & 0x2))
+            continue;
+        if (!preferFlight && !cap->SpeedModSpell)
+            continue;
+
+        // Soft gates only — bots mirror the master and often lack cold-weather /
+        // license spells that GetMountCapability() would require.
+        if (cap->RequiredMap != -1 && int32(bot->GetMapId()) != cap->RequiredMap)
+            continue;
+        if (cap->RequiredArea && cap->RequiredArea != zoneId && cap->RequiredArea != areaId)
+            continue;
+
+        bool const isFlight = MountCapabilityIsFlight(cap);
+        if (preferFlight != isFlight)
+            continue;
+
+        int score = int(cap->RequiredRidingSkill) * 10;
+        if (cap->SpeedModSpell)
+            if (SpellInfo const* speedInfo = sSpellMgr->GetSpellInfo(cap->SpeedModSpell))
+                score += int(GetMountSpellSpeedBonus(speedInfo));
+
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = cap;
+        }
+    }
+    return best;
+}
+
+bool PlayerbotAI::EnsureFlightMountCapability()
+{
+    if (!_bot || (!_bot->IsMounted() && !_bot->HasAuraType(SPELL_AURA_MOUNTED)))
+        return false;
+
+    if (_bot->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED)
+        || _bot->HasAuraType(SPELL_AURA_FLY))
+    {
+        SetBotFlyingMovement(true);
+        return true;
+    }
+
+    Unit::AuraEffectList const& mounts = _bot->GetAuraEffectsByType(SPELL_AURA_MOUNTED);
+    for (AuraEffect* aurEff : mounts)
+    {
+        if (!aurEff)
+            continue;
+
+        MountCapabilityEntry const* flightCap =
+            FindBotMountCapability(_bot, uint32(aurEff->GetMiscValueB()), /*preferFlight=*/true);
+        if (!flightCap || !flightCap->SpeedModSpell)
+            continue;
+
+        // Drop the standing/ground SpeedModSpell if mount amount pointed there.
+        if (MountCapabilityEntry const* oldCap = sMountCapabilityStore.LookupEntry(uint32(aurEff->GetAmount())))
+        {
+            if (oldCap->SpeedModSpell && oldCap->SpeedModSpell != flightCap->SpeedModSpell)
+                _bot->RemoveAurasDueToSpell(oldCap->SpeedModSpell, _bot->GetGUID());
+        }
+
+        // Keep dismount cleanup aligned with the capability we actually use.
+        aurEff->SetAmount(int32(flightCap->Id));
+
+        if (!_bot->HasAura(flightCap->SpeedModSpell))
+            _bot->CastSpell(_bot, flightCap->SpeedModSpell, true);
+
+        if (_bot->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED)
+            || _bot->HasAuraType(SPELL_AURA_FLY))
+        {
+            SetBotFlyingMovement(true);
+            return true;
+        }
+    }
+    return false;
+}
+
+void PlayerbotAI::SetBotFlyingMovement(bool enable)
+{
+    if (!_bot)
+        return;
+
+    auto broadcastMove = [this]()
+    {
+        // Clients only learn FLYING (mount flap / fly-idle) from a player-move update.
+        // SetCanFly / SetDisableGravity opcodes alone leave them in ground-idle in the air.
+        if (!_bot->IsInWorld())
+            return;
+        _bot->m_movementInfo.guid = _bot->GetGUID();
+        _bot->m_movementInfo.time = getMSTime();
+        _bot->m_movementInfo.pos.Relocate(_bot->GetPositionX(), _bot->GetPositionY(),
+            _bot->GetPositionZ(), _bot->GetOrientation());
+        WorldPacket data(SMSG_PLAYER_MOVE);
+        _bot->WriteMovementInfo(data);
+        _bot->SendMessageToSet(&data, true);
+    };
+
+    if (enable)
+    {
+        bool const already = _bot->HasUnitMovementFlag(MOVEMENTFLAG_CAN_FLY)
+            && _bot->IsLevitating()
+            && _bot->HasUnitMovementFlag(MOVEMENTFLAG_FLYING);
+        if (already)
+            return;
+
+        // Same three flags AC playerbots use — nothing fancier.
+        if (!_bot->HasUnitMovementFlag(MOVEMENTFLAG_CAN_FLY))
+            _bot->SetCanFly(true);
+        if (!_bot->IsLevitating())
+            _bot->SetDisableGravity(true);
+        if (!_bot->HasUnitMovementFlag(MOVEMENTFLAG_FLYING))
+            _bot->AddUnitMovementFlag(MOVEMENTFLAG_FLYING);
+        _bot->SetFall(false);
+        _bot->UpdateSpeed(MOVE_FLIGHT, true);
+        broadcastMove();
+    }
+    else
+    {
+        bool const hadFlyState = _bot->HasUnitMovementFlag(MOVEMENTFLAG_FLYING)
+            || _bot->IsLevitating();
+        if (_bot->HasUnitMovementFlag(MOVEMENTFLAG_FLYING | MOVEMENTFLAG_ASCENDING | MOVEMENTFLAG_DESCENDING))
+            _bot->RemoveUnitMovementFlag(MOVEMENTFLAG_FLYING | MOVEMENTFLAG_ASCENDING | MOVEMENTFLAG_DESCENDING);
+        if (_bot->IsLevitating())
+            _bot->SetDisableGravity(false);
+        // Keep CAN_FLY while the flight-mount aura is still on (landed but mounted).
+        if (_bot->HasUnitMovementFlag(MOVEMENTFLAG_CAN_FLY)
+            && !_bot->HasAuraType(SPELL_AURA_FLY)
+            && !_bot->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED))
+            _bot->SetCanFly(false);
+        if (hadFlyState)
+            broadcastMove();
+    }
+}
+
+PlayerbotAI::BotMountKind PlayerbotAI::ClassifyMountSpell(SpellInfo const* info)
+{
+    if (!info || !info->HasAura(SPELL_AURA_MOUNTED))
+        return BotMountKind::None;
+
+    bool const flying = MountSpellCanFly(info);
+    float const speed = GetMountSpellSpeedBonus(info);
+
+    if (flying)
+        return speed >= 250.0f ? BotMountKind::SwiftFlying : BotMountKind::Flying;
+    return speed >= 90.0f ? BotMountKind::SwiftGround : BotMountKind::Ground;
+}
+
+PlayerbotAI::BotMountKind PlayerbotAI::ClassifyUnitMount(Unit const* unit)
+{
+    if (!unit || (!unit->IsMounted() && !unit->HasAuraType(SPELL_AURA_MOUNTED)))
+        return BotMountKind::None;
+
+    // Live speed auras (from MountCapability.SpeedModSpell) are authoritative —
+    // the mount spell itself often has no flight aura in MoP.
+    float const flight = unit->GetMaxPositiveAuraModifier(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED);
+    if (flight > 0.0f || unit->HasAuraType(SPELL_AURA_FLY))
+        return flight >= 250.0f ? BotMountKind::SwiftFlying : BotMountKind::Flying;
+
+    float const ground = unit->GetMaxPositiveAuraModifier(SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED);
+    if (ground >= 90.0f)
+        return BotMountKind::SwiftGround;
+    if (ground > 0.0f)
+        return BotMountKind::Ground;
+
+    // Fallback: classify the mounted aura spell via mount-type capabilities.
+    BotMountKind best = BotMountKind::None;
+    Unit::AuraEffectList const& mounts = unit->GetAuraEffectsByType(SPELL_AURA_MOUNTED);
+    for (AuraEffect const* aurEff : mounts)
+    {
+        if (!aurEff)
+            continue;
+        BotMountKind const kind = ClassifyMountSpell(aurEff->GetSpellInfo());
+        if (int(kind) > int(best))
+            best = kind;
+    }
+    return best != BotMountKind::None ? best : BotMountKind::Ground;
+}
+
+bool PlayerbotAI::TryMount(BotMountKind preferred)
 {
     if (!_bot || _clientControlled)
         return false;
+    // Stale mount flag without aura blocks every remount — force clean first.
+    if (_bot->IsMounted() && !_bot->HasAuraType(SPELL_AURA_MOUNTED))
+        _bot->Dismount();
     if (_bot->IsMounted() || _bot->HasAuraType(SPELL_AURA_MOUNTED))
         return false;
     if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
@@ -3179,20 +3548,121 @@ bool PlayerbotAI::TryMount()
     if (!_bot->GetMap() || !_bot->GetMap()->IsOutdoors(_bot->GetPositionX(), _bot->GetPositionY(), _bot->GetPositionZ()))
         return false;
 
-    uint32 const spellId = FindMountSpell();
+    if (preferred == BotMountKind::None)
+        preferred = BotMountKind::SwiftGround;
+
+    uint32 spellId = FindMountSpell(preferred);
+    // If master is flying and we have no flyer yet, do not sit on a ground mount.
+    if (!spellId && preferred >= BotMountKind::Flying)
+        return false;
+    if (!spellId)
+        spellId = FindMountSpell(BotMountKind::None);
     if (!spellId)
         return false;
 
-    _bot->CastSpell(_bot, spellId, false);
-    return true;
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    if (!info)
+        return false;
+
+    // Mounts share a spell category CD — clearing only spellId left remount broken.
+    _bot->RemoveSpellCooldown(spellId, true);
+    if (uint32 const cat = info->GetCategory())
+        _bot->RemoveSpellCategoryCooldown(cat, true);
+
+    _bot->CastSpell(_bot, spellId, true);
+    if (!_bot->IsMounted() && !_bot->HasAuraType(SPELL_AURA_MOUNTED))
+        _bot->AddAura(spellId, _bot);
+
+    if (_bot->IsMounted() || _bot->HasAuraType(SPELL_AURA_MOUNTED))
+    {
+        if (preferred >= BotMountKind::Flying)
+            EnsureFlightMountCapability();
+        else if (_bot->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED)
+            || _bot->HasAuraType(SPELL_AURA_FLY))
+            SetBotFlyingMovement(true);
+        return true;
+    }
+    return false;
 }
 
 void PlayerbotAI::TryDismount()
 {
     if (!_bot)
         return;
-    if (_bot->IsMounted() || _bot->HasAuraType(SPELL_AURA_MOUNTED))
+
+    if (_bot->HasAuraType(SPELL_AURA_MOUNTED))
         _bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+    if (_bot->IsMounted())
+        _bot->Dismount();
+
+    _bot->RemoveAurasByType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED);
+    _bot->RemoveAurasByType(SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED);
+    SetBotFlyingMovement(false);
+}
+
+void PlayerbotAI::SyncMountWithMaster()
+{
+    if (!_bot || _clientControlled)
+        return;
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+    {
+        TryDismount();
+        return;
+    }
+    // Allow remount even while a short GCD is rolling; only skip mid-cast.
+    if (_bot->getLevel() < 20 || _bot->IsInWater())
+        return;
+    if (_bot->IsNonMeleeSpellCasted(false) || _bot->HasUnitState(UNIT_STATE_CASTING))
+        return;
+
+    Player* leader = nullptr;
+    if (Group* group = _bot->GetGroup())
+    {
+        uint64 const leaderGuid = group->GetLeaderGUID();
+        if (leaderGuid && leaderGuid != _bot->GetGUID())
+            leader = ObjectAccessor::FindPlayer(leaderGuid);
+    }
+
+    // Solo / no master: mount only while traveling.
+    if (!leader || !leader->IsInWorld() || !leader->IsAlive())
+    {
+        if (HasTravelDestination())
+            TryMount(BotMountKind::SwiftGround);
+        return;
+    }
+
+    BotMountKind const masterKind = ClassifyUnitMount(leader);
+    if (masterKind == BotMountKind::None)
+    {
+        // Master on foot — stay on foot (formation / town).
+        TryDismount();
+        return;
+    }
+
+    if (!_bot->GetMap()
+        || !_bot->GetMap()->IsOutdoors(_bot->GetPositionX(), _bot->GetPositionY(), _bot->GetPositionZ()))
+    {
+        TryDismount();
+        return;
+    }
+
+    BotMountKind const mine = ClassifyUnitMount(_bot);
+    if (mine != BotMountKind::None)
+    {
+        bool const masterFly = masterKind >= BotMountKind::Flying;
+        bool const myFly = mine >= BotMountKind::Flying;
+        // Already matching family and at least the master's tier.
+        if (masterFly == myFly && int(mine) >= int(masterKind))
+        {
+            if (myFly)
+                EnsureFlightMountCapability();
+            return;
+        }
+        // Wrong mount type — swap.
+        TryDismount();
+    }
+
+    TryMount(masterKind);
 }
 
 bool PlayerbotAI::HandleQuestNpcs()
@@ -3814,7 +4284,17 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
             ack("Self-bot: you control mounts.");
             return true;
         }
-        if (TryMount())
+        BotMountKind kind = BotMountKind::SwiftGround;
+        if (Group* group = _bot->GetGroup())
+        {
+            if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID()))
+            {
+                BotMountKind const masterKind = ClassifyUnitMount(leader);
+                if (masterKind != BotMountKind::None)
+                    kind = masterKind;
+            }
+        }
+        if (TryMount(kind))
             ack("Mounting.");
         else
             ack("Cannot mount now.");

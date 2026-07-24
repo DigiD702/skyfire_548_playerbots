@@ -22538,7 +22538,10 @@ void Player::SendMovementSetCollisionHeight(float height)
     Movement::ExtraMovementStatusElement extra(extraElements);
     extra.Data.floatData = height;
     extra.Data.floatData2 = 1;
-    Movement::PacketSender(this, NULL_OPCODE, SMSG_MOVE_SET_COLLISION_HEIGHT, SMSG_MOVE_UPDATE_COLLISION_HEIGHT, &extra).Send();
+    // Do not broadcast SMSG_MOVE_UPDATE_COLLISION_HEIGHT — its MoP structure is
+    // unreliable here and nearby clients misread it as object scale changes.
+    // Self gets SET_COLLISION_HEIGHT; others see mount via UNIT_FIELD_MOUNT_DISPLAY_ID.
+    Movement::PacketSender(this, NULL_OPCODE, SMSG_MOVE_SET_COLLISION_HEIGHT, NULL_OPCODE, &extra).Send();
 }
 
 float Player::GetCollisionHeight(bool mounted) const

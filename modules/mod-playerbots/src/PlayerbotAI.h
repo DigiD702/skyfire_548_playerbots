@@ -31,6 +31,8 @@ class Player;
 class Unit;
 class Creature;
 class BotAiEngine;
+class SpellInfo;
+struct MountCapabilityEntry;
 
 class PlayerbotAI
 {
@@ -142,8 +144,20 @@ private:
     void HandleStay();
     void HandleVendor();
     bool HandleQuestNpcs();
-    bool TryMount();
+    enum class BotMountKind : uint8 { None = 0, Ground, SwiftGround, Flying, SwiftFlying };
+    static BotMountKind ClassifyMountSpell(SpellInfo const* info);
+    static BotMountKind ClassifyUnitMount(Unit const* unit);
+    static bool MountSpellCanFly(SpellInfo const* info);
+    static float GetMountSpellSpeedBonus(SpellInfo const* info);
+    static bool MountCapabilityIsFlight(MountCapabilityEntry const* cap);
+    static MountCapabilityEntry const* FindBotMountCapability(Player const* bot, uint32 mountType, bool preferFlight);
+    uint32 FindMountSpell(BotMountKind preferred) const;
+    bool TryMount(BotMountKind preferred = BotMountKind::None);
     void TryDismount();
+    void SyncMountWithMaster();
+    // True flight state for clients: CAN_FLY + DISABLE_GRAVITY + FLYING (+ move update).
+    bool EnsureFlightMountCapability();
+    void SetBotFlyingMovement(bool enable);
     void TeleportToLeader(Player* leader);
     void TeleportToPlayer(Player* master);
     void StopResting();
@@ -218,7 +232,6 @@ private:
     bool HasGrayJunk() const;
     uint32 SellGrayJunk(Creature* vendor);
     void MoveToPosition(float x, float y, float z);
-    uint32 FindMountSpell() const;
 
     Player* _bot;
     bool _clientControlled;

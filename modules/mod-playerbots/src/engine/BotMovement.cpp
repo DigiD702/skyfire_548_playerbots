@@ -8,6 +8,7 @@
 #include "Object.h"
 #include "PathGenerator.h"
 #include "Player.h"
+#include "SpellAuraDefines.h"
 #include "Unit.h"
 
 #include <cmath>
@@ -26,6 +27,20 @@ namespace BotMovement
     bool CanMove(Player* bot)
     {
         return bot && bot->IsAlive() && !IsCasting(bot);
+    }
+
+    bool IsAirborne(Unit const* unit)
+    {
+        if (!unit)
+            return false;
+        if (unit->IsFlying())
+            return true;
+        if (unit->HasUnitMovementFlag(MOVEMENTFLAG_CAN_FLY | MOVEMENTFLAG_DISABLE_GRAVITY | MOVEMENTFLAG_FLYING))
+            return true;
+        if (unit->HasAuraType(SPELL_AURA_FLY)
+            || unit->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED))
+            return true;
+        return false;
     }
 
     bool StopAndIdle(Player* bot)
@@ -51,7 +66,7 @@ namespace BotMovement
     }
 
     bool ComputeFollowPoint(Unit* leader, Player* bot, float distance, float angle,
-        float& x, float& y, float& z)
+        float& x, float& y, float& z, bool airborne)
     {
         if (!leader || !bot)
             return false;
@@ -61,15 +76,24 @@ namespace BotMovement
         float const size = bot->GetObjectSize();
         leader->GetClosePoint(x, y, z, size, distance, angle);
 
-        // Re-clamp Z in case GetClosePoint's first pass landed in bad geometry.
-        leader->UpdateAllowedPositionZ(x, y, z);
-        bot->UpdateAllowedPositionZ(x, y, z);
+        if (airborne)
+        {
+            // Stay at the leader's altitude — never snap the slot to ground mesh.
+            z = leader->GetPositionZ();
+        }
+        else
+        {
+            leader->UpdateAllowedPositionZ(x, y, z);
+            bot->UpdateAllowedPositionZ(x, y, z);
+        }
         return std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
     }
 
     bool IsBadlyOffGround(Player* bot, float maxDelta)
     {
         if (!bot || !bot->IsInWorld())
+            return false;
+        if (IsAirborne(bot))
             return false;
 
         float x = bot->GetPositionX();
@@ -80,16 +104,17 @@ namespace BotMovement
         return std::fabs(z - groundZ) > maxDelta;
     }
 
-    bool MoveToFollowSlot(Player* bot, Unit* leader, float distance, float angle)
+    bool MoveToFollowSlot(Player* bot, Unit* leader, float distance, float angle, bool airborne)
     {
         if (!CanMove(bot) || !leader)
             return false;
 
         float x, y, z;
-        if (!ComputeFollowPoint(leader, bot, distance, angle, x, y, z))
+        if (!ComputeFollowPoint(leader, bot, distance, angle, x, y, z, airborne))
             return false;
 
-        return MovePoint(bot, x, y, z);
+        // Air: no navmesh path (that clamps Z to ground and "sucks" flyers down).
+        return MovePoint(bot, x, y, z, !airborne);
     }
 
     bool MoveFollowLeader(Player* bot, Unit* leader, float distance, float angle)
@@ -110,12 +135,12 @@ namespace BotMovement
         return true;
     }
 
-    bool MovePoint(Player* bot, float x, float y, float z)
+    bool MovePoint(Player* bot, float x, float y, float z, bool generatePath)
     {
         if (!CanMove(bot))
             return false;
         bot->GetMotionMaster()->Clear();
-        bot->GetMotionMaster()->MovePoint(0, x, y, z);
+        bot->GetMotionMaster()->MovePoint(0, x, y, z, generatePath);
         return true;
     }
 
@@ -165,10 +190,8 @@ namespace BotMovement
     {
         if (!bot)
             return;
-        if (Unit* victim = bot->GetVictim())
-        {
-            if (!victim->IsAlive())
-                bot->AttackStop();
-        }
+        if (Unit* selected = bot->GetSelectedUnit())
+            if (!selected->IsAlive())
+                bot->SetSelection(0);
     }
 }
