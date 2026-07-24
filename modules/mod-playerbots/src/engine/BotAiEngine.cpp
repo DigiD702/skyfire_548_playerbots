@@ -170,6 +170,13 @@ namespace
             if (_ai->HasStrategy("stay", BotState::NonCombat)
                 || _ai->HasStrategy("stay", BotState::Combat))
                 return false;
+            // Healers / ranged never formation-follow the master during combat.
+            Player* bot = _ai->GetBot();
+            if (bot && (bot->IsInCombat() || _ai->IsGroupInCombatPublic()))
+            {
+                if (_ai->GetCombatRolePublic() == 1 || _ai->IsRangedClassPublic())
+                    return false;
+            }
             return _ai->HasStrategy("follow", BotState::NonCombat) || _ai->ShouldFollowPublic();
         }
         bool IsPossible() override { return true; } // RunFollow no-ops while casting

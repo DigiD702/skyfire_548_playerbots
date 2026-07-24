@@ -155,6 +155,9 @@ private:
     void CancelRestConsumables();
     bool PartyNeedsRest() const;
     bool PartyNotAlmostReady() const;
+    // True when the group leader is parked nearby — safe to drink / hold for allies.
+    // False while the master is moving or far ahead (keep following; no convoy stutter).
+    bool IsMasterWaitingForRest() const;
     bool HandleLootRolls();
 
     // AC-style co / nc strategy engine (role-gated).
@@ -195,6 +198,9 @@ private:
     bool TryCombatFlee(Unit* focus);
     bool TryAvoidAoe();
     bool TryAutoMarkRti();
+    // Healer/ranged: stand at cast range from focus — never master formation in combat.
+    void HoldRangedCombatPosition(Unit* focus, float maxRange);
+    Unit* SelectHealerCombatAnchor();
     uint32 GetHealSpell() const;
     void DoRotation(Unit* target);
     void DoTankExtras(Unit* target, bool closing = false);

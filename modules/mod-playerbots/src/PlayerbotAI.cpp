@@ -619,9 +619,8 @@ bool PlayerbotAI::ShouldFollowPublic() const
         return false;
     if (HasEngageTarget())
         return false;
-    // Hold with the party between pulls while allies recover.
-    if (_food && PartyNotAlmostReady())
-        return false;
+    // Never freeze the whole formation for one drinker — thirsty bots park via
+    // RestAction alone; everyone else keeps following the master.
     Group* group = _bot->GetGroup();
     if (!group)
         return false;
@@ -639,16 +638,27 @@ bool PlayerbotAI::NeedsRestPublic() const
         return false;
     if (HasEngageTarget())
         return false;
-    if (_forceRest || _resting)
+    if (_forceRest)
         return true;
+
+    // Finish an in-progress drink even if the master just started moving — the
+    // next HandleRest tick will stand us up if they keep running.
+    if (HasFoodOrDrinkAura())
+        return true;
+
+    // Mid-chase: do not park to drink — stay on the leader.
+    if (!IsMasterWaitingForRest())
+        return false;
+
+    if (_resting)
+        return true;
+
     float const hpPct = HealthPct();
     float const manaPct = ManaPct();
     bool const needHp = hpPct < sPlayerbotMgr->GetRestHealthPct();
     bool const needMana = UsesMana() && manaPct < sPlayerbotMgr->GetRestManaPct();
-    if (needHp || needMana || HasFoodOrDrinkAura())
-        return true;
-    // Full (or nearly full) bots still park while the party finishes drinking.
-    return _food && PartyNotAlmostReady();
+    // Only THIS bot's resources — never park because an ally is drinking.
+    return needHp || needMana;
 }
 
 void PlayerbotAI::UpdateAI(uint32 diff)
@@ -895,7 +905,21 @@ bool PlayerbotAI::HandleCombat()
     if (ShouldWaitForAttack())
     {
         if (!_clientControlled && !_stay)
-            HandleFollow();
+        {
+            // Healers / ranged: hold cast range off the fight — do not trail the master.
+            if (GetCombatRole() == CombatRole::Healer)
+            {
+                if (Unit* anchor = SelectHealerCombatAnchor())
+                    HoldRangedCombatPosition(anchor, BOT_CAST_DIST);
+            }
+            else if (IsRangedClass())
+            {
+                if (Unit* t = SelectTarget())
+                    HoldRangedCombatPosition(t, BOT_CAST_DIST);
+            }
+            else
+                HandleFollow();
+        }
         return true;
     }
 
@@ -923,14 +947,18 @@ bool PlayerbotAI::HandleCombat()
             StopResting();
             return true;
         }
-        // Strict heal: hold with the group, never spend GCDs on damage.
+        // Strict heal: stay at cast range from the tank/fight — never formation-follow
+        // the master mid-combat (that dragged healers through melee).
         if (!_healerDps)
         {
             if (GroupInCombat() || !_bot->getAttackers().empty())
             {
                 StopResting();
                 if (!_clientControlled && !_stay)
-                    HandleFollow();
+                {
+                    if (Unit* anchor = SelectHealerCombatAnchor())
+                        HoldRangedCombatPosition(anchor, BOT_CAST_DIST);
+                }
                 return true;
             }
             return false;
@@ -959,7 +987,9 @@ bool PlayerbotAI::HandleCombat()
     StopResting();
 
     // Spec decides stance (e.g. Elemental ranged, Enhancement melee). Tanks always melee.
-    bool const ranged = IsRangedClass() && GetCombatRole() != CombatRole::Tank;
+    // Healers in healer-dps mode plant like ranged — never chase into melee formation.
+    bool const ranged = GetCombatRole() != CombatRole::Tank
+        && (IsRangedClass() || GetCombatRole() == CombatRole::Healer);
     bool const inMelee = _bot->IsWithinMeleeRange(target);
 
     _followGuid = 0;
@@ -1150,7 +1180,8 @@ bool PlayerbotAI::HandleCombatCastOnly()
         return true;
     }
 
-    bool const ranged = IsRangedClass() && GetCombatRole() != CombatRole::Tank;
+    bool const ranged = GetCombatRole() == CombatRole::Healer
+        || (IsRangedClass() && GetCombatRole() != CombatRole::Tank);
     if (ranged)
     {
         if (_bot->GetDistance(target) > BOT_CAST_DIST || !_bot->IsWithinLOSInMap(target))
@@ -1605,14 +1636,10 @@ bool PlayerbotAI::HandleHealing()
         return false;
 
     constexpr float HEAL_RANGE = 40.0f;
-    if (!_bot->IsWithinDistInMap(ally, HEAL_RANGE))
+    if (!_bot->IsWithinDistInMap(ally, HEAL_RANGE) || !_bot->IsWithinLOSInMap(ally))
     {
         if (!_clientControlled)
-        {
-            _bot->GetMotionMaster()->Clear();
-            _bot->GetMotionMaster()->MoveChase(ally, 0.0f);
-            _chaseGuid = ally->GetGUID();
-        }
+            HoldRangedCombatPosition(ally, HEAL_RANGE);
         return true;
     }
 
@@ -1908,6 +1935,111 @@ Player* PlayerbotAI::SelectHealTarget()
         consider(_bot);
 
     return best;
+}
+
+Unit* PlayerbotAI::SelectHealerCombatAnchor()
+{
+    if (!_bot)
+        return nullptr;
+
+    if (Player* hurt = SelectHealTarget())
+        return hurt;
+
+    Group* group = _bot->GetGroup();
+    if (!group)
+        return nullptr;
+
+    Player* tank = nullptr;
+    Player* fighting = nullptr;
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || !member->IsAlive() || member == _bot)
+            continue;
+        if (!_bot->IsInMap(member) || !_bot->IsWithinDistInMap(member, 60.0f))
+            continue;
+
+        uint32 const specId = member->GetTalentSpecialization(member->GetActiveSpec());
+        uint8 const cls = member->getClass();
+        uint32 const* specs = GetClassSpecializations(cls);
+        bool isTank = false;
+        if (specs)
+        {
+            switch (cls)
+            {
+                case CLASS_WARRIOR: isTank = (specId == specs[2]); break;
+                case CLASS_PALADIN: isTank = (specId == specs[1]); break;
+                case CLASS_DEATH_KNIGHT: isTank = (specId == specs[0]); break;
+                case CLASS_DRUID: isTank = (specId == specs[2]); break;
+                case CLASS_MONK: isTank = (specId == specs[0]); break;
+                default: break;
+            }
+        }
+        if (isTank && !tank)
+            tank = member;
+        if ((member->IsInCombat() || !member->getAttackers().empty()) && !fighting)
+            fighting = member;
+    }
+
+    if (tank)
+        return tank;
+    if (fighting)
+        return fighting;
+
+    Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+    if (leader && leader->IsAlive() && _bot->IsInMap(leader)
+        && _bot->IsWithinDistInMap(leader, 60.0f))
+        return leader;
+    return nullptr;
+}
+
+void PlayerbotAI::HoldRangedCombatPosition(Unit* focus, float maxRange)
+{
+    if (!_bot || _clientControlled || _stay || !focus || !focus->IsAlive())
+        return;
+    if (maxRange < 5.0f)
+        maxRange = BOT_CAST_DIST;
+
+    bool const casting = _bot->IsNonMeleeSpellCasted(false)
+        || _bot->HasUnitState(UNIT_STATE_CASTING);
+    if (casting)
+        return;
+
+    float const dist = _bot->GetDistance(focus);
+    bool const hasLos = _bot->IsWithinLOSInMap(focus);
+    float const standDist = maxRange * 0.85f;
+
+    // Too close — step out (same kite path as ranged DPS).
+    if (_bot->IsWithinMeleeRange(focus) || dist < maxRange * 0.40f)
+    {
+        if (TryCombatFlee(focus))
+            return;
+    }
+
+    if (dist <= maxRange && hasLos)
+    {
+        BotMovement::StopAndIdle(_bot);
+        BotMovement::FaceUnit(_bot, focus);
+        _chaseGuid = focus->GetGUID();
+        _followGuid = 0;
+        return;
+    }
+
+    float destX, destY, destZ;
+    float const absAngle = focus->GetAngle(_bot);
+    focus->GetNearPoint(_bot, destX, destY, destZ, _bot->GetObjectSize(), standDist, absAngle);
+    _bot->UpdateAllowedPositionZ(destX, destY, destZ);
+
+    MovementGeneratorType moveType = _bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    bool const reissue = _chaseGuid != focus->GetGUID()
+        || moveType != POINT_MOTION_TYPE
+        || _bot->IsStopped();
+    if (reissue)
+    {
+        MoveToPosition(destX, destY, destZ);
+        _chaseGuid = focus->GetGUID();
+        _followGuid = 0;
+    }
 }
 
 uint32 PlayerbotAI::GetTauntSpell() const
@@ -3369,6 +3501,49 @@ bool PlayerbotAI::PartyNotAlmostReady() const
     return false;
 }
 
+bool PlayerbotAI::IsMasterWaitingForRest() const
+{
+    if (!_bot)
+        return false;
+
+    Group* group = _bot->GetGroup();
+    if (!group)
+        return true; // solo — drink whenever low
+
+    uint64 const leaderGuid = group->GetLeaderGUID();
+    if (!leaderGuid || leaderGuid == _bot->GetGUID())
+        return true; // we are the leader
+
+    Player* leader = ObjectAccessor::FindPlayer(leaderGuid);
+    if (!leader || !leader->IsInWorld() || !leader->IsAlive())
+        return true;
+    if (!_bot->IsInMap(leader))
+        return false;
+
+    // Master is traveling — keep following; drink at the next stop.
+    if (leader->isMoving())
+        return false;
+
+    // Reach the formation slot first. Sitting at ~35 yd caused stop/go thrash
+    // while still pathing into the follow point.
+    float const followDist = BotFormation::FollowDistance(const_cast<PlayerbotAI*>(this));
+    float const followAngle = BotFormation::FollowAngle(const_cast<PlayerbotAI*>(this));
+    float slotX = 0.0f, slotY = 0.0f, slotZ = 0.0f;
+    float slotDist = _bot->GetDistance(leader);
+    if (BotMovement::ComputeFollowPoint(leader, _bot, followDist, followAngle, slotX, slotY, slotZ))
+        slotDist = _bot->GetDistance(slotX, slotY, slotZ);
+
+    constexpr float SLOT_READY_DIST = 3.0f;
+    if (slotDist > SLOT_READY_DIST)
+        return false;
+
+    // Still sprinting into the slot — finish the move, then drink.
+    if (!_bot->IsStopped() && slotDist > 1.25f)
+        return false;
+
+    return true;
+}
+
 bool PlayerbotAI::StartRefreshment()
 {
     if (!_bot)
@@ -3421,6 +3596,18 @@ bool PlayerbotAI::HandleRest()
         return false;
     }
 
+    // Not at the follow slot yet (or master is moving) — let Follow run.
+    // Do not cancel an in-progress drink for brief master fidgets; only stand
+    // up when we are not already regenerating.
+    if (!_forceRest && !IsMasterWaitingForRest())
+    {
+        if (HasFoodOrDrinkAura() || (_bot->IsSitState() && _bot->IsNonMeleeSpellCasted(false)))
+            return StartRefreshment(); // finish the glass
+        if (_resting || _bot->IsSitState())
+            StopResting();
+        return false;
+    }
+
     // Safety: stand if seated with no regen (empty sit contagion leftover).
     if (_bot->IsSitState() && !HasFoodOrDrinkAura() && !_bot->IsNonMeleeSpellCasted(false)
         && !_forceRest)
@@ -3434,44 +3621,24 @@ bool PlayerbotAI::HandleRest()
     bool const nearlyFull = hpPct >= 98.0f && (!UsesMana() || manaPct >= 98.0f);
     bool const itemResting = HasFoodOrDrinkAura() || _bot->IsNonMeleeSpellCasted(false)
         || _bot->HasAura(BOT_REFRESHMENT_SPELL);
-    bool const partyHolding = _food && PartyNotAlmostReady();
 
-    bool const shouldRest = _forceRest || _resting || (_food && lowResources) || itemResting
-        || partyHolding;
-
+    bool const shouldRest = _forceRest || _resting || (_food && lowResources) || itemResting;
     if (!shouldRest)
         return false;
 
-    // Fully topped up and nobody else is recovering — resume follow.
-    if (nearlyFull && !partyHolding)
+    // Fully topped up — resume follow (formation stays on the master).
+    if (nearlyFull && !itemResting && !_forceRest)
     {
         CancelRestConsumables();
         StopResting();
         return false;
     }
 
-    // Drink only when THIS bot needs regen (or already has food/drink). Do not
-    // StartRefreshment just because an ally is drinking — that empty-sat the
-    // whole party whenever one player clicked food/drink.
     if (lowResources || itemResting || _forceRest)
         return StartRefreshment();
 
-    // Party is holding (ally drinking / not almost ready): stand and wait.
-    // Clear _resting so a prior drink does not keep NeedsRestPublic sticky.
     _resting = false;
-    if (!_clientControlled)
-    {
-        _bot->GetMotionMaster()->Clear();
-        _bot->GetMotionMaster()->MoveIdle();
-        _followGuid = 0;
-        _chaseGuid = 0;
-        if (_bot->GetVictim())
-            _bot->AttackStop();
-    }
-    if (!HasFoodOrDrinkAura() && !_bot->IsNonMeleeSpellCasted(false)
-        && _bot->getStandState() != UNIT_STAND_STATE_STAND)
-        _bot->SetStandState(UNIT_STAND_STATE_STAND);
-    return true;
+    return false;
 }
 
 std::string PlayerbotAI::FormatStrategies(bool combat) const
