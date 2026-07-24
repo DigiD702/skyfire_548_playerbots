@@ -17,6 +17,7 @@
 #include "ItemPrototype.h"
 #include "LFGMgr.h"
 #include "Log.h"
+#include "Map.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -270,24 +271,35 @@ void PlayerbotMgr::CleanupDeadBots()
     {
         WorldSession* session = it->second;
         Player* player = session ? session->GetPlayer() : nullptr;
-        if (!player || !player->IsInWorld())
+        // Only drop bots whose Player is gone. !IsInWorld() alone is wrong —
+        // LFG/group teleports briefly take the player out of the world, and deleting
+        // the session there permanently despawns the bot (who-list empty, "vanished
+        // after uninvite").
+        if (!session || !player)
         {
             uint64 guid = it->first;
             it = _bots.erase(it);
             _randomBots.erase(guid);
             DestroyBotAI(guid);
             delete session;
+            continue;
         }
-        else
-            ++it;
+
+        // Socketless bots never ACK worldport / near-teleport. Finish those so
+        // they re-enter the world and show up in /who again.
+        if (session->IsBot() && player->IsBeingTeleported())
+            session->FinalizeBotTeleport();
+
+        ++it;
     }
 }
 
-// When a real player is solo-queued in the dungeon finder, queue online bots that
-// fit the same dungeon level bracket (and within LevelRange of the player).
+// Party LFG (master invites bots, then queues) is handled by PlayerbotAI::HandleLfg.
+// Never call JoinLfg on solo bots — that creates separate queue entries that match
+// into bot-only groups and pull them out of the open world.
 void PlayerbotMgr::UpdateLfgAutoJoin(uint32 diff)
 {
-    if (!_joinLfg || _bots.empty())
+    if (_bots.empty())
         return;
 
     _lfgJoinTimer += diff;
@@ -295,101 +307,63 @@ void PlayerbotMgr::UpdateLfgAutoJoin(uint32 diff)
         return;
     _lfgJoinTimer = 0;
 
-    struct MasterQueue
+    // Kick any bot that is solo-queued (no real party). Leave grouped bots alone —
+    // they are filling a master's party queue via role-check / proposal answers.
+    for (auto const& pair : _bots)
     {
-        Player* player = nullptr;
-        lfg::LfgDungeonSet dungeons;
-    };
-
-    std::vector<MasterQueue> masters;
-    HashMapHolder<Player>::MapType const& players = ObjectAccessor::GetPlayers();
-    for (auto const& pair : players)
-    {
-        Player* player = pair.second;
-        if (!player || !player->IsInWorld() || !player->GetSession())
-            continue;
-        if (player->GetSession()->IsBot() || IsBot(player->GetGUID()))
-            continue;
-        // Party queues already use HandleLfg role/proposal responses on grouped bots.
-        if (player->GetGroup())
-            continue;
-        if (sLFGMgr->GetState(player->GetGUID()) != lfg::LFG_STATE_QUEUED)
+        WorldSession* session = pair.second;
+        Player* bot = session ? session->GetPlayer() : nullptr;
+        if (!bot || !bot->IsInWorld())
             continue;
 
-        lfg::LfgDungeonSet const& selected = sLFGMgr->GetSelectedDungeons(player->GetGUID());
-        if (selected.empty())
-            continue;
-
-        MasterQueue mq;
-        mq.player = player;
-        mq.dungeons = selected;
-        masters.push_back(mq);
-    }
-
-    if (masters.empty())
-        return;
-
-    for (MasterQueue const& mq : masters)
-    {
-        Player* master = mq.player;
-        uint8 const masterLevel = master->getLevel();
-        uint32 queued = 0;
-
-        for (auto const& pair : _bots)
+        Group* group = bot->GetGroup();
+        if (!group)
         {
-            if (queued >= _joinLfgMaxBots)
-                break;
-
-            WorldSession* session = pair.second;
-            Player* bot = session ? session->GetPlayer() : nullptr;
-            if (!bot || !bot->IsInWorld() || !bot->IsAlive())
-                continue;
-            if (bot->GetGroup())
-                continue;
-            if (bot->GetTeam() != master->GetTeam())
-                continue;
-
-            int const levelDiff = std::abs(int(bot->getLevel()) - int(masterLevel));
-            if (uint32(levelDiff) > _joinLfgLevelRange)
-                continue;
-
             lfg::LfgState const botState = sLFGMgr->GetState(bot->GetGUID());
-            if (botState == lfg::LFG_STATE_QUEUED
-                || botState == lfg::LFG_STATE_ROLECHECK
-                || botState == lfg::LFG_STATE_PROPOSAL
-                || botState == lfg::LFG_STATE_DUNGEON
-                || botState == lfg::LFG_STATE_BOOT)
+            if (botState == lfg::LFG_STATE_NONE || botState == lfg::LFG_STATE_DUNGEON
+                || botState == lfg::LFG_STATE_FINISHED_DUNGEON || botState == lfg::LFG_STATE_BOOT)
                 continue;
 
-            // Keep only dungeons the bot's level is eligible for.
-            lfg::LfgDungeonSet botDungeons;
-            for (uint32 dungeonRef : mq.dungeons)
-            {
-                uint32 const dungeonId = dungeonRef & 0x00FFFFFF;
-                LFGDungeonEntry const* entry = sLFGDungeonStore.LookupEntry(dungeonId);
-                if (!entry)
-                    continue;
-                if (bot->getLevel() < entry->m_MinLevel || bot->getLevel() > entry->m_MaxLevel)
-                    continue;
-                botDungeons.insert(dungeonId);
-            }
-
-            if (botDungeons.empty())
-                continue;
-
-            uint8 roles = lfg::PLAYER_ROLE_DAMAGE;
-            auto aiIt = _ai.find(bot->GetGUID());
-            if (aiIt != _ai.end() && aiIt->second)
-                roles = aiIt->second->ComputeLfgRole();
-
-            sLFGMgr->JoinLfg(bot, roles, botDungeons, "");
-            ++queued;
+            sLFGMgr->LeaveLfg(bot->GetGUID());
+            SF_LOG_DEBUG("modules", "[mod-playerbots] Left solo LFG queue for bot '%s' (stay in world).",
+                bot->GetName().c_str());
+            continue;
         }
 
-        if (queued)
-            SF_LOG_DEBUG("modules", "[mod-playerbots] LFG auto-join: queued %u bot(s) for %s (level %u).",
-                queued, master->GetName().c_str(), masterLevel);
+        // Bot-only LFG dungeon groups: eject so they return to the open world.
+        if (!group->isLFGGroup())
+            continue;
+
+        bool hasRealPlayer = false;
+        for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+        {
+            Player* member = itr->GetSource();
+            if (member && member->GetSession() && !member->GetSession()->IsBot())
+            {
+                hasRealPlayer = true;
+                break;
+            }
+        }
+        if (hasRealPlayer)
+            continue;
+
+        sLFGMgr->LeaveLfg(bot->GetGUID());
+        if (bot->GetMap() && bot->GetMap()->IsDungeon())
+        {
+            sLFGMgr->TeleportPlayer(bot, true);
+            if (bot->GetSession() && bot->GetSession()->IsBot())
+                bot->GetSession()->FinalizeBotTeleport();
+        }
+        bot->RemoveFromGroup(GROUP_REMOVEMETHOD_LEAVE);
+        SF_LOG_DEBUG("modules", "[mod-playerbots] Ejected bot '%s' from bot-only LFG group.",
+            bot->GetName().c_str());
     }
+
+    // Legacy RandomBotJoinLfg JoinLfg fill removed: it queued bots independently and
+    // they formed bot-only LFG groups. Invite bots to your party, then queue.
+    (void)_joinLfg;
+    (void)_joinLfgMaxBots;
+    (void)_joinLfgLevelRange;
 }
 
 bool PlayerbotMgr::AddBot(uint64 characterGuid, std::string* errorOut)
@@ -435,12 +409,44 @@ bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* er
     botSession->SetBot(true);
     // Match the realm real characters use so name queries and /who resolve
     // the bot correctly (a socketless session otherwise reports realm 0 / -1).
-    uint32 botRealm = realmID;
+    uint32 botRealm = 0;
+    {
+        SF_SHARED_GUARD readGuard(*HashMapHolder<Player>::GetLock());
+        for (auto const& kv : sObjectAccessor->GetPlayers())
+        {
+            Player* p = kv.second;
+            if (!p || !p->GetSession() || p->GetSession()->IsBot())
+                continue;
+            uint32 r = p->GetSession()->GetVirtualRealmID();
+            if (r && r != uint32(-1))
+            {
+                botRealm = r;
+                break;
+            }
+        }
+    }
     if (!botRealm || botRealm == uint32(-1))
-        botRealm = 1;
+        botRealm = (realmID && realmID != uint32(-1)) ? realmID : 1;
     botSession->SetVirtualRealmID(botRealm);
 
     if (!botSession->LoginBotCharacter(characterGuid))
+    {
+        delete botSession;
+        return fail("Failed to load the character into the world.");
+    }
+
+    // Bots have no client to ACK login teleports (instance eject / homebind).
+    // Finish those here in the module rather than patching CharacterHandler.
+    if (Player* loggedIn = botSession->GetPlayer())
+    {
+        if (loggedIn->IsBeingTeleported())
+            botSession->FinalizeBotTeleport();
+        // Re-assert after login — some paths leave session realm 0 and blank /who.
+        botSession->SetVirtualRealmID(botRealm);
+        loggedIn->SetUInt32Value(PLAYER_FIELD_VIRTUAL_PLAYER_REALM, botRealm);
+    }
+
+    if (!botSession->GetPlayer() || !botSession->GetPlayer()->IsInWorld())
     {
         delete botSession;
         return fail("Failed to load the character into the world.");
@@ -473,6 +479,45 @@ void PlayerbotMgr::UpdateBotAI(Player* bot, uint32 diff)
     auto it = _ai.find(bot->GetGUID());
     if (it != _ai.end())
         it->second->UpdateAI(diff);
+}
+
+void PlayerbotMgr::SyncNearbyBotVisibility(Player* viewer, uint32 diff)
+{
+    if (!_enabled || !viewer || !viewer->IsInWorld() || !viewer->GetSession())
+        return;
+    if (viewer->GetSession()->IsBot())
+        return;
+
+    uint32& timer = _viewerVisTimers[viewer->GetGUID()];
+    timer += diff;
+    if (timer < 500)
+        return;
+    timer = 0;
+
+    Map* map = viewer->GetMap();
+    if (!map)
+        return;
+
+    float const range = map->GetVisibilityRange();
+    uint32 const viewerRealm = viewer->GetSession()->GetVirtualRealmID();
+    for (auto const& pair : _bots)
+    {
+        Player* bot = pair.second ? pair.second->GetPlayer() : nullptr;
+        if (!bot || !bot->IsInWorld() || bot->GetMap() != map)
+            continue;
+
+        // Align bot session VR with real players (name query / who). Never write
+        // PLAYER_FIELD_VIRTUAL_PLAYER_REALM here — update-field spam blanked /who.
+        if (viewerRealm && viewerRealm != uint32(-1)
+            && pair.second->GetVirtualRealmID() != viewerRealm)
+            pair.second->SetVirtualRealmID(viewerRealm);
+
+        if (viewer->GetDistance(bot) > range)
+            continue;
+
+        if (PlayerbotAI* ai = GetBotAI(bot->GetGUID()))
+            ai->SyncPhaseWithMaster(viewer);
+    }
 }
 
 void PlayerbotMgr::HandleBotWhisper(Player* from, Player* bot, std::string const& msg)

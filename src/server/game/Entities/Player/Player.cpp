@@ -18039,8 +18039,17 @@ bool Player::IsAlwaysDetectableFor(WorldObject const* seer) const
         return true;
 
     if (const Player* seerPlayer = seer->ToPlayer())
+    {
+        // Socket bots are invisible until invited because party members use this
+        // path (IsGroupVisibleFor). Treat bots as always detectable for real
+        // players so open-world visibility matches pre-regression behaviour.
+        if (GetSession() && GetSession()->IsBot()
+            && seerPlayer->GetSession() && !seerPlayer->GetSession()->IsBot())
+            return true;
+
         if (IsGroupVisibleFor(seerPlayer))
             return !(seerPlayer->duel && seerPlayer->duel->startTime != 0 && seerPlayer->duel->opponent == this);
+    }
 
     return false;
 }

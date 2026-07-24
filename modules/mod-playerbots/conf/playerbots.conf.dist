@@ -61,28 +61,25 @@ Playerbots.RandomBots.LoginInterval = 2000
 
 #
 #    Playerbots.RandomBotJoinLfg
-#        Description: When a real player solo-queues in the dungeon finder, also
-#                     queue online bots into the same LFG selection. Only bots
-#                     within LevelRange of the player and inside the dungeon
-#                     min/max level bracket are considered (avoids low/high bots
-#                     joining the wrong queue). Party queues still rely on bots
-#                     already in the group answering the role check.
-#        Default:     0 - (Disabled)
-#                     1 - (Enabled)
+#        Description: Legacy flag (kept for config compatibility). Solo LFG bot
+#                     fill via JoinLfg is disabled — it queued bots separately and
+#                     they formed bot-only LFG groups (leaving the open world).
+#                     To run LFG with bots: invite them to your party, then queue.
+#                     Grouped bots still answer role checks / proposals.
+#        Default:     0 - (Ignored; solo JoinLfg fill is not used)
 
 Playerbots.RandomBotJoinLfg = 0
 
 #
 #    Playerbots.RandomBotJoinLfg.MaxBots
-#        Description: Maximum bots to add per real-player LFG queue poll.
+#        Description: Unused (solo JoinLfg fill removed). Kept for compatibility.
 #        Default:     10
 
 Playerbots.RandomBotJoinLfg.MaxBots = 10
 
 #
 #    Playerbots.RandomBotJoinLfg.LevelRange
-#        Description: Absolute level difference allowed vs the queuing player
-#                     (in addition to the dungeon level bracket).
+#        Description: Unused (solo JoinLfg fill removed). Kept for compatibility.
 #        Default:     5
 
 Playerbots.RandomBotJoinLfg.LevelRange = 5

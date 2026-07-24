@@ -43,6 +43,7 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include "zlib.h"
+#include <vector>
 
 namespace
 {
@@ -826,12 +827,13 @@ void WorldSession::HandleWhoOpcode(WorldPacket& recvData)
     //bool allowTwoSideWhoList = sWorld->GetBoolConfig(CONFIG_ALLOW_TWO_SIDE_WHO_LIST);
     uint32 gmLevelInWhoList = sWorld->getIntConfig(WorldIntConfigs::CONFIG_GM_LEVEL_IN_WHO_LIST);
     uint8 displaycount = 0, matchcount = 0;
+    uint32 const maxWho = sWorld->getIntConfig(WorldIntConfigs::CONFIG_MAX_WHO);
 
-    ByteBuffer bytesData;
-    WorldPacket data(SMSG_WHO);
-
-    size_t pos = data.bitwpos();
-    data.WriteBits(displaycount, 6);
+    // With hundreds of bots online, a raw HashMap walk fills the 49-slot /who
+    // cap with bots first. If those rows carry a realm the client rejects, the
+    // whole list looks blank. Collect matches, prefer real players, then bots.
+    std::vector<Player*> whoReal;
+    std::vector<Player*> whoBots;
 
     SF_SHARED_GUARD readGuard(*HashMapHolder<Player>::GetLock());
     HashMapHolder<Player>::MapType const& m = sObjectAccessor->GetPlayers();
@@ -870,7 +872,6 @@ void WorldSession::HandleWhoOpcode(WorldPacket& recvData)
             continue;
 
         uint32 zoneId = target->GetZoneId();
-        uint8 gender = target->getGender();
 
         bool z_show = true;
         for (uint32 i = 0; i < zonesCount; ++i)
@@ -926,10 +927,52 @@ void WorldSession::HandleWhoOpcode(WorldPacket& recvData)
         if (!s_show)
             continue;
 
+        if (target->GetSession()->IsBot())
+            whoBots.push_back(target);
+        else
+            whoReal.push_back(target);
+    }
+
+    std::vector<Player*> whoList;
+    whoList.reserve(whoReal.size() + whoBots.size());
+    // Always lead with the querier so the client has at least one known-good row.
+    whoList.push_back(_player);
+    for (Player* p : whoReal)
+        if (p != _player)
+            whoList.push_back(p);
+    whoList.insert(whoList.end(), whoBots.begin(), whoBots.end());
+
+    ByteBuffer bytesData;
+    WorldPacket data(SMSG_WHO);
+
+    size_t pos = data.bitwpos();
+    data.WriteBits(displaycount, 6);
+
+    // Proven working with bots: both realm uint32s must be the querier's auth
+    // VirtualRealmID. Mixing in global realmID (stock "guild realm" field) or
+    // per-target session realms blanks the MoP who list when those differ.
+    uint32 const viewerRealm = [&]() -> uint32
+    {
+        uint32 r = GetVirtualRealmID();
+        if (!r || r == uint32(-1))
+            r = (realmID && realmID != uint32(-1)) ? realmID : 1;
+        return r;
+    }();
+
+    for (Player* target : whoList)
+    {
         // 49 is maximum player count sent to client - can be overridden
         // through config, but is unstable
-        if ((matchcount++) >= sWorld->getIntConfig(WorldIntConfigs::CONFIG_MAX_WHO))
+        if ((matchcount++) >= maxWho)
             continue;
+
+        uint8 level = target->getLevel();
+        uint8 class_ = target->getClass();
+        uint32 race = target->getRace();
+        uint32 zoneId = target->GetZoneId();
+        uint8 gender = target->getGender();
+        std::string pname = target->GetName();
+        std::string gname = sGuildMgr->GetGuildNameById(target->GetGuildId());
 
         ObjectGuid playerGuid = target->GetGUID();
         ObjectGuid accountId = target->GetSession()->GetAccountId();
@@ -957,7 +1000,7 @@ void WorldSession::HandleWhoOpcode(WorldPacket& recvData)
         data.WriteBit(guildGuid[4]);
         data.WriteBit(accountId[0]);
 
-        if (DeclinedName const* names = itr->second->GetDeclinedNames())
+        if (DeclinedName const* names = target->GetDeclinedNames())
         {
             for (uint8 i = 0; i < MAX_DECLINED_NAME_CASES; ++i)
                 data.WriteBits(names->name[i].size(), 14);
@@ -977,9 +1020,9 @@ void WorldSession::HandleWhoOpcode(WorldPacket& recvData)
         data.WriteBits(pname.size(), 6);
 
         bytesData.WriteByteSeq(playerGuid[1]);
-        bytesData << uint32(target->GetSession()->GetVirtualRealmID());
+        bytesData << uint32(viewerRealm);
         bytesData.WriteByteSeq(playerGuid[7]);
-        bytesData << uint32(realmID); // NYI. guild creation virtual realm id.
+        bytesData << uint32(viewerRealm); // NYI. guild creation virtual realm id.
         bytesData.WriteByteSeq(playerGuid[4]);
         bytesData.WriteString(pname);
         bytesData.WriteByteSeq(guildGuid[1]);
@@ -998,7 +1041,7 @@ void WorldSession::HandleWhoOpcode(WorldPacket& recvData)
         bytesData.WriteByteSeq(playerGuid[6]);
         bytesData.WriteByteSeq(playerGuid[2]);
 
-        if (DeclinedName const* names = itr->second->GetDeclinedNames())
+        if (DeclinedName const* names = target->GetDeclinedNames())
             for (uint8 i = 0; i < MAX_DECLINED_NAME_CASES; ++i)
                 bytesData.WriteString(names->name[i]);
 

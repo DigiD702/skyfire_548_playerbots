@@ -40,6 +40,11 @@ public:
         // Socket bots and self-bots both have an attached PlayerbotAI.
         if (player->GetSession()->IsBot() || sPlayerbotMgr->HasBotAI(player->GetGUID()))
             sPlayerbotMgr->UpdateBotAI(player, diff);
+
+        // Real players: force nearby socket bots onto our phase set. Invite was
+        // the only path that did this before, so ungrouped bots stayed invisible.
+        if (!player->GetSession()->IsBot() && player->IsInWorld())
+            sPlayerbotMgr->SyncNearbyBotVisibility(player, diff);
     }
 
     // Whisper directed at a bot or self-bot (including whispering yourself).

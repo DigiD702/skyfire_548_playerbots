@@ -37,6 +37,10 @@ public:
     // Ticks a single bot's AI (from PlayerScript::OnUpdate).
     void UpdateBotAI(Player* bot, uint32 diff);
 
+    // Real player tick: align in-range socket bots to this player's MoP phases
+    // and refresh client visibility (ungrouped bots were invisible until invite).
+    void SyncNearbyBotVisibility(Player* viewer, uint32 diff);
+
     // Routes a chat order to one bot (whisper) or every bot in a group (party/raid).
     void HandleBotWhisper(Player* from, Player* bot, std::string const& msg);
     void HandleBotGroupChat(Player* from, Group* group, std::string const& msg);
@@ -180,6 +184,7 @@ private:
     std::unordered_map<uint64 /*characterGuid*/, PlayerbotAI*> _ai;
     std::unordered_set<uint64 /*characterGuid*/> _randomBots; // subset managed by the pool
     std::unordered_set<uint64 /*characterGuid*/> _selfBots;   // real players with cast-only AI
+    std::unordered_map<uint64 /*playerGuid*/, uint32> _viewerVisTimers;
 };
 
 #define sPlayerbotMgr PlayerbotMgr::instance()

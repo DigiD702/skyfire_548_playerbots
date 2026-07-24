@@ -64,6 +64,10 @@ public:
     Player* GetBot() const { return _bot; }
     bool IsClientControlled() const { return _clientControlled; }
 
+    // Copy a real player's MoP phase-id set onto this bot and refresh that
+    // player's client visibility of the bot (needed when not in a group).
+    void SyncPhaseWithMaster(Unit* master);
+
     // Re-apply role-default strategies (after init/spec change).
     void ResetStrategiesToRoleDefaults();
 
@@ -155,8 +159,17 @@ private:
     bool TryMount(BotMountKind preferred = BotMountKind::None);
     void TryDismount();
     void SyncMountWithMaster();
+    // MoP visibility uses phase-id sets. FinalizeBotTeleport → UpdateAreaPhase
+    // applies the bot's own quest conditions and can desync from nearby players
+    // (visible only with .gm on / in a group). Re-align to a nearby real player.
+    void EnsureVisiblePhases();
+    // True when master is clearly above terrain (not skimming ground on a flyer).
+    static bool IsMasterAirborne(Unit const* master);
+    void ClampBotToGround();
     // True flight state for clients: CAN_FLY + DISABLE_GRAVITY + FLYING (+ move update).
     bool EnsureFlightMountCapability();
+    // Ground SpeedModSpell for the current mount (flyer on the ground included).
+    bool EnsureGroundMountCapability();
     void SetBotFlyingMovement(bool enable);
     void TeleportToLeader(Player* leader);
     void TeleportToPlayer(Player* master);
