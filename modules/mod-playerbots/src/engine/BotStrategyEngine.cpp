@@ -4,6 +4,8 @@
 
 #include "BotStrategyEngine.h"
 
+#include "SharedDefines.h"
+
 #include <algorithm>
 #include <cctype>
 #include <sstream>
@@ -43,36 +45,49 @@ void BotStrategyEngine::Clear()
     _nonCombat.clear();
 }
 
-void BotStrategyEngine::ResetToRoleDefaults(bool isTank, bool isHealer)
+void BotStrategyEngine::ResetToRoleDefaults(bool isTank, bool isHealer, uint8 cls)
 {
     Clear();
     _isTank = isTank;
     _isHealer = isHealer;
+    if (cls)
+        _cls = cls;
 
     // Non-combat defaults (AC: nc + follow + food/loot-ish)
     Add("food", BotState::NonCombat);
     Add("follow", BotState::NonCombat);
     Add("loot", BotState::NonCombat);
 
+    // Shared combat utilities (thin AC aoe/boost/cc/avoid aoe).
+    Add("boost", BotState::Combat);
+    Add("avoid aoe", BotState::Combat);
+
     // Combat defaults by role (AC AiFactory-style)
     if (isTank)
     {
         Add("tank", BotState::Combat);
         Add("tank assist", BotState::Combat);
+        Add("aoe", BotState::Combat);
     }
     else if (isHealer)
     {
         Add("heal", BotState::Combat);
         Add("save mana", BotState::Combat);
+        // Healers: aoe off unless explicitly enabled.
     }
     else
     {
         Add("dps", BotState::Combat);
         Add("dps assist", BotState::Combat);
         Add("threat", BotState::Combat);
+        Add("aoe", BotState::Combat);
         // AC-style: give the tank a few seconds before DPS open.
         Add("wait for attack", BotState::Combat);
     }
+
+    // CC default ON for classes that rely on it (AC AiFactory).
+    if (_cls == CLASS_MAGE || _cls == CLASS_HUNTER || _cls == CLASS_WARLOCK)
+        Add("cc", BotState::Combat);
 }
 
 BotStrategyEngine::StrategySet& BotStrategyEngine::SetFor(BotState state)
@@ -108,6 +123,7 @@ std::string BotStrategyEngine::NormalizeName(std::string name)
     if (out == "savemana") out = "save mana";
     if (out == "dpsassist") out = "dps assist";
     if (out == "waitforattack" || out == "wait attack") out = "wait for attack";
+    if (out == "avoidaoe" || out == "avoid") out = "avoid aoe";
     return out;
 }
 
@@ -122,7 +138,8 @@ bool BotStrategyEngine::IsKnown(std::string const& name, BotState state) const
     // Combat names (role gate applied separately).
     return name == "tank" || name == "tank assist" || name == "dps" || name == "dps assist"
         || name == "heal" || name == "healer dps" || name == "save mana" || name == "threat"
-        || name == "wait for attack";
+        || name == "wait for attack"
+        || name == "aoe" || name == "boost" || name == "cc" || name == "avoid aoe";
 }
 
 bool BotStrategyEngine::IsRoleAllowed(std::string const& name, BotState state, bool isTank, bool isHealer) const
@@ -131,6 +148,10 @@ bool BotStrategyEngine::IsRoleAllowed(std::string const& name, BotState state, b
         return true;
     if (state == BotState::NonCombat)
         return IsKnown(name, state);
+
+    // Shared combat toggles — any role may enable/disable.
+    if (name == "aoe" || name == "boost" || name == "cc" || name == "avoid aoe")
+        return true;
 
     if (isTank)
         return name == "tank" || name == "tank assist" || name == "dps";
@@ -247,11 +268,14 @@ std::string BotStrategyEngine::Format(BotState state) const
     if (state == BotState::NonCombat)
         names = { "food", "follow", "stay", "loot", "passive", "grind" };
     else if (_isTank)
-        names = { "passive", "grind", "tank", "tank assist", "dps" };
+        names = { "passive", "grind", "tank", "tank assist", "dps",
+                  "aoe", "boost", "cc", "avoid aoe" };
     else if (_isHealer)
-        names = { "passive", "grind", "heal", "healer dps", "save mana", "wait for attack" };
+        names = { "passive", "grind", "heal", "healer dps", "save mana", "wait for attack",
+                  "aoe", "boost", "cc", "avoid aoe" };
     else
-        names = { "passive", "grind", "dps", "dps assist", "threat", "wait for attack" };
+        names = { "passive", "grind", "dps", "dps assist", "threat", "wait for attack",
+                  "aoe", "boost", "cc", "avoid aoe" };
 
     std::string out;
     for (std::string const& n : names)
@@ -389,5 +413,5 @@ void BotStrategyEngine::ApplyAggressivePack()
 
 void BotStrategyEngine::ApplyResetPack()
 {
-    ResetToRoleDefaults(_isTank, _isHealer);
+    ResetToRoleDefaults(_isTank, _isHealer, _cls);
 }

@@ -12,6 +12,8 @@
 #include "ItemPrototype.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
+#include "PlayerbotAI.h"
+#include "PlayerbotMgr.h"
 #include "SharedDefines.h"
 #include "Spell.h"
 #include "SpellAuras.h"
@@ -26,6 +28,19 @@ namespace BotRotation
 {
 namespace
 {
+    PlayerbotAI* GetAI(Player* bot)
+    {
+        return sPlayerbotMgr->GetBotAI(bot);
+    }
+
+    bool StrategyOn(Player* bot, char const* name)
+    {
+        if (PlayerbotAI* ai = GetAI(bot))
+            return ai->HasStrategy(name, BotState::Combat);
+        // No AI attached — allow utilities so self-tests still work.
+        return true;
+    }
+
     // Spells that should be cast on the bot (buffs / forms / seals).
     bool IsSelfCast(uint32 spellId)
     {
@@ -423,7 +438,7 @@ bool TryRacial(Player* bot, Unit* /*targetOrSelf*/)
         return CastSpell(bot, bot, id);
     };
 
-    // Defensive / escape racials when low.
+    // Defensive / escape racials when low (not gated by boost).
     if (hpPct < 35.0f)
     {
         static uint32 const defensive[] = {
@@ -440,7 +455,10 @@ bool TryRacial(Player* bot, Unit* /*targetOrSelf*/)
     if (!bot->IsInCombat())
         return false;
 
-    // Offensive racials while fighting.
+    // Offensive racials require +boost.
+    if (!StrategyOn(bot, "boost"))
+        return false;
+
     static uint32 const offensive[] = {
         33697,  // Blood Fury (both)
         20572,  // Blood Fury (AP)
@@ -539,6 +557,8 @@ bool HasGlyphSpell(Player* bot, uint32 glyphSpellId)
 bool TryTrinkets(Player* bot)
 {
     if (!bot || bot->HasUnitState(UNIT_STATE_CASTING))
+        return false;
+    if (!StrategyOn(bot, "boost"))
         return false;
 
     for (uint8 slot = EQUIPMENT_SLOT_TRINKET1; slot <= EQUIPMENT_SLOT_TRINKET2; ++slot)
@@ -988,6 +1008,102 @@ bool TryPartySupport(Player* bot)
     return false;
 }
 
+bool TryCrowdControl(Player* bot, Unit* enemy)
+{
+    if (!bot || !enemy || !enemy->IsAlive() || bot->HasUnitState(UNIT_STATE_CASTING))
+        return false;
+    if (!StrategyOn(bot, "cc"))
+        return false;
+    if (!bot->IsValidAttackTarget(enemy))
+        return false;
+
+    // Prefer an add that is not the tank's current target when possible.
+    Unit* ccTarget = enemy;
+    if (Group* group = bot->GetGroup())
+    {
+        Unit* tankVictim = nullptr;
+        for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+        {
+            Player* member = itr->GetSource();
+            if (!member || !member->IsAlive())
+                continue;
+            if (PlayerbotAI* mai = GetAI(member))
+            {
+                if (mai->GetCombatRolePublic() != 0)
+                    continue;
+            }
+            else
+                continue;
+            if (Unit* v = member->GetVictim())
+            {
+                tankVictim = v;
+                break;
+            }
+        }
+        if (tankVictim && tankVictim == enemy)
+        {
+            if (Unit* alt = FindSecondaryEnemy(bot, enemy, 30.0f))
+                ccTarget = alt;
+            else
+                return false; // Don't CC the tank's focus.
+        }
+    }
+
+    if (ccTarget->HasAuraType(SPELL_AURA_MOD_STUN)
+        || ccTarget->HasAuraType(SPELL_AURA_MOD_CONFUSE)
+        || ccTarget->HasAuraType(SPELL_AURA_MOD_FEAR)
+        || ccTarget->HasAuraType(SPELL_AURA_MOD_ROOT))
+        return false;
+
+    auto tryCc = [&](uint32 spellId) -> bool
+    {
+        if (!CanTryCast(bot, spellId))
+            return false;
+        return CastSpell(bot, ccTarget, spellId);
+    };
+
+    switch (bot->getClass())
+    {
+        case CLASS_MAGE:
+            if (tryCc(118)) // Polymorph
+                return true;
+            break;
+        case CLASS_WARLOCK:
+            if (ccTarget->GetCreatureType() == CREATURE_TYPE_DEMON
+                || ccTarget->GetCreatureType() == CREATURE_TYPE_ELEMENTAL)
+            {
+                if (tryCc(710)) // Banish
+                    return true;
+            }
+            if (tryCc(5782)) // Fear
+                return true;
+            break;
+        case CLASS_HUNTER:
+            if (tryCc(1499)) // Freezing Trap
+                return true;
+            break;
+        case CLASS_SHAMAN:
+            if (tryCc(51514)) // Hex
+                return true;
+            break;
+        case CLASS_PRIEST:
+            if (ccTarget->GetCreatureType() == CREATURE_TYPE_UNDEAD && tryCc(9484)) // Shackle Undead
+                return true;
+            break;
+        case CLASS_DRUID:
+            if (tryCc(33786)) // Cyclone
+                return true;
+            break;
+        case CLASS_ROGUE:
+            if (bot->HasAuraType(SPELL_AURA_MOD_STEALTH) && tryCc(6770)) // Sap
+                return true;
+            break;
+        default:
+            break;
+    }
+    return false;
+}
+
 bool TryCombatUtilities(Player* bot, Unit* enemy)
 {
     if (!bot)
@@ -996,6 +1112,8 @@ bool TryCombatUtilities(Player* bot, Unit* enemy)
         return false;
 
     if (enemy && TryInterrupt(bot, enemy))
+        return true;
+    if (enemy && TryCrowdControl(bot, enemy))
         return true;
     if (TryPartySupport(bot))
         return true;
@@ -1015,6 +1133,8 @@ uint32 SelectNextSpell(Player* bot, Unit* target)
     ctx.bot = bot;
     ctx.target = target;
     ctx.enemies = CountNearbyEnemies(bot, 10.0f);
+    if (!StrategyOn(bot, "aoe"))
+        ctx.enemies = 1;
     ctx.targetHealthPct = UnitHealthPct(target);
     ctx.comboPoints = bot->GetComboPoints();
 
@@ -1072,6 +1192,8 @@ uint32 SelectNextHeal(Player* bot, Player* ally, bool saveMana, float saveManaTh
     ctx.lowestAllyHealthPct = ctx.healTargetHealthPct;
     ctx.injuredAllies = 0;
     ctx.enemies = CountNearbyEnemies(bot, 10.0f);
+    if (!StrategyOn(bot, "aoe"))
+        ctx.enemies = 1;
     ctx.manaPct = bot->GetMaxPower(POWER_MANA)
         ? (100.0f * float(bot->GetPower(POWER_MANA)) / float(bot->GetMaxPower(POWER_MANA)))
         : 100.0f;

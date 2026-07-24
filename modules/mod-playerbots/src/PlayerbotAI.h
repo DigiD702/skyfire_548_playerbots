@@ -68,6 +68,11 @@ public:
     BotStrategyEngine const& GetStrategyEngine() const { return _strategies; }
     bool HasStrategy(std::string const& name, BotState state) const { return _strategies.Has(name, state); }
 
+    bool IsAoeEnabled() const { return _aoe; }
+    bool IsBoostEnabled() const { return _boost; }
+    bool IsCcEnabled() const { return _cc; }
+    bool IsAvoidAoeEnabled() const { return _avoidAoe; }
+
     // --- Public hooks for BotAiEngine / Values / Formation ---
     bool RunCombat();
     bool RunCombatCastOnly();
@@ -163,6 +168,7 @@ private:
     void BeginPullSequence(Unit* target);
     void EndPullSequence(bool keepForcedTarget);
     bool TryCombatFlee(Unit* focus);
+    bool TryAvoidAoe();
     bool TryAutoMarkRti();
     uint32 GetHealSpell() const;
     void DoRotation(Unit* target);
@@ -213,6 +219,10 @@ private:
     bool _healerDps;     // healer: damage when nobody needs heals
     bool _saveMana;      // healer: efficient heals when low mana
     bool _waitForAttack; // non-tanks delay DPS after combat starts
+    bool _aoe;           // multi-target rotation branches
+    bool _boost;         // trinkets + offensive racials
+    bool _cc;            // crowd control utilities
+    bool _avoidAoe;      // step out of damaging ground effects
 
     bool _forceRest;
     bool _resting;

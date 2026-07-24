@@ -760,6 +760,17 @@ void PlayerbotMgr::DestroyBotAI(uint64 characterGuid)
     _ai.erase(it);
 }
 
+PlayerbotAI* PlayerbotMgr::GetBotAI(uint64 characterGuid) const
+{
+    auto it = _ai.find(characterGuid);
+    return it != _ai.end() ? it->second : nullptr;
+}
+
+PlayerbotAI* PlayerbotMgr::GetBotAI(Player* bot) const
+{
+    return bot ? GetBotAI(bot->GetGUID()) : nullptr;
+}
+
 void PlayerbotMgr::GetBotGuids(std::vector<uint64>& out) const
 {
     out.reserve(_bots.size());

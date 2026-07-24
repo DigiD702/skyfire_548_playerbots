@@ -15,6 +15,7 @@
 #include "Chat.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "DynamicObject.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
@@ -196,6 +197,7 @@ PlayerbotAI::PlayerbotAI(Player* bot, bool clientControlled)
       _passive(false), _grind(false),
       _tankMode(false), _tankAssist(false), _dpsMode(false), _dpsAssist(false),
       _threat(false), _healerDps(false), _saveMana(false), _waitForAttack(false),
+      _aoe(false), _boost(true), _cc(false), _avoidAoe(true),
       _forceRest(false), _resting(false), _holdAssist(false),
       _forcedTargetGuid(0), _lfgRoleResponded(false), _lfgProposalResponded(false)
 {
@@ -208,7 +210,8 @@ PlayerbotAI::~PlayerbotAI() = default;
 void PlayerbotAI::ResetStrategiesToRoleDefaults()
 {
     CombatRole const role = GetCombatRole();
-    _strategies.ResetToRoleDefaults(role == CombatRole::Tank, role == CombatRole::Healer);
+    _strategies.ResetToRoleDefaults(role == CombatRole::Tank, role == CombatRole::Healer,
+        _bot ? _bot->getClass() : 0);
     SyncFlagsFromStrategies();
     _forceRest = false;
     _holdAssist = false;
@@ -237,6 +240,10 @@ void PlayerbotAI::SyncFlagsFromStrategies()
     _healerDps = _strategies.Has("healer dps", BotState::Combat);
     _saveMana = _strategies.Has("save mana", BotState::Combat);
     _waitForAttack = _strategies.Has("wait for attack", BotState::Combat);
+    _aoe = _strategies.Has("aoe", BotState::Combat);
+    _boost = _strategies.Has("boost", BotState::Combat);
+    _cc = _strategies.Has("cc", BotState::Combat);
+    _avoidAoe = _strategies.Has("avoid aoe", BotState::Combat);
     if (_strategies.Has("heal", BotState::Combat))
         _healerDps = false;
 
@@ -591,6 +598,10 @@ bool PlayerbotAI::HandleCombat()
             HandleFollow();
         return true;
     }
+
+    // Step out of damaging ground effects when +avoid aoe (before chase/cast).
+    if ((_bot->IsInCombat() || GroupInCombat()) && TryAvoidAoe())
+        return true;
 
     // Between pulls: sit/drink with the party instead of chasing the next pack.
     // Explicit attack/pull orders always engage — don't stall for drinks.
@@ -1932,6 +1943,89 @@ bool PlayerbotAI::HandlePullSequence()
     return false;
 }
 
+bool PlayerbotAI::TryAvoidAoe()
+{
+    if (!_bot || _clientControlled || _stay || !_avoidAoe)
+        return false;
+    if (GetCombatRole() == CombatRole::Tank && _tankMode)
+        return false;
+    if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
+        return false;
+
+    time_t const now = time(nullptr);
+    if (_lastCombatFlee && now - _lastCombatFlee < 1)
+        return false;
+
+    std::list<WorldObject*> objects;
+    float const scanRange = 40.0f;
+    Skyfire::AllWorldObjectsInRange check(_bot, scanRange);
+    Skyfire::WorldObjectListSearcher<Skyfire::AllWorldObjectsInRange> searcher(_bot, objects, check);
+    _bot->VisitNearbyObject(scanRange, searcher);
+
+    DynamicObject* hazard = nullptr;
+    float hazardRadius = 0.0f;
+
+    for (WorldObject* obj : objects)
+    {
+        if (!obj || obj->GetTypeId() != TypeID::TYPEID_DYNAMICOBJECT)
+            continue;
+
+        DynamicObject* dyn = static_cast<DynamicObject*>(obj);
+        float const radius = dyn->GetRadius();
+        if (radius < 1.0f || radius > 40.0f)
+            continue;
+        if (!_bot->IsWithinDist(dyn, radius, false))
+            continue;
+
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(dyn->GetSpellId());
+        if (!info || info->IsPositive())
+            continue;
+
+        Unit* caster = dyn->GetCaster();
+        if (caster && (caster == _bot || _bot->IsFriendlyTo(caster)))
+            continue;
+
+        bool damaging = false;
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            SpellEffectInfo const& effect = info->Effects[i];
+            if (!effect.IsEffect())
+                continue;
+            if (effect.IsEffect(SPELL_EFFECT_SCHOOL_DAMAGE)
+                || effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE
+                || effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE_PERCENT
+                || effect.ApplyAuraName == SPELL_AURA_PERIODIC_LEECH)
+            {
+                damaging = true;
+                break;
+            }
+        }
+        if (!damaging)
+            continue;
+
+        hazard = dyn;
+        hazardRadius = radius;
+        break;
+    }
+
+    if (!hazard)
+        return false;
+
+    float const angle = hazard->GetAngle(_bot);
+    float const dist = hazardRadius + 3.0f;
+    float x = hazard->GetPositionX() + dist * std::cos(angle);
+    float y = hazard->GetPositionY() + dist * std::sin(angle);
+    float z = _bot->GetPositionZ();
+    _bot->UpdateAllowedPositionZ(x, y, z);
+
+    if (!BotMovement::MovePoint(_bot, x, y, z))
+        return false;
+
+    _lastCombatFlee = now;
+    _chaseGuid = 0;
+    return true;
+}
+
 bool PlayerbotAI::TryCombatFlee(Unit* focus)
 {
     if (!_bot || _clientControlled || _stay)
@@ -2597,6 +2691,7 @@ bool PlayerbotAI::CastRefreshmentSpell()
     if (!needHp && !needMana)
         return false;
 
+    // Sit only when we are about to apply regen auras.
     if (_bot->getStandState() != UNIT_STAND_STATE_SIT)
         _bot->SetStandState(UNIT_STAND_STATE_SIT);
 
@@ -2608,11 +2703,12 @@ bool PlayerbotAI::CastRefreshmentSpell()
     if (needMana && sSpellMgr->GetSpellInfo(BOT_DRINK_AURA_SPELL))
         _bot->AddAura(BOT_DRINK_AURA_SPELL, _bot);
 
-    // Non-mana classes that only need HP still get Food; mana users get both.
-    if (!needHp && !needMana)
-        return false;
+    if (HasFoodOrDrinkAura())
+        return true;
 
-    return HasFoodOrDrinkAura();
+    if (_bot->getStandState() != UNIT_STAND_STATE_STAND)
+        _bot->SetStandState(UNIT_STAND_STATE_STAND);
+    return false;
 }
 
 void PlayerbotAI::ApplyDirectRestRegen()
@@ -2677,7 +2773,8 @@ bool PlayerbotAI::PartyNotAlmostReady() const
             return false;
         if (!_bot->IsInMap(member) || !_bot->IsWithinDistInMap(member, 50.0f))
             return false;
-        if (MemberHasFoodOrDrinkAura(member) || member->IsSitState())
+        // Only aura / resource state — bare IsSitState caused empty-sit contagion.
+        if (MemberHasFoodOrDrinkAura(member))
             return true;
 
         float const hp = member->GetMaxHealth()
@@ -2715,12 +2812,6 @@ bool PlayerbotAI::StartRefreshment()
     if (!_bot)
         return false;
 
-    bool const wasSitting = _bot->IsSitState();
-
-    // Sit so refreshment auras can start (self-bot and socket bots).
-    if (_bot->getStandState() != UNIT_STAND_STATE_SIT)
-        _bot->SetStandState(UNIT_STAND_STATE_SIT);
-
     if (!_clientControlled)
     {
         _bot->GetMotionMaster()->Clear();
@@ -2731,18 +2822,20 @@ bool PlayerbotAI::StartRefreshment()
             _bot->AttackStop();
     }
 
-    // Already eating/drinking — wait on the aura (no SetPower).
+    // Already eating/drinking — keep seated for the aura.
     if (_bot->IsNonMeleeSpellCasted(false) || HasFoodOrDrinkAura())
     {
+        if (_bot->getStandState() != UNIT_STAND_STATE_SIT)
+            _bot->SetStandState(UNIT_STAND_STATE_SIT);
         _resting = true;
         return true;
     }
 
     if (!CastRefreshmentSpell())
     {
-        // Do not leave the bot seated with no regen (self-bot idle sit bug).
+        // Never leave an empty sit (no food/drink aura).
         _resting = false;
-        if (!wasSitting && _bot->getStandState() != UNIT_STAND_STATE_STAND)
+        if (_bot->getStandState() != UNIT_STAND_STATE_STAND)
             _bot->SetStandState(UNIT_STAND_STATE_STAND);
         return false;
     }
@@ -2763,6 +2856,11 @@ bool PlayerbotAI::HandleRest()
         StopResting();
         return false;
     }
+
+    // Safety: stand if seated with no regen (empty sit contagion leftover).
+    if (_bot->IsSitState() && !HasFoodOrDrinkAura() && !_bot->IsNonMeleeSpellCasted(false)
+        && !_forceRest)
+        _bot->SetStandState(UNIT_STAND_STATE_STAND);
 
     float const hpPct = HealthPct();
     float const manaPct = ManaPct();
@@ -2790,12 +2888,13 @@ bool PlayerbotAI::HandleRest()
         return false;
     }
 
-    // Drink while low, or while the party is holding and we are not almost ready.
+    // Drink while low, or while the party is holding and we still need regen.
+    // Do not use bare _resting alone — that re-sat full bots on tiny resource dips.
     if (lowResources || itemResting || (partyHolding && belowAlmostReady && !nearlyFull)
-        || _forceRest || (_resting && !nearlyFull))
+        || _forceRest)
         return StartRefreshment();
 
-    // Full bots: idle with the party until allies finish drinking.
+    // Full bots: stand and idle until allies finish recovering (no empty sit).
     if (!_clientControlled)
     {
         _bot->GetMotionMaster()->Clear();
@@ -2805,7 +2904,10 @@ bool PlayerbotAI::HandleRest()
         if (_bot->GetVictim())
             _bot->AttackStop();
     }
-    _resting = true;
+    if (!HasFoodOrDrinkAura() && !_bot->IsNonMeleeSpellCasted(false)
+        && _bot->getStandState() != UNIT_STAND_STATE_STAND)
+        _bot->SetStandState(UNIT_STAND_STATE_STAND);
+    // Keep parking via partyHolding / NeedsRestPublic — do not set _resting.
     return true;
 }
 
@@ -2828,6 +2930,8 @@ bool PlayerbotAI::StrategyAllowed(bool combat, std::string const& name) const
         return true;
     if (!combat)
         return n == "food" || n == "follow" || n == "stay" || n == "loot";
+    if (n == "aoe" || n == "boost" || n == "cc" || n == "avoid aoe")
+        return true;
     if (role == CombatRole::Tank)
         return n == "tank" || n == "tank assist" || n == "dps";
     if (role == CombatRole::Healer)

@@ -104,8 +104,16 @@ In combat, bots (including healers and `.playerbots self`) will:
   (ally under ~25%) and **Hand of Protection** (non-tank ally under ~35%,
   respects Forbearance).
 - Use **racials** (Blood Fury, Berserking, Arcane Torrent, etc.; defensive racials
-  when low HP).
-- Activate **on-use trinkets** when off cooldown.
+  when low HP). Offensive racials and on-use **trinkets** require `co +boost`
+  (default on).
+- **Crowd control** when `co +cc` (default on for Mage/Hunter/Warlock): Polymorph,
+  Fear/Banish, Freezing Trap, Hex, Shackle, Cyclone, Sap — prefers adds over the
+  tank's current target.
+- **Avoid AoE** when `co +avoid aoe` (default on): step out of damaging ground
+  dynobjects (Rain of Fire–style). Tanks in tank mode stay put.
+
+Multi-target rotation branches require `co +aoe` (default on for tank/DPS, off
+for healers). Disable with `co -aoe` for single-target only.
 
 ### Formation / follow
 
@@ -113,6 +121,9 @@ Out of combat, bots take **unique slots** by role (tank / healer / melee DPS /
 ranged DPS), GUID-sorted within the bucket so two DPS no longer stand on the
 same flank. Follow destinations are height-clamped; bots `MovePoint` to the
 slot when clipped or off-slot instead of parking inside walls/stairs.
+
+Party rest (`nc +food`): bots sit only while food/drink auras are active. Full
+allies stand and wait; empty sits no longer spread through the group.
 
 ### LFG / LFR party roles
 
@@ -261,8 +272,9 @@ Examples:
 ## `co` / `nc` strategies
 
 AzerothCore-style combat (`co`) and non-combat (`nc`) strategy toggles are
-supported for the strategies listed above (`food`, `save mana`, `healer dps`,
-`heal`, `follow`, `stay`, `loot`, `grind`, `passive`).
+supported (`food`, `save mana`, `healer dps`, `heal`, `follow`, `stay`, `loot`,
+`grind`, `passive`, plus combat `aoe`, `boost`, `cc`, `avoid aoe`, `threat`,
+`wait for attack`, role packs).
 
 Full AC strategy engine features not yet ported (RTSC, raid strats, `ll`, etc.)
 remain tracked in `PORTING.md`.
@@ -282,6 +294,10 @@ Closest equivalents for older one-shot orders:
 | Eat / drink | `eat` / `drink` or `nc +food` |
 | Strict healer / healer DPS | `co +heal` / `co +healer dps` |
 | Conserve healer mana | `co +save mana` |
+| Single-target only | `co -aoe` |
+| Hold burst trinkets/racials | `co -boost` |
+| Enable crowd control | `co +cc` |
+| Disable ground AoE dodge | `co -avoid aoe` |
 
 ---
 

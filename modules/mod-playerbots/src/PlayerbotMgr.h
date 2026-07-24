@@ -52,6 +52,8 @@ public:
     bool IsBot(uint64 characterGuid) const { return _bots.find(characterGuid) != _bots.end(); }
     // True if this GUID has an attached PlayerbotAI (socket bot or self-bot).
     bool HasBotAI(uint64 characterGuid) const { return _ai.find(characterGuid) != _ai.end(); }
+    PlayerbotAI* GetBotAI(uint64 characterGuid) const;
+    PlayerbotAI* GetBotAI(Player* bot) const;
     bool IsSelfBot(uint64 characterGuid) const { return _selfBots.find(characterGuid) != _selfBots.end(); }
 
     // Attach/detach AI to a real logged-in player (client keeps movement).

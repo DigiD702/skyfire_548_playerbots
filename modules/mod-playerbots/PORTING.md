@@ -183,12 +183,15 @@ Remaining for later phases:
   rotation branches, boss-specific holds, trinket sync polish.
 * [DONE] Party resurrection: Priest/Pala/Shaman/Druid/Monk OOC rez, Druid
   Rebirth / DK Raise Ally in combat; dead bots auto-accept rez requests.
+* [DONE] **co aoe / boost / cc / avoid aoe** (thin gates on MoP rotations):
+  `aoe` clamps multi-target branches; `boost` gates trinkets + offensive racials
+  (class major CDs still fire); `cc` runs thin Polymorph/Fear/Trap/Hex/etc.;
+  `avoid aoe` steps out of damaging dynobjects. Defaults: aoe on tank/DPS,
+  boost + avoid aoe on all, cc on Mage/Hunter/Warlock.
 * [TODO] Point movement / travel to arbitrary destinations (for questing,
   objectives, and dungeon navigation).
 * [TODO] Random teleports to safe anchors (POI / banker / flight master), AC-style
   map list + interval — never raw random map XY.
-* [TODO] Expand the co/nc strategy set further (aoe/boost/cc/avoid aoe, etc.).
-  Role-gated tank/heal/dps strategies, self-whisper, and spell refreshment are live.
 * [TODO] AC wiki backlog (later): RTSC/aedm, loot lists (`ll`), item/vendor
   chat ops, glyphs, raid-specific strats, Multibot addon protocol.
 * [TODO] Non-combat behaviour remaining: sell junk to vendors,
@@ -215,8 +218,9 @@ for future updates.
   bots via `LFGMgr::TeleportPlayer`, which finalizes bot worldports with
   `FinalizeBotTeleport` (no client ack). Leaving the dungeon guards `Group::Disband`
   against re-entry when bots finalize their exit teleports.
-* [DONE] Between-pull food: socket + self-bots sit and cast Refreshment
-  (`128701`, HP+mana) — no bag food/drink. Cancels at full resources.
+* [DONE] Between-pull food: socket + self-bots sit only while food/drink auras
+  are active (no empty-sit contagion); full allies stand and wait. Refreshment
+  uses Food/Drink auras — no bag food/drink. Cancels at full resources.
 * [DONE] In-dungeon behaviour: party holds follow between pulls until allies are
   almost ready (`Rest.AlmostFullHealth` / `Rest.MediumMana`); instance DPS sticks
   to the tank's victim; `+threat` throttles vs tank threat and pauses melee as well

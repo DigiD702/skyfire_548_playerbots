@@ -24,7 +24,8 @@ class BotStrategyEngine
 {
 public:
     void Clear();
-    void ResetToRoleDefaults(bool isTank, bool isHealer);
+    // cls: used for default +cc on Mage/Hunter/Warlock (0 = skip class defaults).
+    void ResetToRoleDefaults(bool isTank, bool isHealer, uint8 cls = 0);
 
     // AC-style: "+follow,-passive,~grind,?" (comma-separated).
     // Returns a human-readable report of resulting flags for this state.
@@ -67,6 +68,7 @@ private:
 
     bool _isTank = false;
     bool _isHealer = false;
+    uint8 _cls = 0;
 };
 
 #endif
