@@ -111,6 +111,9 @@ Playerbots.AutoCreate.OnStartup = 0
 #    Playerbots.AutoCreate.AccountCount
 #        Description: Number of bot accounts to ensure exist. Accounts are named
 #                     <AccountPrefix><n> for n = 1..AccountCount (RNDBOT1..).
+#                     This is independent of RandomBots.MaxBots (online pool size).
+#                     After a wipe, set this to the pool size you want (e.g. 250)
+#                     before .playerbots create / AutoCreate.OnStartup.
 #        Default:     0
 
 Playerbots.AutoCreate.AccountCount = 0

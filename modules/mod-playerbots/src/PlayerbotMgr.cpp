@@ -397,7 +397,8 @@ bool PlayerbotMgr::AddBot(uint64 characterGuid, std::string* errorOut)
     return SpawnBot(characterGuid, false, errorOut);
 }
 
-bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* errorOut)
+bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* errorOut,
+    uint32 accountIdOverride)
 {
     auto fail = [errorOut](char const* reason) -> bool
     {
@@ -420,7 +421,9 @@ bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* er
     if (ObjectAccessor::FindPlayer(characterGuid))
         return fail("That character is already online.");
 
-    uint32 accountId = sObjectMgr->GetPlayerAccountIdByGUID(characterGuid);
+    uint32 accountId = accountIdOverride;
+    if (!accountId)
+        accountId = sObjectMgr->GetPlayerAccountIdByGUID(characterGuid);
     if (!accountId)
         return fail("Could not resolve the character's account.");
 
@@ -430,9 +433,12 @@ bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* er
     WorldSession* botSession = new WorldSession(accountId, nullptr, AccountTypes::SEC_PLAYER, expansion,
         0, LOCALE_enUS, 0, false, false);
     botSession->SetBot(true);
-    // Match the realm the real characters use so name queries and /who resolve
-    // the bot correctly (a socketless session otherwise reports realm 0).
-    botSession->SetVirtualRealmID(realmID);
+    // Match the realm real characters use so name queries and /who resolve
+    // the bot correctly (a socketless session otherwise reports realm 0 / -1).
+    uint32 botRealm = realmID;
+    if (!botRealm || botRealm == uint32(-1))
+        botRealm = 1;
+    botSession->SetVirtualRealmID(botRealm);
 
     if (!botSession->LoginBotCharacter(characterGuid))
     {
@@ -1852,9 +1858,12 @@ bool PlayerbotMgr::CreateOneCharacter(uint32 accountId)
     WorldSession* sess = new WorldSession(accountId, nullptr, AccountTypes::SEC_PLAYER, expansion,
         0, LOCALE_enUS, 0, false, false);
     sess->SetBot(true);
-    // Save the character on the same realm as real characters so its name
-    // resolves for other clients (name query / who list use the realm id).
-    sess->SetVirtualRealmID(realmID);
+    // Match real characters (global realmID is set at world startup from RealmID
+    // conf or auth.realmlist). Never persist the unset sentinel 0xFFFFFFFF.
+    uint32 botRealm = realmID;
+    if (!botRealm || botRealm == uint32(-1))
+        botRealm = 1;
+    sess->SetVirtualRealmID(botRealm);
 
     uint32 specId = SpecIdForRole(cls, role);
     uint32 guid = sess->CreateBotCharacter(name, race, cls, gender, 0, 0, 0, 0, 0, level, specId);
@@ -1871,10 +1880,14 @@ bool PlayerbotMgr::CreateOneCharacter(uint32 accountId)
     SF_LOG_INFO("modules", "[mod-playerbots] Created bot '%s' (GUID %u, %s, race %u, class %u, level %u) on account %u.",
         name.c_str(), guid, alliance ? "Alliance" : "Horde", race, cls, level, accountId);
 
+    // SaveToDB commits asynchronously; flush so LoginBotCharacter can load the row.
+    CharacterDatabase.Wait();
+
     // Auto-init gear/spells so new bots are LFG-ready without a manual init pass.
+    // Pass accountId — GUID→account lookup can still race the async INSERT.
     uint64 const fullGuid = MAKE_NEW_GUID(guid, 0, HIGHGUID_PLAYER);
     std::string spawnError;
-    if (AddBot(fullGuid, &spawnError))
+    if (SpawnBot(fullGuid, false, &spawnError, accountId))
     {
         if (auto it = _bots.find(fullGuid); it != _bots.end())
         {

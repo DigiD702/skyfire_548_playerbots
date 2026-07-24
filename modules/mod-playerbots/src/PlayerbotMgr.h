@@ -116,7 +116,10 @@ private:
     PlayerbotMgr& operator=(PlayerbotMgr const&) = delete;
 
     // Shared bot spawn path. isRandom marks the bot as pool-managed.
-    bool SpawnBot(uint64 characterGuid, bool isRandom, std::string* errorOut);
+    // accountIdOverride skips the GUID→account DB lookup (needed right after
+    // async character create, before the INSERT is visible to sync queries).
+    bool SpawnBot(uint64 characterGuid, bool isRandom, std::string* errorOut,
+        uint32 accountIdOverride = 0);
     void LoadCandidates();
     void TrySpawnRandomBot();
     void CleanupDeadBots();

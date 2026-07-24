@@ -26,7 +26,7 @@ Whisper replies with a short ack. Party/raid orders apply silently (no spam).
 
 ### Resetting the bot pool (e.g. all level 80 epic)
 
-1. Set `Playerbots.AutoCreate.MinLevel` / `MaxLevel` (and AccountCount / MaxBots / gear quality) in `playerbots.conf`.
+1. Set `Playerbots.AutoCreate.MinLevel` / `MaxLevel`, **`AccountCount`** (accounts to create; not the same as `MaxBots`), CharactersPerAccount, and gear quality in `playerbots.conf`.
 2. Either set `Playerbots.DeleteRandomBotAccounts = 1` and restart once, **or** run `.playerbots wipe confirm`.
 3. Set `DeleteRandomBotAccounts = 0` again.
 4. Run `.playerbots create` (or enable `AutoCreate.OnStartup` and restart).
