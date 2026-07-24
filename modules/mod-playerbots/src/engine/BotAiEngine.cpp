@@ -97,6 +97,23 @@ namespace
         }
     };
 
+    class HasTravelDestinationTrigger : public BotTrigger
+    {
+    public:
+        HasTravelDestinationTrigger(PlayerbotAI* ai) : BotTrigger(ai, "has travel destination", 300) {}
+        bool IsActive() override
+        {
+            if (_ai->IsClientControlled())
+                return false;
+            Player* bot = _ai->GetBot();
+            if (!bot || !bot->IsAlive() || bot->IsInCombat())
+                return false;
+            if (_ai->IsGroupInCombatPublic() || _ai->HasEngageTarget())
+                return false;
+            return _ai->HasTravelDestination();
+        }
+    };
+
     // --- Actions ---
 
     class CombatAction : public BotAction
@@ -144,6 +161,8 @@ namespace
         {
             if (_ai->IsClientControlled())
                 return false;
+            if (_ai->HasTravelDestination())
+                return false;
             if (_ai->HasEngageTarget())
                 return false;
             if (_ai->HasNearbyLootPublic())
@@ -159,6 +178,25 @@ namespace
             _ai->RunFollow();
             return true;
         }
+    };
+
+    class TravelAction : public BotAction
+    {
+    public:
+        TravelAction(PlayerbotAI* ai) : BotAction(ai, "travel") {}
+        bool IsUseful() override
+        {
+            if (_ai->IsClientControlled())
+                return false;
+            Player* bot = _ai->GetBot();
+            if (!bot || !bot->IsAlive() || bot->IsInCombat())
+                return false;
+            if (_ai->IsGroupInCombatPublic() || _ai->HasEngageTarget())
+                return false;
+            return _ai->HasTravelDestination();
+        }
+        bool IsPossible() override { return BotMovement::CanMove(_ai->GetBot()); }
+        bool Execute() override { return _ai->RunTravel(); }
     };
 
     class StayAction : public BotAction
@@ -204,6 +242,8 @@ namespace
         {
             if (_ai->IsClientControlled())
                 return false;
+            if (_ai->HasTravelDestination())
+                return false;
             if (_ai->HasStrategy("stay", BotState::NonCombat))
                 return false;
             if (_ai->ShouldFollowPublic())
@@ -225,6 +265,8 @@ namespace
         bool IsUseful() override
         {
             if (_ai->IsClientControlled() || _ai->ShouldFollowPublic())
+                return false;
+            if (_ai->HasTravelDestination())
                 return false;
             return true;
         }
@@ -249,6 +291,7 @@ void BotAiEngine::RegisterCoreActions()
 {
     _actions["combat"] = std::make_unique<CombatAction>(_ai);
     _actions["rest"] = std::make_unique<RestAction>(_ai);
+    _actions["travel"] = std::make_unique<TravelAction>(_ai);
     _actions["follow"] = std::make_unique<FollowAction>(_ai);
     _actions["stay"] = std::make_unique<StayAction>(_ai);
     _actions["loot"] = std::make_unique<LootAction>(_ai);
@@ -276,6 +319,10 @@ void BotAiEngine::Rebuild()
     if (_ai->HasStrategy("food", BotState::NonCombat))
         addTrigger(std::make_unique<LowResourcesTrigger>(_ai),
             { BotNextAction("rest", BotRelevance::Rest) });
+
+    // Above follow/loot, below rest/combat — finish go destinations.
+    addTrigger(std::make_unique<HasTravelDestinationTrigger>(_ai),
+        { BotNextAction("travel", BotRelevance::Move + 22.0f) });
 
     if (_ai->HasStrategy("follow", BotState::NonCombat)
         && !_ai->HasStrategy("stay", BotState::NonCombat))
@@ -324,6 +371,12 @@ void BotAiEngine::PushDefaultActions()
         if (_ai->HasStrategy("loot", BotState::NonCombat))
             _queue.Push("loot", BotRelevance::Normal);
         _queue.Push("vendor", BotRelevance::Idle + 1.0f);
+        return;
+    }
+
+    if (_ai->HasTravelDestination())
+    {
+        _queue.Push("travel", BotRelevance::Default);
         return;
     }
 

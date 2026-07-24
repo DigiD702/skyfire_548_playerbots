@@ -188,8 +188,10 @@ Remaining for later phases:
   (class major CDs still fire); `cc` runs thin Polymorph/Fear/Trap/Hex/etc.;
   `avoid aoe` steps out of damaging dynobjects. Defaults: aoe on tank/DPS,
   boost + avoid aoe on all, cc on Mage/Hunter/Warlock.
-* [TODO] Point movement / travel to arbitrary destinations (for questing,
-  objectives, and dungeon navigation).
+* [DONE] **Point movement / travel destinations**: chat `go` / `go x y z` /
+  `position save|go <name>`; `BotMovement::MoveTo` uses PathGenerator +
+  generatePath; `TravelAction` walks until arrival. Same-map only — TravelNode /
+  portals / RTSC / auto quest POIs still deferred.
 * [TODO] Random teleports to safe anchors (POI / banker / flight master), AC-style
   map list + interval — never raw random map XY.
 * [TODO] AC wiki backlog (later): RTSC/aedm, loot lists (`ll`), item/vendor

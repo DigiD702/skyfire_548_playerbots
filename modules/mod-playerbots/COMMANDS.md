@@ -198,6 +198,14 @@ Send these as the message text (case-insensitive).
 | `heal` | Healer-only shortcut: strict heal mode (same as `co +heal`). |
 | `healer dps` | Healer-only shortcut: `co +healer dps`. |
 | `save mana` / `save mana off` | Healer-only shortcut: `co +save mana` / `co -save mana`. |
+| `go` / `go here` | Walk to you (or your selected unit) on the same map. |
+| `go x y z` / `go x;y;z` | Walk to coordinates on the bot’s current map (path-checked). |
+| `go <name>` | Walk to a saved position (see `position`). |
+| `position save <name>` | Store the bot’s current XYZ under `<name>`. |
+| `position` / `position ?` | List saved position names. |
+| `position go <name>` | Same as `go <name>`. |
+
+Travel is cancelled by combat, `follow`, `stay`, `flee`, `summon`, or `reset`. Arrival resumes follow when `nc +follow` is on. Same-map only (no TravelNode / portals yet).
 
 ### Combat / non-combat strategies (`co` / `nc`)
 
@@ -298,6 +306,7 @@ Closest equivalents for older one-shot orders:
 | Hold burst trinkets/racials | `co -boost` |
 | Enable crowd control | `co +cc` |
 | Disable ground AoE dodge | `co -avoid aoe` |
+| Walk to point / master | `go` / `go x y z` / `position save\|go <name>` |
 
 ---
 

@@ -3,7 +3,7 @@
  *
  * Strategies (BotStrategyEngine) decide which triggers/defaults are armed.
  * MoP spell selection stays in rotations/; this engine picks the *mode*
- * (combat / rest / follow / stay / loot / wander).
+ * (combat / rest / follow / stay / loot / wander / travel).
  */
 
 #ifndef SF_BOT_AI_ENGINE_H

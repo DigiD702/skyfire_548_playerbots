@@ -24,6 +24,7 @@
 #include "Define.h"
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 class Player;
@@ -82,11 +83,18 @@ public:
     bool RunLoot();
     void RunWander();
     void RunVendor();
+    bool RunTravel();
     bool IsGroupInCombatPublic() const;
     bool ShouldFollowPublic() const;
     bool NeedsRestPublic() const;
     bool IsForceResting() const { return _forceRest || _resting; }
     void RebuildAiEngine();
+
+    // Same-map destination travel (chat go / position).
+    bool HasTravelDestination() const { return _travel.active; }
+    bool SetTravelDestination(uint32 mapId, float x, float y, float z);
+    void ClearTravelDestination();
+    bool IsTravelArrived(float tol = 3.0f) const;
 
     Unit* SelectLowestHpGroupEnemyPublic();
     Unit* SelectAssistTankTargetPublic();
@@ -104,6 +112,19 @@ public:
 private:
     // Coarse combat role used by filters and strategy gating.
     enum class CombatRole { Tank, Healer, Damage };
+
+    struct TravelPoint
+    {
+        uint32 mapId = 0;
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
+    };
+
+    struct TravelDest : TravelPoint
+    {
+        bool active = false;
+    };
 
     // Behaviour steps.
     void HandlePendingInvites();
@@ -175,6 +196,9 @@ private:
     void DoTankExtras(Unit* target, bool closing = false);
 
     void ReplyTo(Player* from, std::string const& text);
+    bool BeginTravelTo(float x, float y, float z, Player* from, bool acknowledge);
+    bool HandleGoCommand(Player* from, std::string const& args, bool acknowledge);
+    bool HandlePositionCommand(Player* from, std::string const& args, bool acknowledge);
 
     Creature* FindNearbyLoot();
     Creature* FindNearbyRepairer();
@@ -202,6 +226,10 @@ private:
     time_t _pullStartTime = 0;
     enum class PullPhase : uint8 { None, Reach, Opener };
     PullPhase _pullPhase = PullPhase::None;
+
+    TravelDest _travel;
+    uint8 _travelFailCount = 0;
+    std::unordered_map<std::string, TravelPoint> _savedPositions;
 
     // --- Flags synced from _strategies (procedural AI still reads these) ---
     bool _stay;          // nc stay (implies not follow)

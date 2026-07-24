@@ -270,6 +270,252 @@ void PlayerbotAI::RunStay() { HandleStay(); }
 bool PlayerbotAI::RunLoot() { return HandleLoot(); }
 void PlayerbotAI::RunWander() { HandleWander(); }
 void PlayerbotAI::RunVendor() { HandleVendor(); }
+
+bool PlayerbotAI::SetTravelDestination(uint32 mapId, float x, float y, float z)
+{
+    if (!_bot || _clientControlled)
+        return false;
+    if (_bot->GetMapId() != mapId)
+        return false;
+
+    _bot->UpdateAllowedPositionZ(x, y, z);
+    _travel.mapId = mapId;
+    _travel.x = x;
+    _travel.y = y;
+    _travel.z = z;
+    _travel.active = true;
+    _travelFailCount = 0;
+    _followGuid = 0;
+    _lootGuid = 0;
+    _chaseGuid = 0;
+
+    // Leave stay so TravelAction can run; follow strategy stays for after arrival.
+    if (_stay)
+    {
+        _strategies.Remove("stay", BotState::NonCombat);
+        _strategies.Remove("stay", BotState::Combat);
+        if (!_strategies.Has("follow", BotState::NonCombat))
+            _strategies.Add("follow", BotState::NonCombat);
+        SyncFlagsFromStrategies();
+    }
+    return true;
+}
+
+void PlayerbotAI::ClearTravelDestination()
+{
+    _travel.active = false;
+    _travelFailCount = 0;
+}
+
+bool PlayerbotAI::IsTravelArrived(float tol) const
+{
+    if (!_bot || !_travel.active)
+        return true;
+    if (_bot->GetMapId() != _travel.mapId)
+        return false;
+    float const dx = _bot->GetPositionX() - _travel.x;
+    float const dy = _bot->GetPositionY() - _travel.y;
+    return (dx * dx + dy * dy) <= (tol * tol);
+}
+
+bool PlayerbotAI::RunTravel()
+{
+    if (!_bot || _clientControlled || !_travel.active)
+        return false;
+
+    if (_bot->GetMapId() != _travel.mapId)
+    {
+        ClearTravelDestination();
+        return false;
+    }
+
+    if (IsTravelArrived())
+    {
+        ClearTravelDestination();
+        BotMovement::StopAndIdle(_bot);
+        return true;
+    }
+
+    MovementGeneratorType const moveType = _bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    if (moveType == POINT_MOTION_TYPE)
+        return true; // still walking the last MoveTo
+
+    if (BotMovement::MoveTo(_bot, _travel.x, _travel.y, _travel.z))
+    {
+        _travelFailCount = 0;
+        return true;
+    }
+
+    if (++_travelFailCount >= 5)
+        ClearTravelDestination();
+    return true;
+}
+
+bool PlayerbotAI::BeginTravelTo(float x, float y, float z, Player* from, bool acknowledge)
+{
+    if (!_bot)
+        return false;
+    if (_clientControlled)
+    {
+        if (acknowledge)
+            ReplyTo(from, "Self-bot: you control movement.");
+        return true;
+    }
+
+    if (!SetTravelDestination(_bot->GetMapId(), x, y, z))
+    {
+        if (acknowledge)
+            ReplyTo(from, "Cannot set destination (wrong map).");
+        return true;
+    }
+
+    // Probe path once so we can reject unreachable points immediately.
+    if (!BotMovement::MoveTo(_bot, _travel.x, _travel.y, _travel.z))
+    {
+        ClearTravelDestination();
+        if (acknowledge)
+            ReplyTo(from, "Destination unreachable.");
+        return true;
+    }
+
+    if (acknowledge)
+    {
+        std::ostringstream ss;
+        ss << "Going to " << int32(_travel.x) << ", " << int32(_travel.y) << ", " << int32(_travel.z) << ".";
+        ReplyTo(from, ss.str());
+    }
+    return true;
+}
+
+bool PlayerbotAI::HandleGoCommand(Player* from, std::string const& args, bool acknowledge)
+{
+    if (!_bot)
+        return false;
+
+    std::string body = args;
+    while (!body.empty() && body.front() == ' ')
+        body.erase(body.begin());
+    while (!body.empty() && body.back() == ' ')
+        body.pop_back();
+
+    // go / go here → master position or master's selected unit.
+    if (body.empty() || body == "here")
+    {
+        float x = from->GetPositionX();
+        float y = from->GetPositionY();
+        float z = from->GetPositionZ();
+        if (Unit* selected = from->GetSelectedUnit())
+        {
+            if (selected->GetMap() == _bot->GetMap())
+            {
+                x = selected->GetPositionX();
+                y = selected->GetPositionY();
+                z = selected->GetPositionZ();
+            }
+        }
+        else if (from->GetMap() != _bot->GetMap())
+        {
+            if (acknowledge)
+                ReplyTo(from, "You are on another map.");
+            return true;
+        }
+        return BeginTravelTo(x, y, z, from, acknowledge);
+    }
+
+    // go x;y;z or go x y z
+    {
+        std::string normalized = body;
+        for (char& ch : normalized)
+            if (ch == ';' || ch == ',')
+                ch = ' ';
+
+        std::istringstream iss(normalized);
+        float x = 0.0f, y = 0.0f, z = 0.0f;
+        if ((iss >> x >> y >> z) && iss.eof())
+            return BeginTravelTo(x, y, z, from, acknowledge);
+    }
+
+    // go <saved name>
+    auto it = _savedPositions.find(body);
+    if (it != _savedPositions.end())
+    {
+        if (it->second.mapId != _bot->GetMapId())
+        {
+            if (acknowledge)
+                ReplyTo(from, "Saved position is on another map.");
+            return true;
+        }
+        return BeginTravelTo(it->second.x, it->second.y, it->second.z, from, acknowledge);
+    }
+
+    if (acknowledge)
+        ReplyTo(from, "Unknown go target. Use: go | go here | go x y z | go <name>.");
+    return true;
+}
+
+bool PlayerbotAI::HandlePositionCommand(Player* from, std::string const& args, bool acknowledge)
+{
+    if (!_bot)
+        return false;
+
+    std::string body = args;
+    while (!body.empty() && body.front() == ' ')
+        body.erase(body.begin());
+    while (!body.empty() && body.back() == ' ')
+        body.pop_back();
+
+    if (body.empty() || body == "?")
+    {
+        if (!acknowledge)
+            return true;
+        if (_savedPositions.empty())
+        {
+            ReplyTo(from, "No saved positions.");
+            return true;
+        }
+        std::ostringstream ss;
+        ss << "Positions:";
+        for (auto const& pair : _savedPositions)
+            ss << " " << pair.first;
+        ReplyTo(from, ss.str());
+        return true;
+    }
+
+    if (body.rfind("save ", 0) == 0)
+    {
+        std::string name = body.substr(5);
+        while (!name.empty() && name.front() == ' ')
+            name.erase(name.begin());
+        while (!name.empty() && name.back() == ' ')
+            name.pop_back();
+        if (name.empty())
+        {
+            if (acknowledge)
+                ReplyTo(from, "Usage: position save <name>");
+            return true;
+        }
+        TravelPoint pt;
+        pt.mapId = _bot->GetMapId();
+        pt.x = _bot->GetPositionX();
+        pt.y = _bot->GetPositionY();
+        pt.z = _bot->GetPositionZ();
+        _savedPositions[name] = pt;
+        if (acknowledge)
+            ReplyTo(from, std::string("Saved position '") + name + "'.");
+        return true;
+    }
+
+    if (body.rfind("go ", 0) == 0)
+    {
+        std::string name = body.substr(3);
+        while (!name.empty() && name.front() == ' ')
+            name.erase(name.begin());
+        return HandleGoCommand(from, name, acknowledge);
+    }
+
+    // Bare name → go to that saved position.
+    return HandleGoCommand(from, body, acknowledge);
+}
 bool PlayerbotAI::IsGroupInCombatPublic() const { return GroupInCombat(); }
 
 Unit* PlayerbotAI::SelectLowestHpGroupEnemyPublic() { return SelectLowestHpGroupEnemy(); }
@@ -323,6 +569,8 @@ bool PlayerbotAI::ShouldWaitForAttack() const
 bool PlayerbotAI::ShouldFollowPublic() const
 {
     if (!_bot || _clientControlled || _stay)
+        return false;
+    if (HasTravelDestination())
         return false;
     if (HasEngageTarget())
         return false;
@@ -575,6 +823,8 @@ bool PlayerbotAI::HandleCombat()
     {
         if (_resting || _bot->IsSitState() || HasFoodOrDrinkAura())
             StopResting();
+        if (_travel.active)
+            ClearTravelDestination();
     }
 
     // Track group/self combat start for wait-for-attack (AC WaitForAttackStrategy).
@@ -3057,8 +3307,20 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
 
     if (cmd == "help")
     {
-        ack("Orders: stay, follow, flee, leave, summon, grind, reset, passive, aggressive, attack, tank/dps attack, pull, rti, eat/drink, maintenance. Strategies: co/nc +name,-name,~name or co?/nc?. Filters: @tank/@dps/@heal/@ranged.");
+        ack("Orders: stay, follow, flee, leave, summon, grind, reset, passive, aggressive, attack, tank/dps attack, pull, rti, go, position, eat/drink, maintenance. Strategies: co/nc +name,-name,~name or co?/nc?. Filters: @tank/@dps/@heal/@ranged.");
         return true;
+    }
+
+    if (cmd == "go" || cmd.rfind("go ", 0) == 0)
+    {
+        std::string const args = (cmd == "go") ? std::string() : cmd.substr(3);
+        return HandleGoCommand(from, args, acknowledge);
+    }
+
+    if (cmd == "position" || cmd.rfind("position ", 0) == 0)
+    {
+        std::string const args = (cmd == "position") ? std::string() : cmd.substr(9);
+        return HandlePositionCommand(from, args, acknowledge);
     }
 
     if (cmd == "leave")
@@ -3089,6 +3351,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
         _strategies.ApplyStayPack();
         SyncFlagsFromStrategies();
         ClearForcedTarget();
+        ClearTravelDestination();
         if (_bot->GetVictim())
             _bot->AttackStop();
         _bot->GetMotionMaster()->Clear();
@@ -3112,6 +3375,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
         _forceRest = false;
         _holdAssist = false;
         ClearForcedTarget();
+        ClearTravelDestination();
         if (_bot->getStandState() != UNIT_STAND_STATE_STAND)
             _bot->SetStandState(UNIT_STAND_STATE_STAND);
         _followGuid = 0;
@@ -3130,6 +3394,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
         _strategies.ApplyFleePack();
         SyncFlagsFromStrategies();
         ClearForcedTarget();
+        ClearTravelDestination();
         if (_bot->GetVictim())
             _bot->AttackStop();
         _chaseGuid = 0;
@@ -3149,6 +3414,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
         TeleportToPlayer(from);
         _strategies.ApplyFollowPack();
         SyncFlagsFromStrategies();
+        ClearTravelDestination();
         _followGuid = 0;
         ack("Summoned.");
         return true;
@@ -3170,6 +3436,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
         _forceRest = false;
         _holdAssist = false;
         ClearForcedTarget();
+        ClearTravelDestination();
         if (_bot->GetVictim())
             _bot->AttackStop();
         _chaseGuid = 0;

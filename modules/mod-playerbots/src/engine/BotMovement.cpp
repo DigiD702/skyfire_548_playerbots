@@ -6,6 +6,7 @@
 
 #include "MotionMaster.h"
 #include "Object.h"
+#include "PathGenerator.h"
 #include "Player.h"
 #include "Unit.h"
 
@@ -115,6 +116,33 @@ namespace BotMovement
             return false;
         bot->GetMotionMaster()->Clear();
         bot->GetMotionMaster()->MovePoint(0, x, y, z);
+        return true;
+    }
+
+    bool MoveTo(Player* bot, float x, float y, float z)
+    {
+        if (!CanMove(bot))
+            return false;
+
+        bot->UpdateAllowedPositionZ(x, y, z);
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+            return false;
+
+        PathGenerator path(bot);
+        bool const ok = path.CalculatePath(x, y, z);
+        PathType const type = path.GetPathType();
+        if (!ok || (type & PATHFIND_NOPATH) || (type & PATHFIND_BLANK))
+            return false;
+
+        // Prefer the navmesh's actual end when the path is incomplete/short.
+        G3D::Vector3 const& end = path.GetActualEndPosition();
+        float destX = end.x;
+        float destY = end.y;
+        float destZ = end.z;
+        bot->UpdateAllowedPositionZ(destX, destY, destZ);
+
+        bot->GetMotionMaster()->Clear();
+        bot->GetMotionMaster()->MovePoint(1, destX, destY, destZ, true);
         return true;
     }
 
