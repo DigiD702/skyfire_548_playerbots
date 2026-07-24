@@ -2297,24 +2297,51 @@ void PlayerbotAI::HandleFollow()
 
     float const dist = _bot->GetDistance(leader);
     MovementGeneratorType const moveType = _bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    float const followDist = BotFormation::FollowDistance(this);
+    float const followAngle = BotFormation::FollowAngle(this);
 
-    // Catch up when far / follow lost. When already in range, park Idle — do NOT
-    // mirror the master's facing, and clear dead target selection.
-    if (_followGuid != leaderGuid || dist > BOT_FOLLOW_DIST + 3.5f
-        || (moveType != FOLLOW_MOTION_TYPE && moveType != IDLE_MOTION_TYPE && !_bot->IsStopped()))
+    float slotX = 0.0f, slotY = 0.0f, slotZ = 0.0f;
+    bool const haveSlot = BotMovement::ComputeFollowPoint(leader, _bot, followDist, followAngle,
+        slotX, slotY, slotZ);
+    float const slotDist = haveSlot
+        ? _bot->GetDistance(slotX, slotY, slotZ)
+        : dist;
+
+    // Catch up / re-slot when far from leader or far from formation point, or
+    // when currently clipped into geometry (bad Z vs ground).
+    bool const needReslot = BotMovement::IsBadlyOffGround(_bot)
+        || dist > BOT_FOLLOW_DIST + 3.5f
+        || slotDist > 2.5f
+        || (_followGuid != leaderGuid)
+        || (moveType != FOLLOW_MOTION_TYPE && moveType != IDLE_MOTION_TYPE
+            && moveType != POINT_MOTION_TYPE && !_bot->IsStopped());
+
+    if (needReslot)
     {
-    if (BotMovement::MoveFollowLeader(_bot, leader,
-            BotFormation::FollowDistance(this), BotFormation::FollowAngle(this)))
-    {
-        _followGuid = leaderGuid;
-        _chaseGuid = 0;
+        // Prefer validated MovePoint so we do not idle inside walls/stairs that
+        // continuous MoveFollow can slide into.
+        bool moved = false;
+        if (haveSlot && (dist > followDist + 1.5f || BotMovement::IsBadlyOffGround(_bot) || slotDist > 1.5f))
+            moved = BotMovement::MoveToFollowSlot(_bot, leader, followDist, followAngle);
+        if (!moved)
+            moved = BotMovement::MoveFollowLeader(_bot, leader, followDist, followAngle);
+        if (moved)
+        {
+            _followGuid = leaderGuid;
+            _chaseGuid = 0;
+        }
     }
-    }
-    else if (dist <= BOT_FOLLOW_DIST + 2.5f
-        && (moveType == FOLLOW_MOTION_TYPE || !_bot->IsStopped()))
+    else if (dist <= BOT_FOLLOW_DIST + 2.5f && slotDist <= 2.5f
+        && (moveType == FOLLOW_MOTION_TYPE || moveType == POINT_MOTION_TYPE || !_bot->IsStopped()))
     {
-        BotMovement::StopAndIdle(_bot);
-        BotMovement::ClearDeadSelection(_bot);
+        // Only park when the slot is valid and we are not clipped.
+        if (BotMovement::IsBadlyOffGround(_bot) && haveSlot)
+            BotMovement::MoveToFollowSlot(_bot, leader, followDist, followAngle);
+        else
+        {
+            BotMovement::StopAndIdle(_bot);
+            BotMovement::ClearDeadSelection(_bot);
+        }
     }
 }
 

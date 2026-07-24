@@ -1,5 +1,5 @@
 /*
- * Formation follow angle/distance by combat role (AC Formations thin port).
+ * Formation follow angle/distance by combat role (unique party slots).
  */
 
 #ifndef SF_BOT_FORMATION_H
@@ -13,7 +13,7 @@ namespace BotFormation
 {
     // Angle relative to leader facing for MoveFollow (0 = in front, PI = behind).
     float FollowAngle(PlayerbotAI* ai);
-    // Follow distance yards.
+    // Follow distance yards (staggered by same-role ordinal).
     float FollowDistance(PlayerbotAI* ai);
 }
 

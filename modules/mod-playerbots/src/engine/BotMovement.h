@@ -22,7 +22,18 @@ namespace BotMovement
     // Clear MotionMaster only if not casting.
     bool ClearMotion(Player* bot);
 
-    // MoveFollow behind leader with GUID spread. No-ops while casting.
+    // Compute leader-relative follow slot and clamp Z to map height.
+    bool ComputeFollowPoint(Unit* leader, Player* bot, float distance, float angle,
+        float& x, float& y, float& z);
+
+    // True when bot Z is badly off the ground under its feet (clipped mesh).
+    bool IsBadlyOffGround(Player* bot, float maxDelta = 3.0f);
+
+    // Move to validated follow slot (MovePoint). Prefer over raw MoveFollow near
+    // geometry so bots do not idle inside walls/stairs.
+    bool MoveToFollowSlot(Player* bot, Unit* leader, float distance, float angle);
+
+    // MoveFollow behind leader. No-ops while casting.
     bool MoveFollowLeader(Player* bot, Unit* leader, float distance, float angle);
 
     // Chase target for melee. No-ops while casting.

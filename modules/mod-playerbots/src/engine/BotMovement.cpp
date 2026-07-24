@@ -49,6 +49,48 @@ namespace BotMovement
         return true;
     }
 
+    bool ComputeFollowPoint(Unit* leader, Player* bot, float distance, float angle,
+        float& x, float& y, float& z)
+    {
+        if (!leader || !bot)
+            return false;
+
+        // Same convention as FollowMovementGenerator / GetClosePoint:
+        // absolute angle = leader orientation + relative angle.
+        float const size = bot->GetObjectSize();
+        leader->GetClosePoint(x, y, z, size, distance, angle);
+
+        // Re-clamp Z in case GetClosePoint's first pass landed in bad geometry.
+        leader->UpdateAllowedPositionZ(x, y, z);
+        bot->UpdateAllowedPositionZ(x, y, z);
+        return std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
+    }
+
+    bool IsBadlyOffGround(Player* bot, float maxDelta)
+    {
+        if (!bot || !bot->IsInWorld())
+            return false;
+
+        float x = bot->GetPositionX();
+        float y = bot->GetPositionY();
+        float z = bot->GetPositionZ();
+        float groundZ = z;
+        bot->UpdateAllowedPositionZ(x, y, groundZ);
+        return std::fabs(z - groundZ) > maxDelta;
+    }
+
+    bool MoveToFollowSlot(Player* bot, Unit* leader, float distance, float angle)
+    {
+        if (!CanMove(bot) || !leader)
+            return false;
+
+        float x, y, z;
+        if (!ComputeFollowPoint(leader, bot, distance, angle, x, y, z))
+            return false;
+
+        return MovePoint(bot, x, y, z);
+    }
+
     bool MoveFollowLeader(Player* bot, Unit* leader, float distance, float angle)
     {
         if (!CanMove(bot) || !leader)
@@ -81,23 +123,24 @@ namespace BotMovement
         if (!bot || IsCasting(bot))
             return;
         // Server-side only — avoids MoveSpline that fights Follow motion.
-        bot->SetOrientation(orientation);
+        bot->SetFacingTo(orientation);
     }
 
     void FaceUnit(Player* bot, Unit* target)
     {
         if (!bot || !target || IsCasting(bot))
             return;
-        if (!bot->HasInArc(static_cast<float>(M_PI), target))
-            bot->SetInFront(target);
+        bot->SetFacingToObject(target);
     }
 
     void ClearDeadSelection(Player* bot)
     {
         if (!bot)
             return;
-        if (Unit* selected = bot->GetSelectedUnit())
-            if (!selected->IsAlive())
-                bot->SetSelection(0);
+        if (Unit* victim = bot->GetVictim())
+        {
+            if (!victim->IsAlive())
+                bot->AttackStop();
+        }
     }
 }

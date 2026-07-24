@@ -98,9 +98,21 @@ Init bots to the right role before queueing: `.playerbots init Botname tank` /
 In combat, bots (including healers and `.playerbots self`) will:
 
 - **Interrupt** when their target is casting (class kick / silence).
+- **Party support**: cleanse/dispel removable debuffs on allies (Pala Cleanse,
+  Priest Purify, Shaman Cleanse Spirit, Mage Remove Curse, Druid Nature's Cure,
+  Monk Detox); self-defensives under ~40% HP; Paladins use **Lay on Hands**
+  (ally under ~25%) and **Hand of Protection** (non-tank ally under ~35%,
+  respects Forbearance).
 - Use **racials** (Blood Fury, Berserking, Arcane Torrent, etc.; defensive racials
   when low HP).
 - Activate **on-use trinkets** when off cooldown.
+
+### Formation / follow
+
+Out of combat, bots take **unique slots** by role (tank / healer / melee DPS /
+ranged DPS), GUID-sorted within the bucket so two DPS no longer stand on the
+same flank. Follow destinations are height-clamped; bots `MovePoint` to the
+slot when clipped or off-slot instead of parking inside walls/stairs.
 
 ### LFG / LFR party roles
 

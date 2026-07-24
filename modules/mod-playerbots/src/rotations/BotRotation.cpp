@@ -31,6 +31,27 @@ namespace
     {
         switch (spellId)
         {
+            // Self-defensives used by TryPartySupport (must route onto the bot).
+            case 642:    // Divine Shield
+            case 498:    // Divine Protection
+            case 871:    // Shield Wall
+            case 12975:  // Last Stand
+            case 55694:  // Enraged Regeneration
+            case 48792:  // Icebound Fortitude
+            case 48707:  // Anti-Magic Shell
+            case 55233:  // Vampiric Blood
+            case 61336:  // Survival Instincts
+            case 22812:  // Barkskin
+            case 19263:  // Deterrence
+            case 45438:  // Ice Block
+            case 47585:  // Dispersion
+            case 586:    // Fade
+            case 31224:  // Cloak of Shadows
+            case 5277:   // Evasion
+            case 104773: // Unending Resolve
+            case 108271: // Astral Shift
+            case 115203: // Fortifying Brew
+            case 122278: // Dampen Harm
             case 84963:  // Inquisition
             case 31801:  // Seal of Truth
             case 20154:  // Seal of Righteousness
@@ -108,7 +129,6 @@ namespace
             case 115069: // Stance of the Sturdy Ox
             case 115295: // Guard
             case 2565:   // Shield Block
-            case 871:    // Shield Wall
             case 1160:   // Demoralizing Shout
             case 62606:  // Savage Defense
             case 132404: // Shield Block (MoP buff)
@@ -760,6 +780,214 @@ bool TryMaintainBuffs(Player* bot)
     return false;
 }
 
+bool TryPartySupport(Player* bot)
+{
+    if (!bot || bot->HasUnitState(UNIT_STATE_CASTING))
+        return false;
+
+    auto allyNeedsDispel = [](Player* ally, SpellInfo const* cleanseInfo) -> bool
+    {
+        if (!ally || !cleanseInfo)
+            return false;
+
+        uint32 const mask = cleanseInfo->GetDispelMask();
+        if (!mask)
+            return false;
+
+        for (auto const& pair : ally->GetAppliedAuras())
+        {
+            AuraApplication const* app = pair.second;
+            if (!app || app->IsPositive())
+                continue;
+
+            Aura const* aura = app->GetBase();
+            if (!aura)
+                continue;
+
+            SpellInfo const* auraInfo = aura->GetSpellInfo();
+            if (!auraInfo || !auraInfo->Dispel)
+                continue;
+            if (!(mask & SpellInfo::GetDispelMask(DispelType(auraInfo->Dispel))))
+                continue;
+            if (!cleanseInfo->CanDispelAura(auraInfo))
+                continue;
+            return true;
+        }
+        return false;
+    };
+
+    auto isTankSpec = [](Player* p) -> bool
+    {
+        if (!p)
+            return false;
+        uint32 const specId = p->GetTalentSpecialization(p->GetActiveSpec());
+        uint8 const cls = p->getClass();
+        uint32 const* specs = GetClassSpecializations(cls);
+        if (!specs)
+            return false;
+        switch (cls)
+        {
+            case CLASS_WARRIOR:      return specs[2] == specId;
+            case CLASS_PALADIN:      return specs[1] == specId;
+            case CLASS_DEATH_KNIGHT: return specs[0] == specId;
+            case CLASS_MONK:         return specs[0] == specId;
+            case CLASS_DRUID:        return specs[2] == specId;
+            default: return false;
+        }
+    };
+
+    // --- 1) Paladin emergency externals ---
+    if (bot->getClass() == CLASS_PALADIN)
+    {
+        Group* group = bot->GetGroup();
+        if (group)
+        {
+            Player* lohTarget = nullptr;
+            Player* hopTarget = nullptr;
+            float lohPct = 100.0f;
+            float hopPct = 100.0f;
+
+            for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+            {
+                Player* member = itr->GetSource();
+                if (!member || !member->IsInWorld() || !member->IsAlive())
+                    continue;
+                if (member->GetMap() != bot->GetMap())
+                    continue;
+                if (!bot->IsWithinDistInMap(member, 40.0f, false))
+                    continue;
+                if (member->HasAura(25771)) // Forbearance
+                    continue;
+
+                float const pct = UnitHealthPct(member);
+                if (pct < 25.0f && pct < lohPct)
+                {
+                    lohTarget = member;
+                    lohPct = pct;
+                }
+                // HoP: critically low non-tanks (physical immunity stalls tank threat).
+                if (pct < 35.0f && !isTankSpec(member) && !member->HasAura(1022) && pct < hopPct)
+                {
+                    hopTarget = member;
+                    hopPct = pct;
+                }
+            }
+
+            if (lohTarget && CanTryCast(bot, 633))
+            {
+                if (CastHealSpell(bot, lohTarget, 633))
+                    return true;
+            }
+            if (hopTarget && CanTryCast(bot, 1022))
+            {
+                if (CastHealSpell(bot, hopTarget, 1022))
+                    return true;
+            }
+        }
+    }
+
+    // --- 2) Self-defensives ---
+    float const selfHp = UnitHealthPct(bot);
+    if (selfHp < 40.0f)
+    {
+        uint32 defensiveId = 0;
+        switch (bot->getClass())
+        {
+            case CLASS_PALADIN:
+                if (CanTryCast(bot, 642)) defensiveId = 642;       // Divine Shield
+                else if (CanTryCast(bot, 498)) defensiveId = 498;  // Divine Protection
+                break;
+            case CLASS_WARRIOR:
+                if (CanTryCast(bot, 871)) defensiveId = 871;         // Shield Wall
+                else if (CanTryCast(bot, 12975)) defensiveId = 12975; // Last Stand
+                else if (CanTryCast(bot, 55694)) defensiveId = 55694; // Enraged Regeneration
+                break;
+            case CLASS_DEATH_KNIGHT:
+                if (CanTryCast(bot, 48792)) defensiveId = 48792;     // Icebound Fortitude
+                else if (CanTryCast(bot, 48707)) defensiveId = 48707; // Anti-Magic Shell
+                else if (CanTryCast(bot, 55233)) defensiveId = 55233; // Vampiric Blood
+                break;
+            case CLASS_DRUID:
+                if (CanTryCast(bot, 61336)) defensiveId = 61336;     // Survival Instincts
+                else if (CanTryCast(bot, 22812)) defensiveId = 22812; // Barkskin
+                break;
+            case CLASS_HUNTER:
+                if (CanTryCast(bot, 19263)) defensiveId = 19263;     // Deterrence
+                break;
+            case CLASS_MAGE:
+                if (CanTryCast(bot, 45438)) defensiveId = 45438;     // Ice Block
+                break;
+            case CLASS_PRIEST:
+                if (CanTryCast(bot, 47585)) defensiveId = 47585;     // Dispersion
+                else if (CanTryCast(bot, 586)) defensiveId = 586;    // Fade
+                break;
+            case CLASS_ROGUE:
+                if (CanTryCast(bot, 31224)) defensiveId = 31224;     // Cloak of Shadows
+                else if (CanTryCast(bot, 5277)) defensiveId = 5277;  // Evasion
+                break;
+            case CLASS_WARLOCK:
+                if (CanTryCast(bot, 104773)) defensiveId = 104773;   // Unending Resolve
+                break;
+            case CLASS_SHAMAN:
+                if (CanTryCast(bot, 108271)) defensiveId = 108271;   // Astral Shift
+                break;
+            case CLASS_MONK:
+                if (CanTryCast(bot, 115203)) defensiveId = 115203;   // Fortifying Brew
+                else if (CanTryCast(bot, 122278)) defensiveId = 122278; // Dampen Harm
+                break;
+            default:
+                break;
+        }
+
+        if (defensiveId && CastSpell(bot, bot, defensiveId))
+            return true;
+    }
+
+    // --- 3) Party cleanse ---
+    uint32 cleanseId = 0;
+    switch (bot->getClass())
+    {
+        case CLASS_PALADIN: cleanseId = 4987; break;   // Cleanse
+        case CLASS_PRIEST:  cleanseId = 527; break;    // Purify
+        case CLASS_SHAMAN:  cleanseId = 51886; break;  // Cleanse Spirit
+        case CLASS_MAGE:    cleanseId = 475; break;    // Remove Curse
+        case CLASS_DRUID:   cleanseId = 88423; break;  // Nature's Cure
+        case CLASS_MONK:    cleanseId = 115450; break; // Detox
+        default: break;
+    }
+
+    if (cleanseId && CanTryCast(bot, cleanseId))
+    {
+        SpellInfo const* cleanseInfo = sSpellMgr->GetSpellInfo(cleanseId);
+        Group* group = bot->GetGroup();
+        if (cleanseInfo && group)
+        {
+            for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+            {
+                Player* member = itr->GetSource();
+                if (!member || !member->IsInWorld() || !member->IsAlive())
+                    continue;
+                if (member->GetMap() != bot->GetMap())
+                    continue;
+                if (!bot->IsWithinDistInMap(member, 40.0f, false))
+                    continue;
+                if (!allyNeedsDispel(member, cleanseInfo))
+                    continue;
+                if (CastHealSpell(bot, member, cleanseId))
+                    return true;
+            }
+        }
+        // Solo: cleanse self.
+        if ((!group || group->GetMembersCount() <= 1) && allyNeedsDispel(bot, cleanseInfo))
+        {
+            if (CastHealSpell(bot, bot, cleanseId))
+                return true;
+        }
+    }
+
+    return false;
+}
+
 bool TryCombatUtilities(Player* bot, Unit* enemy)
 {
     if (!bot)
@@ -768,6 +996,8 @@ bool TryCombatUtilities(Player* bot, Unit* enemy)
         return false;
 
     if (enemy && TryInterrupt(bot, enemy))
+        return true;
+    if (TryPartySupport(bot))
         return true;
     if (TryRacial(bot, enemy ? enemy : bot))
         return true;

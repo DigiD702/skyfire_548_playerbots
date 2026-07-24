@@ -165,8 +165,13 @@ Remaining for later phases:
 * [DONE] **wait for attack** (`co +wait for attack`, default on for DPS): non-tanks
   hold damage for `Playerbots.WaitForAttack.Seconds` after combat starts; still
   fight back if attacked. Tanks ignore. Disable with `co -wait for attack`.
-* [DONE] **Role formations**: follow angle/distance by tank / healer / melee DPS /
-  ranged DPS (`BotFormation` + `BotMovement::MoveFollowLeader`).
+* [DONE] **Role formations**: unique GUID-sorted slots per tank / healer / melee
+  DPS / ranged DPS bucket (`BotFormation`) with radial stagger so same-role bots
+  do not stack. Follow uses height-validated points (`BotMovement::MoveToFollowSlot`)
+  to reduce wall/stair clipping.
+* [DONE] **Party support utilities** (`TryPartySupport` in `TryCombatUtilities`):
+  class cleanses on dispelable ally debuffs, self-defensives under ~40% HP,
+  Paladin Lay on Hands / Hand of Protection on critically low allies.
 * [DONE] Richer AC actions: raid-target icon preference (`rti skull` etc., default
   skull) in SelectTarget; tank `pull` as reach → opener → fight; combat kite via
   `BotFleeManager` when ranged is too close; tank auto-marks the preferred RTI on
@@ -174,8 +179,8 @@ Remaining for later phases:
 * [DONE] Class/raid buff maintenance (self + party equivalents), recommended
   major/minor glyphs on `.playerbots init` (3+3 per spec).
 * [DONE] Deeper cooldowns/DoTs/AoE on thinner DPS lines (Balance, Destro/Demo,
-  Subtlety, MM, Arms, Feral). Still TODO: trinket sync polish, glyph-aware
-  conditional lines.
+  Subtlety, MM, Arms, Feral). Still TODO: SimC-faithful tuning, glyph-aware
+  rotation branches, boss-specific holds, trinket sync polish.
 * [DONE] Party resurrection: Priest/Pala/Shaman/Druid/Monk OOC rez, Druid
   Rebirth / DK Raise Ally in combat; dead bots auto-accept rez requests.
 * [TODO] Point movement / travel to arbitrary destinations (for questing,

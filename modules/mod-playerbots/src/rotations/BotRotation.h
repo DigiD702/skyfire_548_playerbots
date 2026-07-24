@@ -52,8 +52,9 @@ namespace BotRotation
     // Cast a heal/buff: self spells on the bot, otherwise on the ally.
     bool CastHealSpell(Player* bot, Player* ally, uint32 spellId);
 
-    // Kick -> racial -> on-use trinket. Returns true if a cast was started.
+    // Kick -> party support (cleanse/defensive/HoP) -> racial -> on-use trinket.
     bool TryCombatUtilities(Player* bot, Unit* enemy);
+    bool TryPartySupport(Player* bot);
     bool TryInterrupt(Player* bot, Unit* target);
     bool TryRacial(Player* bot, Unit* targetOrSelf);
     bool TryTrinkets(Player* bot);
