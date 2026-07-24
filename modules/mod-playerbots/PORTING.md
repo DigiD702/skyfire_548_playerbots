@@ -196,8 +196,13 @@ Remaining for later phases:
   map list + interval — never raw random map XY.
 * [TODO] AC wiki backlog (later): RTSC/aedm, loot lists (`ll`), item/vendor
   chat ops, glyphs, raid-specific strats, Multibot addon protocol.
-* [TODO] Non-combat behaviour remaining: sell junk to vendors,
-  mounts, gossip/quest NPC interaction.
+* [DONE] **Non-combat sell / mount / nearby quests** (thin pass): sell
+  `ITEM_QUALITY_POOR` at nearby vendors + free repair; auto-mount OOC outdoors
+  when traveling or following far; accept/turn-in on nearby questgivers
+  (`PrepareQuestMenu` / `AddQuest` / `RewardQuest`). Chat: `sell`, `mount` /
+  `dismount`, `quests`/`accept`/`turn in`. Still deferred: walk-to-vendor hubs,
+  AH/greens, preferred-mount DB, gossip menu trees, reward-choice AI, open-world
+  auto-questing.
 
 ## Reference tree
 

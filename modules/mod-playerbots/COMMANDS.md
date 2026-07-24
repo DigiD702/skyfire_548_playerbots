@@ -204,6 +204,9 @@ Send these as the message text (case-insensitive).
 | `position save <name>` | Store the bot’s current XYZ under `<name>`. |
 | `position` / `position ?` | List saved position names. |
 | `position go <name>` | Same as `go <name>`. |
+| `sell` / `sell junk` | Walk to a nearby vendor and sell gray (poor) junk; also repairs if the NPC can. Idle bots do this opportunistically. |
+| `mount` / `dismount` | Force mount (OOC outdoors, level ≥ 20) or dismount. Bots also auto-mount when traveling or following far, and dismount in combat / near the leader. |
+| `quests` / `accept` / `turn in` | Accept or turn in one quest on a nearby questgiver (interaction range). Idle bots do this opportunistically; first reward choice only. |
 
 Travel is cancelled by combat, `follow`, `stay`, `flee`, `summon`, or `reset`. Arrival resumes follow when `nc +follow` is on. Same-map only (no TravelNode / portals yet).
 
@@ -307,6 +310,9 @@ Closest equivalents for older one-shot orders:
 | Enable crowd control | `co +cc` |
 | Disable ground AoE dodge | `co -avoid aoe` |
 | Walk to point / master | `go` / `go x y z` / `position save\|go <name>` |
+| Sell gray junk | `sell` / `sell junk` (nearby vendor) |
+| Mount / dismount | `mount` / `dismount` (also auto OOC travel/follow) |
+| Nearby quest accept/turn-in | `quests` / `accept` / `turn in` |
 
 ---
 

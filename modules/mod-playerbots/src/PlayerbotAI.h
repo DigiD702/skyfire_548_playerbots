@@ -84,6 +84,7 @@ public:
     void RunWander();
     void RunVendor();
     bool RunTravel();
+    bool NeedsVendorWorkPublic() const;
     bool IsGroupInCombatPublic() const;
     bool ShouldFollowPublic() const;
     bool NeedsRestPublic() const;
@@ -140,6 +141,9 @@ private:
     void HandleWander();
     void HandleStay();
     void HandleVendor();
+    bool HandleQuestNpcs();
+    bool TryMount();
+    void TryDismount();
     void TeleportToLeader(Player* leader);
     void TeleportToPlayer(Player* master);
     void StopResting();
@@ -202,8 +206,13 @@ private:
 
     Creature* FindNearbyLoot();
     Creature* FindNearbyRepairer();
+    Creature* FindNearbyVendor();
+    Creature* FindNearbyQuestgiver();
     bool NeedsRepair() const;
+    bool HasGrayJunk() const;
+    uint32 SellGrayJunk(Creature* vendor);
     void MoveToPosition(float x, float y, float z);
+    uint32 FindMountSpell() const;
 
     Player* _bot;
     bool _clientControlled;
@@ -230,6 +239,7 @@ private:
     TravelDest _travel;
     uint8 _travelFailCount = 0;
     std::unordered_map<std::string, TravelPoint> _savedPositions;
+    bool _forceVendor = false;
 
     // --- Flags synced from _strategies (procedural AI still reads these) ---
     bool _stay;          // nc stay (implies not follow)

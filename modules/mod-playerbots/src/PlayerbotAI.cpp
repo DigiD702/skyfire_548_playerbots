@@ -33,6 +33,7 @@
 #include <unordered_set>
 #include "PetDefines.h"
 #include "Player.h"
+#include "QuestDef.h"
 #include "SharedDefines.h"
 #include "SpellAuraDefines.h"
 #include "SpellAuras.h"
@@ -42,6 +43,7 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include "ByteBuffer.h"
+#include "GossipDef.h"
 
 #include <algorithm>
 #include <cctype>
@@ -82,6 +84,10 @@ namespace
     constexpr float BOT_LOOT_SEEK_DIST = 25.0f;
     constexpr float BOT_LOOT_LEADER_RADIUS = 40.0f;
     constexpr float BOT_REPAIR_SEEK_DIST = 20.0f;
+    constexpr float BOT_VENDOR_SEEK_DIST = 20.0f;
+    constexpr float BOT_QUEST_SEEK_DIST = 20.0f;
+    constexpr float BOT_MOUNT_FOLLOW_DIST = 25.0f;
+    constexpr float BOT_DISMOUNT_FOLLOW_DIST = 15.0f;
 
     // Solo idle wander: radius around the bot and pause between picks.
     constexpr float BOT_WANDER_RADIUS = 18.0f;
@@ -183,6 +189,40 @@ namespace
             if (!_bot->IsWithinDist(creature, _range))
                 return false;
             return creature->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_REPAIR);
+        }
+
+        Player* _bot;
+        float _range;
+    };
+
+    struct BotVendorCheck
+    {
+        BotVendorCheck(Player* bot, float range) : _bot(bot), _range(range) { }
+
+        bool operator()(Creature* creature) const
+        {
+            if (!creature || !creature->IsAlive() || creature->IsInCombat())
+                return false;
+            if (!_bot->IsWithinDist(creature, _range))
+                return false;
+            return creature->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_VENDOR);
+        }
+
+        Player* _bot;
+        float _range;
+    };
+
+    struct BotQuestgiverCheck
+    {
+        BotQuestgiverCheck(Player* bot, float range) : _bot(bot), _range(range) { }
+
+        bool operator()(Creature* creature) const
+        {
+            if (!creature || !creature->IsAlive() || creature->IsInCombat())
+                return false;
+            if (!_bot->IsWithinDist(creature, _range))
+                return false;
+            return creature->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER);
         }
 
         Player* _bot;
@@ -332,17 +372,22 @@ bool PlayerbotAI::RunTravel()
     if (IsTravelArrived())
     {
         ClearTravelDestination();
+        TryDismount();
         BotMovement::StopAndIdle(_bot);
         return true;
     }
 
     MovementGeneratorType const moveType = _bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
     if (moveType == POINT_MOTION_TYPE)
+    {
+        TryMount();
         return true; // still walking the last MoveTo
+    }
 
     if (BotMovement::MoveTo(_bot, _travel.x, _travel.y, _travel.z))
     {
         _travelFailCount = 0;
+        TryMount();
         return true;
     }
 
@@ -646,6 +691,10 @@ void PlayerbotAI::UpdateAI(uint32 diff)
         && BotRotation::TryMaintainBuffs(_bot))
         return;
 
+    // Nearby quest accept / turn-in (one per tick).
+    if (!_bot->IsInCombat() && _bot->getAttackers().empty() && HandleQuestNpcs())
+        return;
+
     // AC-style Trigger → Action → Queue. MoP rotations run inside the combat action.
     if (_aiEngine && _aiEngine->DoNextAction())
         return;
@@ -825,6 +874,7 @@ bool PlayerbotAI::HandleCombat()
             StopResting();
         if (_travel.active)
             ClearTravelDestination();
+        TryDismount();
     }
 
     // Track group/self combat start for wait-for-attack (AC WaitForAttackStrategy).
@@ -2687,6 +2737,11 @@ void PlayerbotAI::HandleFollow()
             BotMovement::ClearDeadSelection(_bot);
         }
     }
+
+    if (dist > BOT_MOUNT_FOLLOW_DIST)
+        TryMount();
+    else if (dist <= BOT_DISMOUNT_FOLLOW_DIST)
+        TryDismount();
 }
 
 // Solo bots pick a nearby ground point and walk there, then pause before the
@@ -2735,29 +2790,152 @@ void PlayerbotAI::HandleStay()
     _lootGuid = 0;
 }
 
-// Opportunistic repair: if gear is worn and a repairer is nearby, walk over and
-// fix it (free for bots so a test population doesn't stall on gold).
+// Opportunistic repair + sell gray junk at nearby vendors.
 void PlayerbotAI::HandleVendor()
 {
-    if (!NeedsRepair())
+    if (!_bot || _clientControlled)
+    {
+        _forceVendor = false;
         return;
-
-    Creature* repairer = FindNearbyRepairer();
-    if (!repairer)
+    }
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+    {
+        _forceVendor = false;
         return;
+    }
 
-    if (!_bot->IsWithinDistInMap(repairer, INTERACTION_DISTANCE))
+    bool const needRepair = NeedsRepair();
+    bool const needSell = HasGrayJunk() || _forceVendor;
+    if (!needRepair && !needSell)
+    {
+        _forceVendor = false;
+        return;
+    }
+
+    // Prefer a vendor that can also repair when both are needed.
+    Creature* npc = nullptr;
+    if (needSell)
+        npc = FindNearbyVendor();
+    if (!npc && needRepair)
+        npc = FindNearbyRepairer();
+    // Repair-only NPC that also vendors (common in towns).
+    if (!npc && needSell)
+        npc = FindNearbyRepairer();
+
+    if (!npc)
+    {
+        _forceVendor = false;
+        return;
+    }
+
+    if (!_bot->IsWithinDistInMap(npc, INTERACTION_DISTANCE))
     {
         if (_bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
         {
             _followGuid = 0;
-            MoveToPosition(repairer->GetPositionX(), repairer->GetPositionY(), repairer->GetPositionZ());
+            MoveToPosition(npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ());
         }
         return;
     }
 
-    // Free repair keeps the test population combat-ready without wallet setup.
-    _bot->DurabilityRepairAll(false, 1.0f, false);
+    if (needSell && npc->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_VENDOR))
+        SellGrayJunk(npc);
+
+    if (needRepair && npc->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_REPAIR))
+        _bot->DurabilityRepairAll(false, 1.0f, false);
+
+    _forceVendor = false;
+}
+
+bool PlayerbotAI::NeedsVendorWorkPublic() const
+{
+    if (!_bot || _clientControlled)
+        return false;
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+        return false;
+    return NeedsRepair() || HasGrayJunk() || _forceVendor;
+}
+
+bool PlayerbotAI::HasGrayJunk() const
+{
+    if (!_bot)
+        return false;
+
+    auto isGray = [](Item* item) -> bool
+    {
+        if (!item || item->IsNotEmptyBag())
+            return false;
+        ItemTemplate const* proto = item->GetTemplate();
+        return proto && proto->Quality == ITEM_QUALITY_POOR && proto->SellPrice > 0;
+    };
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        if (isGray(_bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot)))
+            return true;
+
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        if (Bag* pBag = _bot->GetBagByPos(bag))
+        {
+            for (uint32 slot = 0; slot < pBag->GetBagSize(); ++slot)
+                if (isGray(_bot->GetItemByPos(bag, slot)))
+                    return true;
+        }
+    }
+    return false;
+}
+
+uint32 PlayerbotAI::SellGrayJunk(Creature* vendor)
+{
+    if (!_bot || !vendor || !vendor->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_VENDOR))
+        return 0;
+
+    std::vector<Item*> toSell;
+    auto collect = [&](Item* item)
+    {
+        if (!item || item->IsNotEmptyBag())
+            return;
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!proto || proto->Quality != ITEM_QUALITY_POOR || !proto->SellPrice)
+            return;
+        if (_bot->GetGUID() != item->GetOwnerGUID())
+            return;
+        if (_bot->GetLootGUID() == item->GetGUID())
+            return;
+        if (item->HasFlag(ITEM_FIELD_DYNAMIC_FLAGS, ITEM_FLAG_REFUNDABLE))
+            return;
+        toSell.push_back(item);
+    };
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        collect(_bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        if (Bag* pBag = _bot->GetBagByPos(bag))
+        {
+            for (uint32 slot = 0; slot < pBag->GetBagSize(); ++slot)
+                collect(_bot->GetItemByPos(bag, slot));
+        }
+    }
+
+    uint32 sold = 0;
+    for (Item* item : toSell)
+    {
+        if (!item)
+            continue;
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!proto)
+            continue;
+        uint32 const count = item->GetCount();
+        uint32 const money = proto->SellPrice * count;
+        _bot->ItemRemovedQuestCheck(item->GetEntry(), count);
+        _bot->RemoveItem(item->GetBagSlot(), item->GetSlot(), true);
+        item->RemoveFromUpdateQueueOf(_bot);
+        _bot->AddItemToBuyBackSlot(item);
+        _bot->ModifyMoney(money);
+        ++sold;
+    }
+    return sold;
 }
 
 Creature* PlayerbotAI::FindNearbyRepairer()
@@ -2769,6 +2947,48 @@ Creature* PlayerbotAI::FindNearbyRepairer()
 
     Creature* best = nullptr;
     float bestDist = BOT_REPAIR_SEEK_DIST + 1.0f;
+    for (Creature* c : list)
+    {
+        float d = _bot->GetDistance(c);
+        if (d < bestDist)
+        {
+            bestDist = d;
+            best = c;
+        }
+    }
+    return best;
+}
+
+Creature* PlayerbotAI::FindNearbyVendor()
+{
+    std::list<Creature*> list;
+    BotVendorCheck check(_bot, BOT_VENDOR_SEEK_DIST);
+    Skyfire::CreatureListSearcher<BotVendorCheck> searcher(_bot, list, check);
+    _bot->VisitNearbyGridObject(BOT_VENDOR_SEEK_DIST, searcher);
+
+    Creature* best = nullptr;
+    float bestDist = BOT_VENDOR_SEEK_DIST + 1.0f;
+    for (Creature* c : list)
+    {
+        float d = _bot->GetDistance(c);
+        if (d < bestDist)
+        {
+            bestDist = d;
+            best = c;
+        }
+    }
+    return best;
+}
+
+Creature* PlayerbotAI::FindNearbyQuestgiver()
+{
+    std::list<Creature*> list;
+    BotQuestgiverCheck check(_bot, BOT_QUEST_SEEK_DIST);
+    Skyfire::CreatureListSearcher<BotQuestgiverCheck> searcher(_bot, list, check);
+    _bot->VisitNearbyGridObject(BOT_QUEST_SEEK_DIST, searcher);
+
+    Creature* best = nullptr;
+    float bestDist = BOT_QUEST_SEEK_DIST + 1.0f;
     for (Creature* c : list)
     {
         float d = _bot->GetDistance(c);
@@ -2796,6 +3016,102 @@ bool PlayerbotAI::NeedsRepair() const
         uint32 curDur = item->GetUInt32Value(ITEM_FIELD_DURABILITY);
         if (float(curDur) / float(maxDur) < BOT_REPAIR_THRESHOLD)
             return true;
+    }
+    return false;
+}
+
+uint32 PlayerbotAI::FindMountSpell() const
+{
+    if (!_bot)
+        return 0;
+
+    for (auto const& pair : _bot->GetSpellMap())
+    {
+        PlayerSpell const* ps = pair.second;
+        if (!ps || ps->state == PLAYERSPELL_REMOVED || ps->disabled)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(pair.first);
+        if (!info || !info->HasAura(SPELL_AURA_MOUNTED))
+            continue;
+        return pair.first;
+    }
+    return 0;
+}
+
+bool PlayerbotAI::TryMount()
+{
+    if (!_bot || _clientControlled)
+        return false;
+    if (_bot->IsMounted() || _bot->HasAuraType(SPELL_AURA_MOUNTED))
+        return false;
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+        return false;
+    if (_bot->getLevel() < 20 || _bot->IsInWater() || BotMovement::IsCasting(_bot))
+        return false;
+    if (!_bot->GetMap() || !_bot->GetMap()->IsOutdoors(_bot->GetPositionX(), _bot->GetPositionY(), _bot->GetPositionZ()))
+        return false;
+
+    uint32 const spellId = FindMountSpell();
+    if (!spellId)
+        return false;
+
+    _bot->CastSpell(_bot, spellId, false);
+    return true;
+}
+
+void PlayerbotAI::TryDismount()
+{
+    if (!_bot)
+        return;
+    if (_bot->IsMounted() || _bot->HasAuraType(SPELL_AURA_MOUNTED))
+        _bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+}
+
+bool PlayerbotAI::HandleQuestNpcs()
+{
+    if (!_bot || _clientControlled)
+        return false;
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+        return false;
+    if (HasEngageTarget() || HasTravelDestination())
+        return false;
+    if (!_bot->PlayerTalkClass)
+        return false;
+
+    std::list<Creature*> list;
+    BotQuestgiverCheck check(_bot, BOT_QUEST_SEEK_DIST);
+    Skyfire::CreatureListSearcher<BotQuestgiverCheck> searcher(_bot, list, check);
+    _bot->VisitNearbyGridObject(BOT_QUEST_SEEK_DIST, searcher);
+
+    for (Creature* npc : list)
+    {
+        if (!npc || !_bot->IsWithinDistInMap(npc, INTERACTION_DISTANCE))
+            continue;
+
+        _bot->PrepareQuestMenu(npc->GetGUID());
+        QuestMenu& qm = _bot->PlayerTalkClass->GetQuestMenu();
+        for (uint8 i = 0; i < qm.GetMenuItemCount(); ++i)
+        {
+            QuestMenuItem const& mi = qm.GetItem(i);
+            Quest const* quest = sObjectMgr->GetQuestTemplate(mi.QuestId);
+            if (!quest)
+                continue;
+
+            QuestStatus const status = _bot->GetQuestStatus(mi.QuestId);
+            if (status == QUEST_STATUS_COMPLETE && _bot->CanRewardQuest(quest, false))
+            {
+                _bot->RewardQuest(quest, 0, npc, true);
+                return true;
+            }
+            if (status == QUEST_STATUS_NONE)
+            {
+                if (_bot->CanTakeQuest(quest, false) && _bot->CanAddQuest(quest, false))
+                {
+                    _bot->AddQuest(quest, npc);
+                    return true;
+                }
+            }
+        }
     }
     return false;
 }
@@ -3062,6 +3378,8 @@ bool PlayerbotAI::StartRefreshment()
     if (!_bot)
         return false;
 
+    TryDismount();
+
     if (!_clientControlled)
     {
         _bot->GetMotionMaster()->Clear();
@@ -3307,7 +3625,53 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
 
     if (cmd == "help")
     {
-        ack("Orders: stay, follow, flee, leave, summon, grind, reset, passive, aggressive, attack, tank/dps attack, pull, rti, go, position, eat/drink, maintenance. Strategies: co/nc +name,-name,~name or co?/nc?. Filters: @tank/@dps/@heal/@ranged.");
+        ack("Orders: stay, follow, flee, leave, summon, grind, reset, passive, aggressive, attack, tank/dps attack, pull, rti, go, position, sell, mount, quests, eat/drink, maintenance. Strategies: co/nc +name,-name,~name or co?/nc?. Filters: @tank/@dps/@heal/@ranged.");
+        return true;
+    }
+
+    if (cmd == "sell" || cmd == "sell junk")
+    {
+        if (_clientControlled)
+        {
+            ack("Self-bot: sell from your bags at a vendor.");
+            return true;
+        }
+        _forceVendor = true;
+        HandleVendor();
+        if (HasGrayJunk())
+            ack("Walking to vendor to sell junk.");
+        else
+            ack("No gray junk (or no vendor nearby).");
+        return true;
+    }
+
+    if (cmd == "mount")
+    {
+        if (_clientControlled)
+        {
+            ack("Self-bot: you control mounts.");
+            return true;
+        }
+        if (TryMount())
+            ack("Mounting.");
+        else
+            ack("Cannot mount now.");
+        return true;
+    }
+
+    if (cmd == "dismount")
+    {
+        TryDismount();
+        ack("Dismounted.");
+        return true;
+    }
+
+    if (cmd == "quests" || cmd == "accept" || cmd == "turn in" || cmd == "turnin")
+    {
+        if (HandleQuestNpcs())
+            ack("Handled a nearby quest.");
+        else
+            ack("No nearby quest to accept or turn in.");
         return true;
     }
 

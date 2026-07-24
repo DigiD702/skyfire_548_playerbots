@@ -264,11 +264,13 @@ namespace
         VendorAction(PlayerbotAI* ai) : BotAction(ai, "vendor") {}
         bool IsUseful() override
         {
-            if (_ai->IsClientControlled() || _ai->ShouldFollowPublic())
+            if (_ai->IsClientControlled())
                 return false;
             if (_ai->HasTravelDestination())
                 return false;
-            return true;
+            if (_ai->ShouldFollowPublic())
+                return false;
+            return _ai->NeedsVendorWorkPublic();
         }
         bool IsPossible() override { return BotMovement::CanMove(_ai->GetBot()); }
         bool Execute() override
