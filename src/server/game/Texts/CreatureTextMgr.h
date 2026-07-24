@@ -147,7 +147,12 @@ public:
         {
             case ChatMsg::CHAT_MSG_MONSTER_WHISPER:
             case ChatMsg::CHAT_MSG_RAID_BOSS_WHISPER:
-                data.put<uint64>(whisperGUIDpos, player->GetGUID());
+                // Pre-MoP BuildChatPacket returned the writable receiver-GUID
+                // offset. MoP SMSG_MESSAGECHAT is bitpacked and returns wpos(),
+                // so put<> would throw ByteBufferPositionException and abort.
+                // Receiver GUID is already written; only substitute when safe.
+                if (whisperGUIDpos + sizeof(uint64) <= data.size())
+                    data.put<uint64>(whisperGUIDpos, player->GetGUID());
                 break;
             default:
                 break;
