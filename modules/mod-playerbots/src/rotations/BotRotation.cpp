@@ -315,7 +315,10 @@ void PrepareHostileCast(Player* bot, Unit* castTarget)
     if (bot->IsNonMeleeSpellCasted(false) || bot->HasUnitState(UNIT_STATE_CASTING))
         return;
 
-    if (!bot->IsStopped())
+    // Self-bot owns WASD — never StopMoving (resets swing and cancels player movement).
+    PlayerbotAI* ai = GetAI(bot);
+    bool const selfBot = ai && ai->IsClientControlled();
+    if (!selfBot && !bot->IsStopped())
         bot->StopMoving();
 
     bot->SetSelection(castTarget->GetGUID());

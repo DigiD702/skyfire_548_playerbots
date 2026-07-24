@@ -1266,8 +1266,8 @@ Unit* PlayerbotAI::SelectTarget()
             }
     }
 
-    // Self-bot only: the real player's selected unit while they are in combat.
-    if (_clientControlled && _bot->IsInCombat())
+    // Self-bot: use the player's current hostile selection (open or in combat).
+    if (_clientControlled)
     {
         if (Unit* selected = _bot->GetSelectedUnit())
             if (selected->IsAlive() && _bot->IsValidAttackTarget(selected))
@@ -1457,6 +1457,9 @@ bool PlayerbotAI::ShouldThrottleThreat(Unit* target) const
 {
     if (!_threat || !_bot || !target)
         return false;
+    // Self-bot: the player is steering — never freeze their swing/rotation.
+    if (_clientControlled)
+        return false;
     if (GetCombatRole() == CombatRole::Tank && _tankMode)
         return false;
     if (!target->CanHaveThreatList())
@@ -1466,8 +1469,9 @@ bool PlayerbotAI::ShouldThrottleThreat(Unit* target) const
     if (myThreat <= 0.0f)
         return false;
 
-    // Prefer the party's tank threat as the reference so we don't sit out while
-    // a DPS holds temporary #1, then fall back to current top threat.
+    // Only throttle against an actual party tank's threat. Falling back to the
+    // mob's current top threat made solo / all-DPS bots AttackStop themselves
+    // after the first hit (they were their own reference).
     float tankThreat = 0.0f;
     if (Group* group = _bot->GetGroup())
     {
@@ -1502,19 +1506,11 @@ bool PlayerbotAI::ShouldThrottleThreat(Unit* target) const
         }
     }
 
-    float reference = tankThreat;
-    if (reference <= 0.0f)
-    {
-        HostileReference* cur = target->getThreatManager().getCurrentVictim();
-        if (!cur)
-            return false;
-        reference = cur->getThreat();
-    }
-    if (reference <= 0.0f)
+    if (tankThreat <= 0.0f)
         return false;
 
     float const pct = sPlayerbotMgr->GetThreatThrottlePct() / 100.0f;
-    return myThreat >= reference * pct;
+    return myThreat >= tankThreat * pct;
 }
 
 bool PlayerbotAI::TryAcceptResurrect()
@@ -3435,8 +3431,6 @@ bool PlayerbotAI::HandleRest()
     bool const needHp = hpPct < sPlayerbotMgr->GetRestHealthPct();
     bool const needMana = UsesMana() && manaPct < sPlayerbotMgr->GetRestManaPct();
     bool const lowResources = needHp || needMana;
-    bool const belowAlmostReady = hpPct < sPlayerbotMgr->GetAlmostFullHealthPct()
-        || (UsesMana() && manaPct < sPlayerbotMgr->GetMediumManaPct());
     bool const nearlyFull = hpPct >= 98.0f && (!UsesMana() || manaPct >= 98.0f);
     bool const itemResting = HasFoodOrDrinkAura() || _bot->IsNonMeleeSpellCasted(false)
         || _bot->HasAura(BOT_REFRESHMENT_SPELL);
@@ -3456,13 +3450,15 @@ bool PlayerbotAI::HandleRest()
         return false;
     }
 
-    // Drink while low, or while the party is holding and we still need regen.
-    // Do not use bare _resting alone — that re-sat full bots on tiny resource dips.
-    if (lowResources || itemResting || (partyHolding && belowAlmostReady && !nearlyFull)
-        || _forceRest)
+    // Drink only when THIS bot needs regen (or already has food/drink). Do not
+    // StartRefreshment just because an ally is drinking — that empty-sat the
+    // whole party whenever one player clicked food/drink.
+    if (lowResources || itemResting || _forceRest)
         return StartRefreshment();
 
-    // Full bots: stand and idle until allies finish recovering (no empty sit).
+    // Party is holding (ally drinking / not almost ready): stand and wait.
+    // Clear _resting so a prior drink does not keep NeedsRestPublic sticky.
+    _resting = false;
     if (!_clientControlled)
     {
         _bot->GetMotionMaster()->Clear();
@@ -3475,7 +3471,6 @@ bool PlayerbotAI::HandleRest()
     if (!HasFoodOrDrinkAura() && !_bot->IsNonMeleeSpellCasted(false)
         && _bot->getStandState() != UNIT_STAND_STATE_STAND)
         _bot->SetStandState(UNIT_STAND_STATE_STAND);
-    // Keep parking via partyHolding / NeedsRestPublic — do not set _resting.
     return true;
 }
 
