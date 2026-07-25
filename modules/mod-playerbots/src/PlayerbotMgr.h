@@ -13,6 +13,7 @@
 #define _SF_PLAYERBOT_MGR_H
 
 #include "Define.h"
+#include <deque>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -108,11 +109,24 @@ public:
     // 2 = damage (default DPS tab for the class).
     // specOverride: if non-zero, force that ChrSpecialization id (takes priority).
     // maxItemQuality: ITEM_QUALITY_* cap for gear rolls; -1 = use conf Gear.MaxQuality.
+    // relevel: when true, roll a new level in AutoCreate.MinLevel–MaxLevel first
+    // (default false keeps the bot's current level).
     void InitializeBot(Player* bot, int roleOverride = -1, uint32 specOverride = 0,
-        int maxItemQuality = -1);
-    // Initializes every active bot; returns the number processed.
-    uint32 InitializeAllBots(int roleOverride = -1, uint32 specOverride = 0,
-        int maxItemQuality = -1);
+        int maxItemQuality = -1, bool relevel = false);
+    // Queue init for every active socket bot (processed over world ticks).
+    // Returns how many jobs were queued. notifyPlayerGuid gets a done message.
+    uint32 EnqueueInitializeAllBots(int roleOverride = -1, uint32 specOverride = 0,
+        int maxItemQuality = -1, bool relevel = false, uint64 notifyPlayerGuid = 0);
+    // Queue a single online bot (or no-op if offline). Returns true if queued.
+    bool EnqueueInitializeBot(uint64 characterGuid, int roleOverride = -1,
+        uint32 specOverride = 0, int maxItemQuality = -1, bool relevel = false,
+        uint64 notifyPlayerGuid = 0);
+    uint32 GetInitQueueSize() const { return uint32(_initQueue.size()); }
+    uint32 GetInitPerTick() const { return _initPerTick; }
+
+    // Configured AutoCreate level band (also used by init +relevel).
+    uint32 GetAutoMinLevel() const { return _autoMinLevel; }
+    uint32 GetAutoMaxLevel() const { return _autoMaxLevel; }
 
     uint32 GetActiveBotCount() const { return uint32(_bots.size()); }
     uint32 GetRandomBotCount() const { return uint32(_randomBots.size()); }
@@ -136,10 +150,23 @@ private:
     void DestroyBotAI(uint64 characterGuid);
     // When a real player is solo-queued for LFG, queue level-matched bots too.
     void UpdateLfgAutoJoin(uint32 diff);
+    void ProcessInitQueue();
+    void UpsertInitQueueJob(uint64 guid, int roleOverride, uint32 specOverride,
+        int maxItemQuality, bool relevel);
 
     // Auto-creation helpers.
-    uint32 PopulateAccount(uint32 accountId);               // create missing characters on one account
-    bool CreateOneCharacter(uint32 accountId);              // roll & create a single character
+    struct PendingBotInit
+    {
+        uint64 guid = 0;
+        uint32 accountId = 0;
+        int role = 2;
+        uint32 specId = 0;
+    };
+
+    uint32 PopulateAccount(uint32 accountId, std::vector<PendingBotInit>* pending);
+    bool CreateOneCharacter(uint32 accountId, std::vector<PendingBotInit>* pending);
+    void InitCreatedBot(PendingBotInit const& pending);
+    bool BotNeedsGearInit(Player* bot) const;
 
     bool _enabled = false;
     bool _randomBotsEnabled = false;
@@ -164,6 +191,9 @@ private:
     uint32 _autoHealerPct = 20;
     uint32 _autoMinLevel = 1;
     uint32 _autoMaxLevel = 1;
+    // When false (default), create skips world login/gear — first SpawnBot inits.
+    // Set true to gear every new char immediately (much slower for large pools).
+    bool _autoInitOnCreate = false;
 
     // Gear quality band for InitializeBot / create auto-init (ITEM_QUALITY_*).
     int _gearMinQuality = 2; // uncommon
@@ -182,6 +212,21 @@ private:
     bool _vendorSellGreens = true;
     float _vendorHubMaxDistance = 500.0f;
     bool _questAutoPickReward = true;
+
+    // Background `.playerbots init` work — applied a few bots per world tick.
+    struct QueuedBotInit
+    {
+        uint64 guid = 0;
+        int roleOverride = -1;
+        uint32 specOverride = 0;
+        int maxItemQuality = -1;
+        bool relevel = false;
+    };
+    std::deque<QueuedBotInit> _initQueue;
+    uint32 _initPerTick = 5;
+    uint32 _initQueueBatchTotal = 0;
+    uint32 _initQueueBatchDone = 0;
+    uint64 _initQueueNotifyGuid = 0;
 
     uint32 _loginTimer = 0;
     bool _candidatesLoaded = false;

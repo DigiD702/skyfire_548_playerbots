@@ -90,6 +90,8 @@ namespace
     constexpr float BOT_REPAIR_SEEK_DIST = 20.0f;
     constexpr float BOT_VENDOR_SEEK_DIST = 20.0f;
     constexpr float BOT_QUEST_SEEK_DIST = 20.0f;
+    // Once within this of a quest spawn, hunt/wander locally instead of re-pathing.
+    constexpr float BOT_QUEST_HUNT_RADIUS = 40.0f;
 
     // Solo idle wander: radius around the bot and pause between picks.
     constexpr float BOT_WANDER_RADIUS = 18.0f;
@@ -241,10 +243,12 @@ PlayerbotAI::PlayerbotAI(Player* bot, bool clientControlled)
       _threat(false), _healerDps(false), _saveMana(false), _waitForAttack(false),
       _aoe(false), _boost(true), _cc(false), _avoidAoe(true),
       _forceRest(false), _resting(false), _holdAssist(false),
-      _forcedTargetGuid(0), _lfgRoleResponded(false), _lfgProposalResponded(false)
+      _forcedTargetGuid(0), _lfgRoleResponded(false), _lfgProposalResponded(false),
+      _wasGrouped(false)
 {
     ResetStrategiesToRoleDefaults();
     _aiEngine = std::make_unique<BotAiEngine>(this);
+    _wasGrouped = _bot && _bot->GetGroup();
 }
 
 PlayerbotAI::~PlayerbotAI() = default;
@@ -372,6 +376,13 @@ bool PlayerbotAI::RunTravel()
         return false;
     }
 
+    // Finish mount cast before pathing — movement cancels mount spells.
+    if (BotMovement::IsCasting(_bot))
+        return true;
+
+    if (_bot->IsMounted() || _bot->HasAuraType(SPELL_AURA_MOUNTED))
+        EnsureGroundMountCapability();
+
     if (IsTravelArrived())
     {
         ClearTravelDestination();
@@ -381,17 +392,20 @@ bool PlayerbotAI::RunTravel()
         return true;
     }
 
+    // Mount with a real cast while standing, then resume the path.
+    if (!_bot->IsMounted() && !_bot->HasAuraType(SPELL_AURA_MOUNTED))
+    {
+        if (TryMount(BotMountKind::SwiftGround))
+            return true;
+    }
+
     MovementGeneratorType const moveType = _bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
     if (moveType == POINT_MOTION_TYPE)
-    {
-        SyncMountWithMaster();
         return true; // still walking the last MoveTo
-    }
 
     if (BotMovement::MoveTo(_bot, _travel.x, _travel.y, _travel.z))
     {
         _travelFailCount = 0;
-        SyncMountWithMaster();
         return true;
     }
 
@@ -673,6 +687,7 @@ void PlayerbotAI::UpdateAI(uint32 diff)
     // Invites / loot rolls / rez accepts must react immediately — they time out
     // (or stall forever for bots) if only handled on the coarse AI interval.
     HandlePendingInvites();
+    SyncPartyStrategies();
     HandleLootRolls();
     if (!_bot->IsAlive())
     {
@@ -786,6 +801,44 @@ void PlayerbotAI::HandlePendingInvites()
         return;
 
     group->BroadcastGroupUpdate();
+    // Immediate follow pack so the next AI tick does not keep quest-traveling.
+    SyncPartyStrategies();
+}
+
+void PlayerbotAI::SyncPartyStrategies()
+{
+    if (!_bot || _clientControlled)
+        return;
+
+    bool const inGroup = _bot->GetGroup() != nullptr;
+    if (inGroup == _wasGrouped)
+        return;
+    _wasGrouped = inGroup;
+
+    if (inGroup)
+    {
+        // Party master: stop open-world questing and follow the leader.
+        _strategies.ApplyFollowPack();
+        SyncFlagsFromStrategies();
+        _forceQuest = false;
+        ClearTravelDestination();
+        ClearForcedTarget();
+        _wanderTimer = 0;
+        _followGuid = 0;
+        _chaseGuid = 0;
+        if (_bot->GetVictim())
+            _bot->AttackStop();
+        return;
+    }
+
+    // Random pool bots return to solo auto-quest + grind when the party dissolves.
+    if (sPlayerbotMgr->IsRandomBot(_bot->GetGUID()))
+    {
+        _strategies.ChangeStrategy("+quests,+grind,-follow", BotState::NonCombat);
+        _strategies.Add("grind", BotState::Combat);
+        SyncFlagsFromStrategies();
+        _followGuid = 0;
+    }
 }
 
 // Auto-respond to the dungeon finder so a master can queue a party of bots: the
@@ -886,8 +939,14 @@ uint8 PlayerbotAI::ComputeLfgRole()
 // position for the class, and run the rotation.
 bool PlayerbotAI::HandleCombat()
 {
-    // Drop refreshment the moment combat is relevant — do not stay seated.
-    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+    // Players cannot Attack() or cast combat spells while mounted (core rejects
+    // both). Dismount as soon as we have a fight — waiting until IsInCombat
+    // never fires because Attack() fails while mounted.
+    bool const needFight = HasEngageTarget()
+        || _bot->IsInCombat()
+        || GroupInCombat()
+        || !_bot->getAttackers().empty();
+    if (needFight)
     {
         if (_resting || _bot->IsSitState() || HasFoodOrDrinkAura())
             StopResting();
@@ -994,6 +1053,10 @@ bool PlayerbotAI::HandleCombat()
 
     // Only abort eat/drink once we actually have something to fight.
     StopResting();
+    // Guarantee dismount even when needFight was false (e.g. grind pull OOC).
+    TryDismount();
+    if (_travel.active)
+        ClearTravelDestination();
 
     // Spec decides stance (e.g. Elemental ranged, Enhancement melee). Tanks always melee.
     // Healers in healer-dps mode plant like ranged — never chase into melee formation.
@@ -1294,6 +1357,19 @@ Unit* PlayerbotAI::SelectTarget()
         }
     }
 
+    // Auto-quest: kill incomplete NPC objectives in range before generic grind.
+    if (_quests)
+    {
+        Map* map = _bot->GetMap();
+        bool const inInstance = map && map->IsInstance();
+        if (!inInstance && !PartyNeedsRest() && !PartyNotAlmostReady())
+            if (Unit* questTarget = SelectQuestObjectiveTarget())
+            {
+                _targets.SetCurrentTarget(questTarget);
+                return questTarget;
+            }
+    }
+
     if (_grind)
     {
         Map* map = _bot->GetMap();
@@ -1329,6 +1405,60 @@ Unit* PlayerbotAI::SelectGrindTarget()
     if (target && _bot->IsValidAttackTarget(target))
         return target;
     return nullptr;
+}
+
+Unit* PlayerbotAI::SelectQuestObjectiveTarget()
+{
+    if (!_bot)
+        return nullptr;
+
+    std::unordered_set<uint32> needEntries;
+    for (auto const& qs : _bot->getQuestStatusMap())
+    {
+        if (qs.second.Status != QUEST_STATUS_INCOMPLETE)
+            continue;
+        Quest const* quest = sObjectMgr->GetQuestTemplate(qs.first);
+        if (!quest)
+            continue;
+
+        uint16 const slot = _bot->FindQuestSlot(qs.first);
+        if (slot >= MAX_QUEST_LOG_SIZE)
+            continue;
+
+        for (QuestObjective const* obj : quest->m_questObjectives)
+        {
+            if (!obj || obj->Type != QUEST_OBJECTIVE_TYPE_NPC)
+                continue;
+            uint16 const have = _bot->GetQuestSlotCounter(slot, obj->Index);
+            uint16 const needAmt = uint16(obj->Amount > 0 ? obj->Amount : 1);
+            if (have >= needAmt)
+                continue;
+            needEntries.insert(obj->ObjectId);
+        }
+    }
+    if (needEntries.empty())
+        return nullptr;
+
+    Unit* best = nullptr;
+    float bestDist = BOT_LOOT_SEEK_DIST;
+    std::list<Unit*> units;
+    Skyfire::AnyUnfriendlyUnitInObjectRangeCheck check(_bot, _bot, BOT_LOOT_SEEK_DIST);
+    Skyfire::UnitListSearcher<Skyfire::AnyUnfriendlyUnitInObjectRangeCheck> searcher(_bot, units, check);
+    _bot->VisitNearbyObject(BOT_LOOT_SEEK_DIST, searcher);
+
+    for (Unit* unit : units)
+    {
+        if (!unit || !unit->IsAlive() || !needEntries.count(unit->GetEntry()))
+            continue;
+        if (!_bot->IsValidAttackTarget(unit))
+            continue;
+        float const dist = _bot->GetDistance(unit);
+        if (dist > bestDist)
+            continue;
+        bestDist = dist;
+        best = unit;
+    }
+    return best;
 }
 
 Unit* PlayerbotAI::GetForcedTarget() const
@@ -3768,7 +3898,8 @@ bool PlayerbotAI::TryMount(BotMountKind preferred)
         _bot->Dismount();
     if (_bot->IsMounted() || _bot->HasAuraType(SPELL_AURA_MOUNTED))
         return false;
-    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty()
+        || HasEngageTarget())
         return false;
     if (_bot->getLevel() < 20 || _bot->IsInWater() || BotMovement::IsCasting(_bot))
         return false;
@@ -3791,20 +3922,14 @@ bool PlayerbotAI::TryMount(BotMountKind preferred)
     if (!info)
         return false;
 
-    // Mounts share a spell category CD — clearing only spellId left remount broken.
-    _bot->RemoveSpellCooldown(spellId, true);
-    if (uint32 const cat = info->GetCategory())
-        _bot->RemoveSpellCategoryCooldown(cat, true);
+    // Stop so the mount cast isn't cancelled mid-path (real cast time, not instant).
+    BotMovement::StopAndIdle(_bot);
+    _bot->CastSpell(_bot, spellId, false);
 
-    _bot->CastSpell(_bot, spellId, true);
-    if (!_bot->IsMounted() && !_bot->HasAuraType(SPELL_AURA_MOUNTED))
-        _bot->AddAura(spellId, _bot);
-
-    if (_bot->IsMounted() || _bot->HasAuraType(SPELL_AURA_MOUNTED))
+    if (BotMovement::IsCasting(_bot) || _bot->IsMounted() || _bot->HasAuraType(SPELL_AURA_MOUNTED))
     {
-        // Default to ground SpeedModSpell after mount. Air follow upgrades to
-        // flight capability when the master is actually airborne.
-        EnsureGroundMountCapability();
+        if (_bot->IsMounted() || _bot->HasAuraType(SPELL_AURA_MOUNTED))
+            EnsureGroundMountCapability();
         return true;
     }
     return false;
@@ -3829,7 +3954,8 @@ void PlayerbotAI::SyncMountWithMaster()
 {
     if (!_bot || _clientControlled)
         return;
-    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty()
+        || HasEngageTarget())
     {
         TryDismount();
         return;
@@ -4135,7 +4261,12 @@ bool PlayerbotAI::TravelToQuestObjective()
             } while (result->NextRow());
 
             if (bestD2 >= 0.0f)
+            {
+                // Already in the hunt area — let combat/wander search locally.
+                if (bestD2 <= BOT_QUEST_HUNT_RADIUS * BOT_QUEST_HUNT_RADIUS)
+                    return false;
                 return SetTravelDestination(_bot->GetMapId(), bestX, bestY, bestZ);
+            }
         }
     }
     return false;

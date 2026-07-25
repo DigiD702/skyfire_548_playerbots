@@ -45,7 +45,12 @@ namespace
                 return true;
             if (bot->IsInCombat() || !bot->getAttackers().empty())
                 return true;
-            return _ai->IsGroupInCombatPublic();
+            if (_ai->IsGroupInCombatPublic())
+                return true;
+            // Quest/grind bots must pull OOC — high-level bots in starter zones
+            // never get aggro, so waiting for IsInCombat never starts a fight.
+            // HandleCombat returns false when nothing is in range so travel can run.
+            return _ai->WantsOpenWorldPullsPublic();
         }
     };
 

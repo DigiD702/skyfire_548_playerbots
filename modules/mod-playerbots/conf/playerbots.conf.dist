@@ -154,16 +154,38 @@ Playerbots.AutoCreate.HealerPct = 20
 #    Playerbots.AutoCreate.Level
 #    Playerbots.AutoCreate.MinLevel
 #    Playerbots.AutoCreate.MaxLevel
-#        Description: Level band for newly created bots. Min/Max default to
+#        Description: Level band for newly created bots, and for
+#                     `.playerbots init … relevel`. Min/Max default to
 #                     AutoCreate.Level when omitted. When Min == Max every new
-#                     bot is that level (e.g. 80/80 for LFG testing). When the
-#                     range spans multiple levels, each new bot rolls uniformly.
-#                     Death Knights are excluded from auto-creation.
+#                     (or relevelling) bot is that level (e.g. 80/80). When the
+#                     range spans multiple levels, each bot rolls uniformly.
+#                     Normal `.playerbots init` without `relevel` does not
+#                     change level. Death Knights are excluded from auto-creation.
 #        Default:     1 / 1 / 1
 
 Playerbots.AutoCreate.Level = 1
 Playerbots.AutoCreate.MinLevel = 1
 Playerbots.AutoCreate.MaxLevel = 1
+
+#
+#    Playerbots.AutoCreate.InitOnCreate
+#        Description: When 1, each new character is logged in, geared, and logged
+#                     out during `.playerbots create` (slow for hundreds of bots).
+#                     When 0 (default), create only writes characters; gear/spells
+#                     run on first world login (random pool / .playerbots add).
+#                     Use `.playerbots init all` on online bots to re-gear anytime.
+#        Default:     0
+
+Playerbots.AutoCreate.InitOnCreate = 0
+
+#
+#    Playerbots.Init.PerTick
+#        Description: How many bots `.playerbots init all` (and queued group
+#                     inits) process each world tick. Higher = faster finish,
+#                     more hitch risk. Clamped to 1–50.
+#        Default:     5
+
+Playerbots.Init.PerTick = 5
 
 ########################################
 # Gear (create auto-init + .playerbots init)

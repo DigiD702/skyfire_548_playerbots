@@ -557,8 +557,9 @@ public:
         }
     }
 
-    // .playerbots init [<charname>|all|self] [tank|healer|dps|<spec>] [rare|epic|...]
+    // .playerbots init [<charname>|all|self] [tank|healer|dps|<spec>] [rare|epic|...] [relevel]
     // Tokens may appear in any order. Quality caps gear rolls (default: conf MaxQuality).
+    // Without relevel, level is unchanged. With relevel, rolls AutoCreate.MinLevel–MaxLevel.
     static bool HandlePlayerbotInitCommand(ChatHandler* handler, char const* args)
     {
         std::vector<std::string> tokens;
@@ -576,9 +577,19 @@ public:
         bool haveChoice = false;
         int maxItemQuality = -1; // use Playerbots.Gear.MaxQuality
         bool haveQuality = false;
+        bool relevel = false;
 
         for (std::string const& raw : tokens)
         {
+            std::string lower = raw;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                [](unsigned char c) { return char(std::tolower(c)); });
+            if (lower == "relevel" || lower == "re-level")
+            {
+                relevel = true;
+                continue;
+            }
+
             int quality = 0;
             if (ParseQualityToken(raw, quality))
             {
@@ -605,7 +616,7 @@ public:
 
             handler->PSendSysMessage(
                 "Unknown init token '%s'. Use self|all|<name>, a role/spec, "
-                "and/or a quality (poor, common, uncommon, rare, epic, legendary).",
+                "a quality (poor…legendary), and/or relevel.",
                 raw.c_str());
             handler->SetSentErrorMessage(true);
             return false;
@@ -613,7 +624,7 @@ public:
 
         Player* master = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
         std::string choiceNote;
-        if (haveChoice || haveQuality)
+        if (haveChoice || haveQuality || relevel)
         {
             choiceNote = " (";
             bool firstNote = true;
@@ -628,14 +639,34 @@ public:
                     choiceNote += ", ";
                 choiceNote += "max quality ";
                 choiceNote += QualityName(maxItemQuality);
+                firstNote = false;
+            }
+            if (relevel)
+            {
+                if (!firstNote)
+                    choiceNote += ", ";
+                choiceNote += "relevel ";
+                choiceNote += std::to_string(sPlayerbotMgr->GetAutoMinLevel());
+                choiceNote += "-";
+                choiceNote += std::to_string(sPlayerbotMgr->GetAutoMaxLevel());
             }
             choiceNote += ")";
         }
 
         if (target == "all")
         {
-            uint32 count = sPlayerbotMgr->InitializeAllBots(roleOverride, specOverride, maxItemQuality);
-            handler->PSendSysMessage("Initialized %u active bot(s)%s.", count, choiceNote.c_str());
+            uint64 notify = master ? master->GetGUID() : 0;
+            uint32 count = sPlayerbotMgr->EnqueueInitializeAllBots(
+                roleOverride, specOverride, maxItemQuality, relevel, notify);
+            if (!count)
+            {
+                handler->SendSysMessage("No active bots to init.");
+                return true;
+            }
+            handler->PSendSysMessage(
+                "Queued background init for %u bot(s)%s (%u per tick). "
+                "You will be notified when finished.",
+                count, choiceNote.c_str(), sPlayerbotMgr->GetInitPerTick());
             return true;
         }
 
@@ -653,7 +684,7 @@ public:
                 handler->SetSentErrorMessage(true);
                 return false;
             }
-            sPlayerbotMgr->InitializeBot(master, roleOverride, specOverride, maxItemQuality);
+            sPlayerbotMgr->InitializeBot(master, roleOverride, specOverride, maxItemQuality, relevel);
             handler->PSendSysMessage("Initialized yourself%s.", choiceNote.c_str());
             return true;
         }
@@ -683,7 +714,7 @@ public:
                 return false;
             }
 
-            sPlayerbotMgr->InitializeBot(bot, roleOverride, specOverride, maxItemQuality);
+            sPlayerbotMgr->InitializeBot(bot, roleOverride, specOverride, maxItemQuality, relevel);
             handler->PSendSysMessage("Initialized bot '%s'%s.", name.c_str(), choiceNote.c_str());
             return true;
         }
@@ -691,7 +722,8 @@ public:
         if (!master)
         {
             handler->SendSysMessage(
-                "Usage: .playerbots init [<charname>|all|self] [tank|healer|dps|<spec>] [rare|epic|...].");
+                "Usage: .playerbots init [<charname>|all|self] [tank|healer|dps|<spec>] "
+                "[rare|epic|...] [relevel].");
             handler->SetSentErrorMessage(true);
             return false;
         }
@@ -703,8 +735,8 @@ public:
             return false;
         }
 
-        sPlayerbotMgr->InitializeBot(master, roleOverride, specOverride, maxItemQuality);
-        uint32 count = 1;
+        sPlayerbotMgr->InitializeBot(master, roleOverride, specOverride, maxItemQuality, relevel);
+        uint32 queued = 0;
 
         if (Group* group = master->GetGroup())
         {
@@ -715,14 +747,19 @@ public:
                 {
                     if (specOverride && !SpecMatchesClass(specOverride, member->getClass()))
                         continue;
-                    sPlayerbotMgr->InitializeBot(member, roleOverride, specOverride, maxItemQuality);
-                    ++count;
+                    if (sPlayerbotMgr->EnqueueInitializeBot(member->GetGUID(), roleOverride,
+                            specOverride, maxItemQuality, relevel, master->GetGUID()))
+                        ++queued;
                 }
             }
         }
 
-        handler->PSendSysMessage("Initialized yourself and %u grouped bot(s)%s.",
-            count - 1, choiceNote.c_str());
+        if (queued)
+            handler->PSendSysMessage(
+                "Initialized yourself%s; queued %u grouped bot(s) for background init.",
+                choiceNote.c_str(), queued);
+        else
+            handler->PSendSysMessage("Initialized yourself%s.", choiceNote.c_str());
         return true;
     }
 

@@ -97,6 +97,9 @@ public:
     bool NeedsVendorWorkPublic() const;
     bool NeedsUrgentVendorPublic() const;
     bool HasQuestsStrategyPublic() const { return _quests; }
+    // Grind or auto-quest: allow OOC combat ticks to pull (needed when mobs
+    // will not aggro a high-level bot in a starter zone).
+    bool WantsOpenWorldPullsPublic() const { return _grind || _quests; }
     bool IsGroupInCombatPublic() const;
     bool ShouldFollowPublic() const;
     bool NeedsRestPublic() const;
@@ -141,6 +144,8 @@ private:
 
     // Behaviour steps.
     void HandlePendingInvites();
+    // On join: follow pack (-quests/-grind). On leave (random bots): restore +quests/+grind.
+    void SyncPartyStrategies();
     void HandleInteractions();
     bool HandleCombat();
     bool HandleCombatCastOnly();
@@ -212,6 +217,7 @@ private:
     // Combat helpers.
     Unit* SelectTarget();
     Unit* SelectGrindTarget();
+    Unit* SelectQuestObjectiveTarget();
     Unit* SelectTankTarget();
     Unit* SelectGroupThreatTarget();
     Unit* SelectAssistTankTarget();
@@ -320,6 +326,7 @@ private:
 
     bool _lfgRoleResponded;
     bool _lfgProposalResponded;
+    bool _wasGrouped;    // detect invite/leave for strategy packs
 };
 
 #endif // _SF_PLAYERBOT_AI_H

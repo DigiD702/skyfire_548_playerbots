@@ -21,34 +21,52 @@ Whisper replies with a short ack. Party/raid orders apply silently (no spam).
 | `.playerbots reload` | Reload `playerbots.conf` and the random-bot candidate pool. |
 | `.playerbots create` | Run the auto-creator (accounts + characters from config; each new char is auto-inited with conf gear). |
 | `.playerbots wipe confirm` | Delete all accounts matching `AccountPrefix` (and their characters). Requires the word `confirm`. |
-| `.playerbots init [<name>\|all\|self] [tank\|healer\|dps\|<spec>] [rare\|epic\|…]` | Re-apply specialization, talents, and gear (quality defaults to conf `Gear.MaxQuality`). |
+| `.playerbots init [<name>\|all\|self] [tank\|healer\|dps\|<spec>] [rare\|epic\|…] [relevel]` | Re-apply specialization, talents, and gear. `all` (and grouped bots on bare init) run in a background queue (`Playerbots.Init.PerTick`). Level stays unless `relevel` is passed. |
 | `.playerbots self [on\|off]` | Attach/detach cast-only AI on **your** character. |
 
 ### Resetting the bot pool (e.g. all level 80 epic)
 
 1. Set `Playerbots.AutoCreate.MinLevel` / `MaxLevel`, **`AccountCount`** (accounts to create; not the same as `MaxBots`), CharactersPerAccount, and gear quality in `playerbots.conf`.
-2. Either set `Playerbots.DeleteRandomBotAccounts = 1` and restart once, **or** run `.playerbots wipe confirm`.
-3. Set `DeleteRandomBotAccounts = 0` again.
-4. Run `.playerbots create` (or enable `AutoCreate.OnStartup` and restart).
+2. Leave `AutoCreate.InitOnCreate = 0` for fast create (recommended for large pools); set `1` only if you need every new char geared before first login.
+3. Either set `Playerbots.DeleteRandomBotAccounts = 1` and restart once, **or** run `.playerbots wipe confirm`.
+4. Set `DeleteRandomBotAccounts = 0` again.
+5. Run `.playerbots create` (or enable `AutoCreate.OnStartup` and restart).
+6. Optional: bring bots online and `.playerbots init all` / `relevel` as needed.
 
 ### `.playerbots init`
 
-Re-gears and re-applies spec spells for the current level. For Wave-1 DPS
-specs it also learns a recommended talent spell set used by the rotation.
-Init also pulls class-trainer spells for the bot's level, riding skills, and
-one random mount per unlocked riding tier (level-gated: 20 / 40 / 60 / 70).
+Re-gears and re-applies spec/talents for the bot's **current level** by default.
+Init also pulls class-trainer spells for that level, riding skills, and one
+random mount per unlocked riding tier (level-gated: 20 / 40 / 60 / 70).
+
+`Playerbots.AutoCreate.MinLevel` / `MaxLevel` do **not** change levels on a
+normal init — they only apply when creating characters, or when you pass
+`relevel`.
 
 | Args | Effect |
 | --- | --- |
 | *(none)* | Initialize **yourself**, then every bot in your group. |
 | `self` | Initialize only yourself. |
 | `<charname>` | Initialize that active bot (or self-bot). |
-| `all` | Initialize every active socket bot. |
+| `all` | Queue every active socket bot for background init (`Init.PerTick` each world tick). |
 | `… tank` / `healer` / `dps` | Switch to that role’s **default** spec, then gear. |
 | `… <spec>` | Switch to an explicit specialization (needed for hybrid DPS). |
 | `… rare` / `epic` / … | Cap gear quality (default **epic**). Also: `blue`, `purple`, `quality=rare`. |
+| `… relevel` | Roll a new level in conf `MinLevel`–`MaxLevel`, then init for that level. |
 
-Tokens may be in any order, e.g. `.playerbots init self fury rare` or `.playerbots init rare self fury`.
+Tokens may be in any order, e.g. `.playerbots init self fury rare` or
+`.playerbots init all rare relevel`.
+
+**Examples**
+
+```
+.playerbots init all fury rare          # keep levels, re-spec/re-gear
+.playerbots init all rare relevel       # roll 1–25 (or whatever conf says), then gear
+.playerbots init Botname tank           # party bot stays level 30, becomes tank
+```
+
+To force everyone to one level: set `MinLevel = MaxLevel = 80`, then
+`.playerbots init all relevel`. Or use GM `.level` / `.modify level` on individuals.
 
 **Hybrid DPS:** `dps` alone is not enough when a class has two damage specs:
 
@@ -230,7 +248,7 @@ Strategies are **role-gated** from the bot's current specialization:
 | `food` | Auto sit + regen HP/mana when low (default on) |
 | `follow` / `stay` | Follow leader or hold position |
 | `loot` | Loot corpses |
-| `quests` | Open-world accept/turn-in + same-map objective travel (default on for ungrouped random bots; cleared by `follow` pack) |
+| `quests` | Open-world accept/turn-in + same-map objective travel (default on for ungrouped random bots with `+grind`; cleared by `follow` pack) |
 | `passive` / `grind` | Same shared flags |
 
 Chat shortcuts rewrite strategy packs like AzerothCore (not just one bool):

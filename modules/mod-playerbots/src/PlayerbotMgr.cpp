@@ -9,6 +9,7 @@
 #include "AccountMgr.h"
 #include "BotPreferredMounts.h"
 #include "BotVendorHubs.h"
+#include "Chat.h"
 #include "Config.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -33,6 +34,8 @@
 #include <cstdlib>
 #include <iterator>
 #include <sstream>
+#include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -91,6 +94,12 @@ void PlayerbotMgr::LoadConfig()
     uint32 const legacyLevel = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.Level", 1));
     _autoMinLevel = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.MinLevel", int32(legacyLevel)));
     _autoMaxLevel = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.MaxLevel", int32(legacyLevel)));
+    _autoInitOnCreate = sConfigMgr->GetBoolDefault("Playerbots.AutoCreate.InitOnCreate", false);
+    _initPerTick = uint32(sConfigMgr->GetIntDefault("Playerbots.Init.PerTick", 5));
+    if (_initPerTick < 1)
+        _initPerTick = 1;
+    if (_initPerTick > 50)
+        _initPerTick = 50;
 
     _gearMinQuality = sConfigMgr->GetIntDefault("Playerbots.Gear.MinQuality", int(ITEM_QUALITY_UNCOMMON));
     _gearMaxQuality = sConfigMgr->GetIntDefault("Playerbots.Gear.MaxQuality", int(ITEM_QUALITY_EPIC));
@@ -162,6 +171,9 @@ void PlayerbotMgr::Update(uint32 diff)
 
     // Drop bots whose player has left the world for any reason.
     CleanupDeadBots();
+
+    // Mass init must run on the world thread, a few bots per tick.
+    ProcessInitQueue();
 
     // LFG role checks + proposal accepts must run on the world thread. Calling
     // UpdateProposal from Map::Update (via PlayerbotAI::UpdateAI) races the LFG
@@ -463,13 +475,21 @@ bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* er
 
     if (Player* bot = botSession->GetPlayer())
     {
+        // Deferred create: gear/spells on first world login when still bare.
+        if (BotNeedsGearInit(bot))
+        {
+            uint32 specId = bot->GetTalentSpecialization(bot->GetActiveSpec());
+            InitializeBot(bot, -1, specId, -1, false);
+        }
+
         _ai[characterGuid] = new PlayerbotAI(bot);
         if (isRandom)
         {
-            // Ungrouped random bots auto-quest in the open world (nc +quests).
+            // Ungrouped random bots auto-quest and grind in the open world.
             if (PlayerbotAI* ai = _ai[characterGuid])
             {
-                ai->GetStrategyEngine().ChangeStrategy("+quests,-follow", BotState::NonCombat);
+                ai->GetStrategyEngine().ChangeStrategy("+quests,+grind,-follow", BotState::NonCombat);
+                ai->GetStrategyEngine().Add("grind", BotState::Combat);
                 ai->SyncFlagsFromStrategies();
             }
         }
@@ -1107,6 +1127,9 @@ namespace
     // Filter by RequiredLevel near the bot's level (not ItemLevel <= level+25):
     // MoP ilvl is hundreds at 90, so an ItemLevel cap wrongly forces ~TBC gear.
     // minQuality/maxQuality are ITEM_QUALITY_* bounds from conf or init override.
+    // Results are cached — mass init of similar level/class bots hits memory.
+    std::unordered_map<std::string, std::vector<uint32>> g_itemQueryCache;
+
     std::vector<uint32> QueryItemEntries(Player* bot, std::string const& where, uint32 primaryStat,
         uint32 exclude, int minQuality, int maxQuality)
     {
@@ -1116,6 +1139,14 @@ namespace
         uint32 const minReq   = level > 10 ? (level - 10) : 1;
         int qualityCap = std::max(0, std::min(maxQuality, int(ITEM_QUALITY_LEGENDARY)));
         int qualityMin = std::max(0, std::min(minQuality, qualityCap));
+
+        std::ostringstream key;
+        key << where << '|' << level << '|' << classBit << '|' << raceBit << '|'
+            << minReq << '|' << qualityMin << '|' << qualityCap << '|' << primaryStat
+            << '|' << exclude;
+        std::string const cacheKey = key.str();
+        if (auto it = g_itemQueryCache.find(cacheKey); it != g_itemQueryCache.end())
+            return it->second;
 
         std::ostringstream q;
         q << "SELECT entry FROM item_template WHERE " << where
@@ -1146,7 +1177,50 @@ namespace
                 entries.push_back(result->Fetch()[0].GetUInt32());
             } while (result->NextRow());
         }
+        g_itemQueryCache.emplace(cacheKey, entries);
         return entries;
+    }
+
+    // Class trainer spell lists — built once per class (full creature scan is costly).
+    std::unordered_map<uint8, std::vector<TrainerSpell const*>> g_trainerSpellCache;
+
+    std::vector<TrainerSpell const*> const& GetClassTrainerSpells(uint8 cls)
+    {
+        auto it = g_trainerSpellCache.find(cls);
+        if (it != g_trainerSpellCache.end())
+            return it->second;
+
+        std::vector<TrainerSpell const*> trainerSpells;
+        std::unordered_set<uint32> seen;
+        CreatureTemplateContainer const* templates = sObjectMgr->GetCreatureTemplates();
+        if (templates)
+        {
+            for (CreatureTemplateContainer::const_iterator itr = templates->begin();
+                itr != templates->end(); ++itr)
+            {
+                CreatureTemplate const& creature = itr->second;
+                if (creature.trainer_type != TRAINER_TYPE_CLASS)
+                    continue;
+                if (creature.trainer_class != cls)
+                    continue;
+                if (!(creature.npcflag & UNIT_NPC_FLAG_TRAINER))
+                    continue;
+
+                TrainerSpellData const* data = sObjectMgr->GetNpcTrainerSpells(creature.Entry);
+                if (!data)
+                    continue;
+
+                for (TrainerSpellMap::const_iterator sp = data->spellList.begin();
+                    sp != data->spellList.end(); ++sp)
+                {
+                    if (!seen.insert(sp->first).second)
+                        continue;
+                    trainerSpells.push_back(&sp->second);
+                }
+            }
+        }
+        auto inserted = g_trainerSpellCache.emplace(cls, std::move(trainerSpells));
+        return inserted.first->second;
     }
 
     // Teach every class-trainer spell the bot qualifies for at its current level
@@ -1156,37 +1230,7 @@ namespace
         if (!bot)
             return;
 
-        uint8 const cls = bot->getClass();
-        CreatureTemplateContainer const* templates = sObjectMgr->GetCreatureTemplates();
-        if (!templates)
-            return;
-
-        std::unordered_set<uint32> seen;
-        std::vector<TrainerSpell const*> trainerSpells;
-
-        for (CreatureTemplateContainer::const_iterator itr = templates->begin();
-            itr != templates->end(); ++itr)
-        {
-            CreatureTemplate const& creature = itr->second;
-            if (creature.trainer_type != TRAINER_TYPE_CLASS)
-                continue;
-            if (creature.trainer_class != cls)
-                continue;
-            if (!(creature.npcflag & UNIT_NPC_FLAG_TRAINER))
-                continue;
-
-            TrainerSpellData const* data = sObjectMgr->GetNpcTrainerSpells(creature.Entry);
-            if (!data)
-                continue;
-
-            for (TrainerSpellMap::const_iterator sp = data->spellList.begin();
-                sp != data->spellList.end(); ++sp)
-            {
-                if (!seen.insert(sp->first).second)
-                    continue;
-                trainerSpells.push_back(&sp->second);
-            }
-        }
+        std::vector<TrainerSpell const*> const& trainerSpells = GetClassTrainerSpells(bot->getClass());
 
         for (int pass = 0; pass < 12; ++pass)
         {
@@ -1675,6 +1719,7 @@ uint32 PlayerbotMgr::CreateBotPopulation(std::string* report)
 
     uint32 accountsCreated = 0;
     uint32 charsCreated = 0;
+    std::vector<PendingBotInit> pending;
 
     for (uint32 i = 1; i <= _autoAccountCount; ++i)
     {
@@ -1704,34 +1749,85 @@ uint32 PlayerbotMgr::CreateBotPopulation(std::string* report)
             LoginDatabase.Execute(stmt);
         }
 
-        charsCreated += PopulateAccount(accountId);
+        charsCreated += PopulateAccount(accountId, &pending);
+    }
+
+    // One flush for the whole create batch (was Wait() per character).
+    if (charsCreated)
+        CharacterDatabase.Wait();
+
+    uint32 inited = 0;
+    if (_autoInitOnCreate && !pending.empty())
+    {
+        SF_LOG_INFO("modules",
+            "[mod-playerbots] Auto-init on create: gearing %u new character(s)...",
+            uint32(pending.size()));
+        for (PendingBotInit const& p : pending)
+        {
+            InitCreatedBot(p);
+            ++inited;
+            if ((inited % 25u) == 0u)
+                SF_LOG_INFO("modules", "[mod-playerbots] Auto-init progress: %u / %u.",
+                    inited, uint32(pending.size()));
+        }
     }
 
     // Newly created characters are candidates; refresh the pool on the next tick.
     _candidatesLoaded = false;
 
-    SF_LOG_INFO("modules", "[mod-playerbots] Auto-create complete: %u new account(s), %u new character(s).",
-        accountsCreated, charsCreated);
+    SF_LOG_INFO("modules",
+        "[mod-playerbots] Auto-create complete: %u new account(s), %u new character(s)%s.",
+        accountsCreated, charsCreated,
+        _autoInitOnCreate ? "" : " (init deferred to first login)");
+    if (_autoInitOnCreate && inited)
+        SF_LOG_INFO("modules", "[mod-playerbots] Auto-init finished: %u character(s).", inited);
 
     if (report)
     {
         std::ostringstream ss;
         ss << "Auto-create complete: " << accountsCreated << " new account(s), "
-           << charsCreated << " new character(s).";
+           << charsCreated << " new character(s)";
+        if (_autoInitOnCreate)
+            ss << ", " << inited << " inited";
+        else
+            ss << " (gear on first login)";
+        ss << ".";
         *report = ss.str();
     }
 
     return charsCreated;
 }
 
-void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverride, int maxItemQuality)
+void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverride,
+    int maxItemQuality, bool relevel)
 {
     if (!bot || !bot->IsInWorld())
         return;
 
-    SF_LOG_INFO("modules", "[mod-playerbots] Initializing bot '%s' (level %u %s %s)...",
+    if (relevel)
+    {
+        uint32 const maxPlayerLevel = sWorld->getIntConfig(WorldIntConfigs::CONFIG_MAX_PLAYER_LEVEL);
+        uint32 minL = std::min(_autoMinLevel, maxPlayerLevel);
+        uint32 maxL = std::min(_autoMaxLevel, maxPlayerLevel);
+        if (maxL < minL)
+            std::swap(minL, maxL);
+        uint8 const level = (maxL > minL)
+            ? uint8(minL + uint32(std::rand() % int(maxL - minL + 1)))
+            : uint8(minL);
+        if (bot->getLevel() != level)
+        {
+            SF_LOG_INFO("modules",
+                "[mod-playerbots]   '%s': relevelling %u -> %u (conf %u-%u)...",
+                bot->GetName().c_str(), bot->getLevel(), uint32(level), minL, maxL);
+            bot->GiveLevel(level);
+            bot->SetUInt32Value(PLAYER_FIELD_XP, 0);
+        }
+    }
+
+    SF_LOG_INFO("modules", "[mod-playerbots] Initializing bot '%s' (level %u %s %s)%s...",
         bot->GetName().c_str(), bot->getLevel(),
-        SafeRaceName(bot->getRace()), SafeClassName(bot->getClass()));
+        SafeRaceName(bot->getRace()), SafeClassName(bot->getClass()),
+        relevel ? " [relevel]" : "");
 
     // Specialization + spells. Explicit specOverride wins; otherwise a role
     // override picks the default tab for that role; otherwise keep current.
@@ -1772,38 +1868,22 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverr
         }
 
         if (specId)
-        {
-            SF_LOG_INFO("modules", "[mod-playerbots]   '%s': learning specialization %s (%s)...",
-                bot->GetName().c_str(), SpecName(specId), RoleName(role));
             bot->LearnSpecialization(specId);
-        }
 
-        SF_LOG_INFO("modules", "[mod-playerbots]   '%s': initializing talents...",
-            bot->GetName().c_str());
         BotRotation::ApplyRecommendedTalents(bot);
-
-        SF_LOG_INFO("modules", "[mod-playerbots]   '%s': initializing glyphs...",
-            bot->GetName().c_str());
         BotRotation::ApplyRecommendedGlyphs(bot);
     }
     else if (roleOverride >= 0)
     {
         role = static_cast<BotRole>(roleOverride);
-        SF_LOG_INFO("modules", "[mod-playerbots]   '%s': below level 10; skipping specialization (role %s).",
-            bot->GetName().c_str(), RoleName(role));
     }
 
     // Armor/weapon skills for this level, then trainer spells, riding/mounts,
     // then gear. Re-running init after a delevel simply skips plate/mail and
     // higher riding tiers the bot is no longer high enough for.
-    SF_LOG_INFO("modules", "[mod-playerbots]   '%s': initializing skills and spells...",
-        bot->GetName().c_str());
     LearnArmorProficiencies(bot);
     LearnClassTrainerSpells(bot);
     LearnLevelClassSpells(bot, specId);
-
-    SF_LOG_INFO("modules", "[mod-playerbots]   '%s': initializing riding and mounts...",
-        bot->GetName().c_str());
     LearnRidingAndMounts(bot);
 
     // Gear the bot for the (possibly newly assigned) role/spec at its level.
@@ -1816,8 +1896,6 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverr
     if (qualityFloor > qualityCap)
         qualityFloor = qualityCap;
 
-    SF_LOG_INFO("modules", "[mod-playerbots]   '%s': initializing equipment (quality %s-%s)...",
-        bot->GetName().c_str(), QualityName(qualityFloor), QualityName(qualityCap));
     GearBot(bot, role, specId, qualityFloor, qualityCap);
     GiveRestConsumables(bot);
 
@@ -1833,42 +1911,177 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverr
         SpecName(specId), RoleName(role), QualityName(qualityFloor), QualityName(qualityCap));
 }
 
-uint32 PlayerbotMgr::InitializeAllBots(int roleOverride, uint32 specOverride, int maxItemQuality)
+uint32 PlayerbotMgr::EnqueueInitializeAllBots(int roleOverride, uint32 specOverride,
+    int maxItemQuality, bool relevel, uint64 notifyPlayerGuid)
 {
-    uint32 count = 0;
+    uint32 added = 0;
     for (auto const& pair : _bots)
     {
         WorldSession* session = pair.second;
         Player* bot = session ? session->GetPlayer() : nullptr;
-        if (bot && bot->IsInWorld())
+        if (!bot || !bot->IsInWorld())
+            continue;
+        if (specOverride)
         {
-            // Skip bots whose class cannot use an explicit spec override.
-            if (specOverride)
-            {
-                ChrSpecializationEntry const* entry = sChrSpecializationStore.LookupEntry(specOverride);
-                if (!entry || entry->classId != bot->getClass())
-                    continue;
-            }
-            InitializeBot(bot, roleOverride, specOverride, maxItemQuality);
-            ++count;
+            ChrSpecializationEntry const* entry = sChrSpecializationStore.LookupEntry(specOverride);
+            if (!entry || entry->classId != bot->getClass())
+                continue;
         }
+        UpsertInitQueueJob(bot->GetGUID(), roleOverride, specOverride, maxItemQuality, relevel);
+        ++added;
     }
-    return count;
+
+    if (added)
+    {
+        if (!_initQueueBatchTotal)
+            _initQueueBatchDone = 0;
+        _initQueueBatchTotal = uint32(_initQueue.size());
+        if (notifyPlayerGuid)
+            _initQueueNotifyGuid = notifyPlayerGuid;
+        SF_LOG_INFO("modules",
+            "[mod-playerbots] Init queue: %u bot(s) queued (%u/tick).",
+            added, _initPerTick);
+    }
+    return added;
 }
 
-uint32 PlayerbotMgr::PopulateAccount(uint32 accountId)
+bool PlayerbotMgr::EnqueueInitializeBot(uint64 characterGuid, int roleOverride,
+    uint32 specOverride, int maxItemQuality, bool relevel, uint64 notifyPlayerGuid)
+{
+    Player* bot = ObjectAccessor::FindPlayer(characterGuid);
+    if (!bot || !bot->IsInWorld())
+        return false;
+    if (!IsBot(characterGuid) && !IsSelfBot(characterGuid))
+        return false;
+    if (specOverride)
+    {
+        ChrSpecializationEntry const* entry = sChrSpecializationStore.LookupEntry(specOverride);
+        if (!entry || entry->classId != bot->getClass())
+            return false;
+    }
+
+    UpsertInitQueueJob(characterGuid, roleOverride, specOverride, maxItemQuality, relevel);
+    if (!_initQueueBatchTotal)
+        _initQueueBatchDone = 0;
+    _initQueueBatchTotal = uint32(_initQueue.size());
+    if (notifyPlayerGuid)
+        _initQueueNotifyGuid = notifyPlayerGuid;
+    return true;
+}
+
+void PlayerbotMgr::UpsertInitQueueJob(uint64 guid, int roleOverride, uint32 specOverride,
+    int maxItemQuality, bool relevel)
+{
+    for (QueuedBotInit& job : _initQueue)
+    {
+        if (job.guid != guid)
+            continue;
+        job.roleOverride = roleOverride;
+        job.specOverride = specOverride;
+        job.maxItemQuality = maxItemQuality;
+        job.relevel = relevel;
+        return;
+    }
+
+    QueuedBotInit job;
+    job.guid = guid;
+    job.roleOverride = roleOverride;
+    job.specOverride = specOverride;
+    job.maxItemQuality = maxItemQuality;
+    job.relevel = relevel;
+    _initQueue.push_back(job);
+}
+
+void PlayerbotMgr::ProcessInitQueue()
+{
+    if (_initQueue.empty())
+        return;
+
+    uint32 processed = 0;
+    while (!_initQueue.empty() && processed < _initPerTick)
+    {
+        QueuedBotInit job = _initQueue.front();
+        _initQueue.pop_front();
+        ++processed;
+        ++_initQueueBatchDone;
+
+        Player* bot = ObjectAccessor::FindPlayer(job.guid);
+        if (!bot || !bot->IsInWorld())
+            continue;
+        if (!IsBot(job.guid) && !IsSelfBot(job.guid))
+            continue;
+        if (job.specOverride)
+        {
+            ChrSpecializationEntry const* entry = sChrSpecializationStore.LookupEntry(job.specOverride);
+            if (!entry || entry->classId != bot->getClass())
+                continue;
+        }
+
+        InitializeBot(bot, job.roleOverride, job.specOverride, job.maxItemQuality, job.relevel);
+    }
+
+    if ((_initQueueBatchDone % 25u) == 0u || _initQueue.empty())
+        SF_LOG_INFO("modules", "[mod-playerbots] Init queue progress: %u done, %u remaining.",
+            _initQueueBatchDone, uint32(_initQueue.size()));
+
+    if (!_initQueue.empty())
+        return;
+
+    uint32 const done = _initQueueBatchDone;
+    uint64 const notify = _initQueueNotifyGuid;
+    _initQueueBatchTotal = 0;
+    _initQueueBatchDone = 0;
+    _initQueueNotifyGuid = 0;
+
+    SF_LOG_INFO("modules", "[mod-playerbots] Init queue finished (%u bot(s)).", done);
+    if (notify)
+    {
+        if (Player* player = ObjectAccessor::FindPlayer(notify))
+            if (WorldSession* session = player->GetSession())
+                ChatHandler(session).PSendSysMessage(
+                    "Playerbots init queue finished (%u bot(s)).", done);
+    }
+}
+
+uint32 PlayerbotMgr::PopulateAccount(uint32 accountId, std::vector<PendingBotInit>* pending)
 {
     uint32 existing = AccountMgr::GetCharactersCount(accountId);
     uint32 created = 0;
 
     for (uint32 n = existing; n < _autoCharsPerAccount; ++n)
-        if (CreateOneCharacter(accountId))
+        if (CreateOneCharacter(accountId, pending))
             ++created;
 
     return created;
 }
 
-bool PlayerbotMgr::CreateOneCharacter(uint32 accountId)
+bool PlayerbotMgr::BotNeedsGearInit(Player* bot) const
+{
+    if (!bot)
+        return false;
+    // Ungeared after deferred create — chest and main-hand both empty.
+    return !bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_CHEST)
+        && !bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+}
+
+void PlayerbotMgr::InitCreatedBot(PendingBotInit const& pending)
+{
+    std::string spawnError;
+    if (!SpawnBot(pending.guid, false, &spawnError, pending.accountId))
+    {
+        SF_LOG_ERROR("modules", "[mod-playerbots] Created GUID %u but could not auto-init: %s",
+            GUID_LOPART(pending.guid), spawnError.c_str());
+        return;
+    }
+    if (auto it = _bots.find(pending.guid); it != _bots.end())
+    {
+        if (Player* bot = it->second ? it->second->GetPlayer() : nullptr)
+            InitializeBot(bot, pending.role, pending.specId, -1, false);
+    }
+    RemoveBot(pending.guid);
+}
+
+bool PlayerbotMgr::CreateOneCharacter(uint32 accountId, std::vector<PendingBotInit>* pending)
 {
     bool alliance = RollPct() < _autoAlliancePct;
 
@@ -1950,26 +2163,14 @@ bool PlayerbotMgr::CreateOneCharacter(uint32 accountId)
     SF_LOG_INFO("modules", "[mod-playerbots] Created bot '%s' (GUID %u, %s, race %u, class %u, level %u) on account %u.",
         name.c_str(), guid, alliance ? "Alliance" : "Horde", race, cls, level, accountId);
 
-    // SaveToDB commits asynchronously; flush so LoginBotCharacter can load the row.
-    CharacterDatabase.Wait();
-
-    // Auto-init gear/spells so new bots are LFG-ready without a manual init pass.
-    // Pass accountId — GUID→account lookup can still race the async INSERT.
-    uint64 const fullGuid = MAKE_NEW_GUID(guid, 0, HIGHGUID_PLAYER);
-    std::string spawnError;
-    if (SpawnBot(fullGuid, false, &spawnError, accountId))
+    if (pending)
     {
-        if (auto it = _bots.find(fullGuid); it != _bots.end())
-        {
-            if (Player* bot = it->second ? it->second->GetPlayer() : nullptr)
-                InitializeBot(bot, int(role), specId, -1);
-        }
-        RemoveBot(fullGuid);
-    }
-    else
-    {
-        SF_LOG_ERROR("modules", "[mod-playerbots] Created '%s' but could not auto-init: %s",
-            name.c_str(), spawnError.c_str());
+        PendingBotInit p;
+        p.guid = MAKE_NEW_GUID(guid, 0, HIGHGUID_PLAYER);
+        p.accountId = accountId;
+        p.role = int(role);
+        p.specId = specId;
+        pending->push_back(p);
     }
 
     return true;

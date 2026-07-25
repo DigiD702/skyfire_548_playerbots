@@ -192,8 +192,12 @@ Remaining for later phases:
   `position save|go <name>`; `BotMovement::MoveTo` uses PathGenerator +
   generatePath; `TravelAction` walks until arrival. Same-map only — TravelNode /
   portals / RTSC / auto quest POIs still deferred.
-* [TODO] Random teleports to safe anchors (POI / banker / flight master), AC-style
-  map list + interval — never raw random map XY.
+* [TODO] Random teleports to safe anchors (POI / banker / flight master).
+  Use `BotTeleportMaps::CanBotTeleportTo` — never raw random map XY.
+  Level map gates: `<69` EK/Kalimdor + worgen/goblin/pandaren starts; `69–79`
+  + Outland; `80–84` + Northrend; `85+` + Cata/MoP continents. Faction: no
+  Alliance scatter into Orgrimmar (etc.), no Horde into Stormwind (etc.).
+  Master summon / follow-teleport stays unrestricted.
 * [TODO] AC wiki backlog (later): RTSC/aedm, loot lists (`ll`), item/vendor
   chat ops, glyphs, raid-specific strats, Multibot addon protocol.
 * [DONE] **Non-combat sell / mount / nearby quests** (thin pass): sell

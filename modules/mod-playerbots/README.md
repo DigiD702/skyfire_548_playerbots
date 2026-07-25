@@ -72,7 +72,8 @@ created characters are picked up by the random-bot pool automatically.
 
 ### Gear and role changes (`.playerbots init`)
 
-`.playerbots init` re-gears an active bot for its current level and spec:
+`.playerbots init` re-gears an active bot for its **current level** and spec
+(level is unchanged unless you pass `relevel`):
 
 * Existing equipment (except shirt/tabard) is cleared and each slot is refilled
   with the best uncommon-to-epic item the bot can equip, biased toward the
@@ -80,6 +81,8 @@ created characters are picked up by the random-bot pool automatically.
   the class can wear at that level; weapons/shields/off-hands/ranged are chosen
   per class and role. Re-run it after leveling to pull in level-appropriate
   upgrades (e.g. gear a fresh level-80 bot).
+* Optional `relevel` rolls a new level in `AutoCreate.MinLevel`–`MaxLevel`
+  (set Min=Max for a fixed level), then gears for that level.
 * Learns remaining **class trainer** spells for the bot's level, plus SkillLine /
   specialization spells.
 * Teaches **riding** by level (20/40/60/70/80) and one random mount per unlocked
