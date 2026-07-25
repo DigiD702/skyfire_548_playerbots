@@ -2943,12 +2943,12 @@ void WorldSession::HandleDiscardedTimeSyncAcks(WorldPacket& recvData)
     SF_LOG_DEBUG("network", "WORLD: CMSG_DISCARDED_TIME_SYNC_ACKS");
 
     DiscardedTimeSyncAcksRequest request = ReadDiscardedTimeSyncAcksRequest(recvData);
-    if (!request.hasCounter)
-        return;
-
     // This opcode is STATUS_LOGGEDIN_OR_RECENTLY_LOGGOUT: it can be dispatched right after
     // logout when _player is already NULL, so the handler must guard against that itself.
     if (!_player)
+        return;
+
+    if (!request.hasCounter)
         return;
 
     while (!_player->m_timeSyncQueue.empty())
