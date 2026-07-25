@@ -267,6 +267,8 @@ private:
     void DoTankExtras(Unit* target, bool closing = false);
 
     void ReplyTo(Player* from, std::string const& text);
+    // Whisper class/spec combat spells the bot actually knows (debug / verify init).
+    void ReportClassSpells(Player* from);
     bool BeginTravelTo(float x, float y, float z, Player* from, bool acknowledge);
     bool HandleGoCommand(Player* from, std::string const& args, bool acknowledge);
     bool HandlePositionCommand(Player* from, std::string const& args, bool acknowledge);

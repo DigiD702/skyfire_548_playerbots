@@ -51,7 +51,8 @@ namespace BotMovement
     // Path-aware travel: clamp Z, reject NOPATH, MovePoint with generatePath.
     bool MoveTo(Player* bot, float x, float y, float z);
 
-    // Face without launching a spline if possible; never while casting.
+    // Face via orientation only (no MoveSpline / MOVEMENTFLAG_FORWARD).
+    // Never while casting.
     void FaceOrientation(Player* bot, float orientation);
     void FaceUnit(Player* bot, Unit* target);
 

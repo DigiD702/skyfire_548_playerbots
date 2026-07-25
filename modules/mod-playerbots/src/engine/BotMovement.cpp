@@ -5,6 +5,7 @@
 #include "BotMovement.h"
 
 #include "MotionMaster.h"
+#include "MoveSpline.h"
 #include "Object.h"
 #include "PathGenerator.h"
 #include "Player.h"
@@ -52,8 +53,18 @@ namespace BotMovement
     {
         if (!CanMove(bot))
             return false;
-        if (!bot->IsStopped())
+
+        // Stop spline / clear UNIT_STATE_MOVING while still animating.
+        if (!bot->IsStopped() || (bot->movespline && !bot->movespline->Finalized()))
             bot->StopMoving();
+
+        // Spell::prepare rejects cast-time spells when isMoving() — that checks
+        // MOVEMENTFLAG_MASK_MOVING, not UNIT_STATE_MOVING. Point/facing Launch()
+        // sets MOVEMENTFLAG_FORWARD; once the spline finalizes, StopMoving
+        // early-outs and leaves the flag stuck. Casters then only land instants
+        // (DoTs) and look like a broken rotation.
+        bot->RemoveUnitMovementFlag(MOVEMENTFLAG_MASK_MOVING);
+
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
         {
             bot->GetMotionMaster()->Clear();
@@ -180,15 +191,18 @@ namespace BotMovement
     {
         if (!bot || IsCasting(bot))
             return;
-        // Server-side only — avoids MoveSpline that fights Follow motion.
-        bot->SetFacingTo(orientation);
+        // Orientation only — SetFacingTo launches a MoveSpline that sets
+        // MOVEMENTFLAG_FORWARD and breaks cast-time spells.
+        bot->SetOrientation(orientation);
     }
 
     void FaceUnit(Player* bot, Unit* target)
     {
         if (!bot || !target || IsCasting(bot))
             return;
-        bot->SetFacingToObject(target);
+        // SetInFront = orientation only. SetFacingToObject Launch() marks the
+        // bot as moving and Spell::prepare then fails every cast-time spell.
+        bot->SetInFront(target);
     }
 
     void ClearDeadSelection(Player* bot)

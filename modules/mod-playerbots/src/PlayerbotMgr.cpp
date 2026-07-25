@@ -26,6 +26,8 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "SharedDefines.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "Unit.h"
 #include "World.h"
 #include "WorldSession.h"
@@ -1244,6 +1246,72 @@ namespace
         return inserted.first->second;
     }
 
+    // Level gate used by SkillLineAbility / SpecializationSpells. Prefer
+    // SpellLevel, fall back to BaseLevel (some MoP rows store the gate there).
+    uint32 SpellLearnLevel(SpellInfo const* info)
+    {
+        if (!info)
+            return 0;
+        if (info->SpellLevel)
+            return info->SpellLevel;
+        return info->BaseLevel;
+    }
+
+    // Hardcoded class skill lines — GetSkillIdByClass() can fail when ChrClasses
+    // locale names do not match SkillLine names.
+    uint32 ClassSkillId(uint8 cls)
+    {
+        switch (cls)
+        {
+            case CLASS_WARRIOR:      return SKILL_GENERAL_WARRIOR;
+            case CLASS_PALADIN:      return SKILL_GENERAL_PALADIN;
+            case CLASS_HUNTER:       return SKILL_GENERAL_HUNTER;
+            case CLASS_ROGUE:        return SKILL_GENERAL_ROGUE;
+            case CLASS_PRIEST:       return SKILL_GENERAL_PRIEST;
+            case CLASS_DEATH_KNIGHT: return SKILL_GENERAL_DEATH_KNIGHT;
+            case CLASS_SHAMAN:       return SKILL_GENERAL_SHAMAN;
+            case CLASS_MAGE:         return SKILL_GENERAL_MAGE;
+            case CLASS_WARLOCK:      return SKILL_GENERAL_WARLOCK;
+            case CLASS_MONK:         return SKILL_GENERAL_MONK;
+            case CLASS_DRUID:        return SKILL_GENERAL_DRUID;
+            default:                 return GetSkillIdByClass(cls);
+        }
+    }
+
+    // Independent learn so spells persist in character_spell (dependent=true is
+    // skipped on SaveToDB — that left bots able to cast for one session only).
+    void TryLearnSpell(Player* bot, uint32 spellId)
+    {
+        if (!bot || !spellId)
+            return;
+
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info || !SpellMgr::IsSpellValid(info, bot, false))
+            return;
+        if (GetTalentSpellCost(spellId) > 0)
+            return;
+
+        uint32 const needLevel = SpellLearnLevel(info);
+        if (needLevel && needLevel > bot->getLevel())
+            return;
+
+        // Already known as a saved independent spell — nothing to do.
+        // If only known as dependent, remove and re-add independent so it saves.
+        if (bot->HasSpell(spellId))
+        {
+            PlayerSpellMap::const_iterator itr = bot->GetSpellMap().find(spellId);
+            if (itr != bot->GetSpellMap().end() && itr->second && !itr->second->dependent
+                && itr->second->state != PLAYERSPELL_REMOVED)
+                return;
+            bot->removeSpell(spellId, false, false);
+        }
+
+        if (!bot->IsSpellFitByClassAndRace(spellId))
+            return;
+
+        bot->learnSpell(spellId, false);
+    }
+
     // Teach every class-trainer spell the bot qualifies for at its current level
     // (multi-pass so spell-chain prerequisites can unlock in order).
     void LearnClassTrainerSpells(Player* bot)
@@ -1260,33 +1328,134 @@ namespace
             {
                 if (!ts)
                     continue;
-                // GREEN = can learn now. Skip GRAY (known) and RED (reqs).
-                // GREEN_DISABLED is primary-profession capped - skip those.
-                if (bot->GetTrainerSpellState(ts) != TRAINER_SPELL_GREEN)
+
+                // If learnedSpell[] was left empty by a LEARN_SPELL edge case,
+                // GetTrainerSpellState reports GRAY (already known) incorrectly.
+                // Fall back to teaching ts->spell when the bot lacks it and meets
+                // the level requirement.
+                TrainerSpellState const state = bot->GetTrainerSpellState(ts);
+                if (state == TRAINER_SPELL_GREEN)
+                {
+                    if (ts->IsCastable())
+                        bot->CastSpell(bot, ts->spell, true);
+                    else
+                        bot->learnSpell(ts->spell, false);
+                    learnedAny = true;
+                    continue;
+                }
+
+                if (state != TRAINER_SPELL_GRAY)
                     continue;
 
-                if (ts->IsCastable())
-                    bot->CastSpell(bot, ts->spell, true);
-                else
-                    bot->learnSpell(ts->spell, false);
+                bool anyLearnedSlot = false;
+                for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                {
+                    if (ts->learnedSpell[i])
+                    {
+                        anyLearnedSlot = true;
+                        break;
+                    }
+                }
+                if (anyLearnedSlot)
+                    continue;
+                if (!sSpellMgr->GetSpellInfo(ts->spell))
+                    continue;
+                if (bot->HasSpell(ts->spell))
+                    continue;
+                if (ts->reqLevel && bot->getLevel() < ts->reqLevel)
+                    continue;
+                if (!bot->IsSpellFitByClassAndRace(ts->spell))
+                    continue;
+
+                bot->learnSpell(ts->spell, false);
                 learnedAny = true;
             }
             if (!learnedAny)
                 break;
         }
+
+        // Convert trainer spells known only as dependent (unsaved) into
+        // independent spells, and pick up anything the GREEN pass missed.
+        for (TrainerSpell const* ts : trainerSpells)
+        {
+            if (!ts || !ts->spell)
+                continue;
+            if (ts->reqLevel && bot->getLevel() < ts->reqLevel)
+                continue;
+            uint32 spellId = ts->spell;
+            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            {
+                if (ts->learnedSpell[i])
+                {
+                    spellId = ts->learnedSpell[i];
+                    break;
+                }
+            }
+            TryLearnSpell(bot, spellId);
+        }
     }
 
-    // Catch SkillLineAbility / specialization spells GiveLevel would grant.
+    // Teach class/spec spells the core GetSpellsForLevels path often misses.
     void LearnLevelClassSpells(Player* bot, uint32 specId)
     {
         if (!bot)
             return;
 
-        std::list<uint32> const spells = GetSpellsForLevels(
-            bot->getClass(), bot->getRaceMask(), specId, 0, bot->getLevel());
-        for (uint32 spellId : spells)
-            if (spellId && !bot->HasSpell(spellId))
-                bot->learnSpell(spellId, true);
+        uint8 const level = bot->getLevel();
+        uint32 const raceMask = bot->getRaceMask();
+        uint32 const classSkill = ClassSkillId(bot->getClass());
+
+        // 1) Stock helper (class skill + specialization when mapping works).
+        std::list<uint32> const stock = GetSpellsForLevels(
+            bot->getClass(), raceMask, specId, 0, level);
+        for (uint32 spellId : stock)
+            TryLearnSpell(bot, spellId);
+
+        // 2) Direct scan of THIS class's skill line only (e.g. skill 804 = Priest).
+        if (classSkill)
+        {
+            for (uint32 i = 0; i < sSkillLineAbilityStore.GetNumRows(); ++i)
+            {
+                SkillLineAbilityEntry const* ability = sSkillLineAbilityStore.LookupEntry(i);
+                if (!ability || !ability->spellId)
+                    continue;
+                if (ability->skillId != classSkill)
+                    continue;
+                if (ability->learnOnGetSkill != ABILITY_LEARNED_ON_GET_RACE_OR_CLASS_SKILL)
+                    continue;
+                if (ability->racemask && !(ability->racemask & raceMask))
+                    continue;
+                if (!ability->classmask || !(ability->classmask & bot->getClassMask()))
+                    continue;
+
+                TryLearnSpell(bot, ability->spellId);
+            }
+        }
+
+        // 3) Specialization spells (Mind Flay, Shadowform, etc.) by level.
+        if (specId)
+        {
+            if (std::vector<uint32> const* specSpells = GetSpecializationSpells(specId))
+            {
+                for (uint32 spellId : *specSpells)
+                    TryLearnSpell(bot, spellId);
+            }
+        }
+
+        // 4) Race+class create spells (Smite, racial languages for this combo).
+        bot->learnDefaultSpells();
+
+        // 5) Critical baseline casts that create/trainer paths still miss on some
+        // races (e.g. Smite 585) — without these, shadow bots only land SW:P.
+        if (bot->getClass() == CLASS_PRIEST)
+        {
+            TryLearnSpell(bot, 585);   // Smite
+            TryLearnSpell(bot, 589);   // Shadow Word: Pain
+            TryLearnSpell(bot, 588);   // Inner Fire
+            TryLearnSpell(bot, 8092);  // Mind Blast
+            if (specId == SPEC_PRIEST_SHADOW)
+                TryLearnSpell(bot, 15407); // Mind Flay
+        }
     }
 
     uint32 PickRandomSpell(uint32 const* list, size_t count)

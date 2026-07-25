@@ -261,14 +261,23 @@ float AuraRemains(Unit* unit, uint32 spellId)
 {
     if (!unit)
         return 0.0f;
-    if (Aura* aura = unit->GetAura(spellId))
-        return aura->GetDuration() / 1000.0f;
-    return 0.0f;
+    Aura* aura = unit->GetAuraOfRankedSpell(spellId);
+    if (!aura)
+        aura = unit->GetAura(spellId);
+    if (!aura)
+        return 0.0f;
+    if (aura->IsPermanent() || aura->GetDuration() < 0)
+        return 9999.0f;
+    return aura->GetDuration() / 1000.0f;
 }
 
 bool HasAuraUp(Unit* unit, uint32 spellId)
 {
-    return unit && unit->HasAura(spellId);
+    if (!unit)
+        return false;
+    if (unit->HasAura(spellId))
+        return true;
+    return unit->GetAuraOfRankedSpell(spellId) != nullptr;
 }
 
 uint32 AuraStacks(Unit* unit, uint32 spellId)
@@ -318,8 +327,14 @@ void PrepareHostileCast(Player* bot, Unit* castTarget)
     // Self-bot owns WASD — never StopMoving (resets swing and cancels player movement).
     PlayerbotAI* ai = GetAI(bot);
     bool const selfBot = ai && ai->IsClientControlled();
-    if (!selfBot && !bot->IsStopped())
-        bot->StopMoving();
+    if (!selfBot)
+    {
+        if (!bot->IsStopped())
+            bot->StopMoving();
+        // isMoving() uses movement flags; strip leftovers so cast-time spells
+        // are not rejected as SPELL_FAILED_MOVING after a point/face spline.
+        bot->RemoveUnitMovementFlag(MOVEMENTFLAG_MASK_MOVING);
+    }
 
     bot->SetSelection(castTarget->GetGUID());
     if (!bot->HasInArc(static_cast<float>(M_PI), castTarget))
@@ -396,6 +411,7 @@ bool CastHealSpell(Player* bot, Player* ally, uint32 spellId)
         {
             if (!bot->IsStopped())
                 bot->StopMoving();
+            bot->RemoveUnitMovementFlag(MOVEMENTFLAG_MASK_MOVING);
             bot->SetSelection(castTarget->GetGUID());
             if (!bot->HasInArc(static_cast<float>(M_PI), castTarget))
                 bot->SetInFront(castTarget);

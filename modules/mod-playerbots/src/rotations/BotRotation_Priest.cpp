@@ -4,6 +4,7 @@
 
 #include "BotRotationLists.h"
 #include "Player.h"
+#include "SpellAuras.h"
 #include "Unit.h"
 
 namespace BotRotation
@@ -30,7 +31,23 @@ namespace
         POWER_INFUSION      = 10060,
         VAMPIRIC_EMBRACE    = 15286,
         SMITE               = 585,
+        HOLY_FIRE           = 14914,
     };
+
+    bool NeedsRefresh(Player* bot, Unit* target, uint32 spellId, float refreshAt)
+    {
+        if (!bot || !target)
+            return true;
+        // Prefer our own DoT — ignore other casters' auras for refresh logic.
+        Aura* aura = target->GetAura(spellId, bot->GetGUID());
+        if (!aura)
+            aura = target->GetAuraOfRankedSpell(spellId, bot->GetGUID());
+        if (!aura)
+            return true;
+        if (aura->IsPermanent() || aura->GetDuration() < 0)
+            return false;
+        return (aura->GetDuration() / 1000.0f) <= refreshAt;
+    }
 }
 
 uint32 SelectShadow(Context const& ctx)
@@ -51,18 +68,16 @@ uint32 SelectShadow(Context const& ctx)
     if (bot->GetHealthPct() <= 40.0f && CanTryCast(bot, VAMPIRIC_EMBRACE))
         return VAMPIRIC_EMBRACE;
 
-    float const swp = AuraRemains(target, SHADOW_WORD_PAIN);
-    float const vt = AuraRemains(target, VAMPIRIC_TOUCH);
-
-    // Core damage rotation before long CDs so a failed Shadowfiend cannot starve DPS.
-    if (swp <= 1.0f && CanTryCast(bot, SHADOW_WORD_PAIN))
+    // Keep SW:P up, but never re-cast every GCD when our DoT is already present.
+    if (NeedsRefresh(bot, target, SHADOW_WORD_PAIN, 2.0f) && CanTryCast(bot, SHADOW_WORD_PAIN))
         return SHADOW_WORD_PAIN;
-    if (vt <= 2.5f && CanTryCast(bot, VAMPIRIC_TOUCH))
+    if (NeedsRefresh(bot, target, VAMPIRIC_TOUCH, 2.5f) && CanTryCast(bot, VAMPIRIC_TOUCH))
         return VAMPIRIC_TOUCH;
 
     if (orbs >= 3 && CanTryCast(bot, DEVOURING_PLAGUE))
         return DEVOURING_PLAGUE;
 
+    // Low-level / missing-spec fillers before long CDs so bots actually deal damage.
     if (CanTryCast(bot, MIND_BLAST))
         return MIND_BLAST;
 
@@ -72,6 +87,14 @@ uint32 SelectShadow(Context const& ctx)
     uint32 const surge = AuraStacks(bot, SURGE_OF_DARKNESS);
     if (surge >= 1 && CanTryCast(bot, MIND_SPIKE))
         return MIND_SPIKE;
+
+    if (CanTryCast(bot, MIND_FLAY))
+        return MIND_FLAY;
+
+    if (CanTryCast(bot, HOLY_FIRE))
+        return HOLY_FIRE;
+    if (CanTryCast(bot, SMITE))
+        return SMITE;
 
     if (CanTryCast(bot, SHADOWFIEND))
         return SHADOWFIEND;
@@ -87,13 +110,6 @@ uint32 SelectShadow(Context const& ctx)
 
     if (ctx.enemies >= 3 && CanTryCast(bot, MIND_SEAR))
         return MIND_SEAR;
-
-    if (CanTryCast(bot, MIND_FLAY))
-        return MIND_FLAY;
-
-    // Low-level / missing spells: Smite still deals damage.
-    if (CanTryCast(bot, SMITE))
-        return SMITE;
 
     return 0;
 }

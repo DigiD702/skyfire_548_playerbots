@@ -52,6 +52,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <limits>
@@ -1680,18 +1681,47 @@ void PlayerbotAI::DoRotation(Unit* target)
     if (BotRotation::IsBursting(_bot) && BotRotation::TryTrinkets(_bot))
         return;
 
-    if (uint32 spellId = BotRotation::SelectNextSpell(_bot, target))
-        if (BotRotation::CastSpell(_bot, target, spellId))
-            return;
+    // Full bots must be planted before cast-time spells; movement makes every
+    // cast except instants (SW:P) fail, which looks like "only SW:P".
+    if (!_clientControlled && !_stay)
+        BotMovement::StopAndIdle(_bot);
+
+    uint32 const selected = BotRotation::SelectNextSpell(_bot, target);
+    if (selected && BotRotation::CastSpell(_bot, target, selected))
+        return;
 
     if (BotRotation::TryRacial(_bot, target))
         return;
-    // Fallback: still use trinkets if no burst window this fight.
     if (BotRotation::TryTrinkets(_bot))
         return;
 
-    if (uint32 filler = GetFillerSpell())
-        BotRotation::CastSpell(_bot, target, filler);
+    uint32 const filler = GetFillerSpell();
+    if (filler && filler != selected && BotRotation::CastSpell(_bot, target, filler))
+        return;
+
+    // Selected spell failed to start (often pushback/move). Try other known
+    // caster fillers so we do not sit on a dead GCD after an instant DoT.
+    if (IsRangedClass() || GetCombatRole() == CombatRole::Healer)
+    {
+        uint32 const fallbacks[] = {
+            8092,  // Mind Blast
+            15407, // Mind Flay
+            585,   // Smite
+            133,   // Fireball
+            116,   // Frostbolt
+            686,   // Shadow Bolt
+            403,   // Lightning Bolt
+            5143,  // Arcane Missiles
+            29722, // Incinerate
+        };
+        for (uint32 id : fallbacks)
+        {
+            if (id == selected || id == filler)
+                continue;
+            if (BotRotation::CastSpell(_bot, target, id))
+                return;
+        }
+    }
 }
 
 bool PlayerbotAI::ShouldThrottleThreat(Unit* target) const
@@ -4542,6 +4572,170 @@ void PlayerbotAI::ReplyTo(Player* from, std::string const& text)
     _bot->Whisper(text, Language::LANG_UNIVERSAL, from->GetGUID());
 }
 
+void PlayerbotAI::ReportClassSpells(Player* from)
+{
+    if (!from || !_bot)
+        return;
+
+    uint8 const cls = _bot->getClass();
+    uint32 family = SPELLFAMILY_GENERIC;
+    switch (cls)
+    {
+        case CLASS_WARRIOR:      family = SPELLFAMILY_WARRIOR; break;
+        case CLASS_PALADIN:      family = SPELLFAMILY_PALADIN; break;
+        case CLASS_HUNTER:       family = SPELLFAMILY_HUNTER; break;
+        case CLASS_ROGUE:        family = SPELLFAMILY_ROGUE; break;
+        case CLASS_PRIEST:       family = SPELLFAMILY_PRIEST; break;
+        case CLASS_DEATH_KNIGHT: family = SPELLFAMILY_DEATHKNIGHT; break;
+        case CLASS_SHAMAN:       family = SPELLFAMILY_SHAMAN; break;
+        case CLASS_MAGE:         family = SPELLFAMILY_MAGE; break;
+        case CLASS_WARLOCK:      family = SPELLFAMILY_WARLOCK; break;
+        case CLASS_MONK:         family = SPELLFAMILY_MONK; break;
+        case CLASS_DRUID:        family = SPELLFAMILY_DRUID; break;
+        default: break;
+    }
+
+    uint32 const specId = _bot->GetTalentSpecialization(_bot->GetActiveSpec());
+    std::unordered_set<uint32> specSpellIds;
+    if (specId)
+        if (std::vector<uint32> const* specSpells = GetSpecializationSpells(specId))
+            for (uint32 id : *specSpells)
+                specSpellIds.insert(id);
+
+    struct Entry { uint32 id; std::string name; bool passive; };
+    std::vector<Entry> known;
+    known.reserve(64);
+
+    for (auto const& pair : _bot->GetSpellMap())
+    {
+        uint32 const spellId = pair.first;
+        PlayerSpell const* ps = pair.second;
+        if (!ps || ps->state == PLAYERSPELL_REMOVED || ps->disabled || !ps->active)
+            continue;
+
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info || !info->SpellName)
+            continue;
+
+        // Class family spells, or explicit specialization grants (Shadowform, etc.).
+        bool const classFamily = (info->SpellFamilyName == family);
+        bool const fromSpec = specSpellIds.count(spellId) != 0;
+        if (!classFamily && !fromSpec)
+            continue;
+
+        // Skip talent ranks — too noisy; init applies those separately.
+        if (GetTalentSpellCost(spellId) > 0)
+            continue;
+
+        known.push_back({ spellId, info->SpellName, info->IsPassive() });
+    }
+
+    std::sort(known.begin(), known.end(),
+        [](Entry const& a, Entry const& b) { return a.id < b.id; });
+
+    std::ostringstream header;
+    char const* classLabel = "?";
+    switch (cls)
+    {
+        case CLASS_WARRIOR: classLabel = "Warrior"; break;
+        case CLASS_PALADIN: classLabel = "Paladin"; break;
+        case CLASS_HUNTER: classLabel = "Hunter"; break;
+        case CLASS_ROGUE: classLabel = "Rogue"; break;
+        case CLASS_PRIEST: classLabel = "Priest"; break;
+        case CLASS_DEATH_KNIGHT: classLabel = "DK"; break;
+        case CLASS_SHAMAN: classLabel = "Shaman"; break;
+        case CLASS_MAGE: classLabel = "Mage"; break;
+        case CLASS_WARLOCK: classLabel = "Warlock"; break;
+        case CLASS_MONK: classLabel = "Monk"; break;
+        case CLASS_DRUID: classLabel = "Druid"; break;
+        default: break;
+    }
+    char const* specLabel = "?";
+    switch (specId)
+    {
+        case SPEC_PRIEST_DISCIPLINE: specLabel = "Discipline"; break;
+        case SPEC_PRIEST_HOLY: specLabel = "Holy"; break;
+        case SPEC_PRIEST_SHADOW: specLabel = "Shadow"; break;
+        case SPEC_MAGE_ARCANE: specLabel = "Arcane"; break;
+        case SPEC_MAGE_FIRE: specLabel = "Fire"; break;
+        case SPEC_MAGE_FROST: specLabel = "Frost"; break;
+        case SPEC_WARLOCK_AFFLICTION: specLabel = "Affliction"; break;
+        case SPEC_WARLOCK_DEMONOLOGY: specLabel = "Demonology"; break;
+        case SPEC_WARLOCK_DESTRUCTION: specLabel = "Destruction"; break;
+        case SPEC_DRUID_BALANCE: specLabel = "Balance"; break;
+        case SPEC_DRUID_FERAL: specLabel = "Feral"; break;
+        case SPEC_DRUID_GUARDIAN: specLabel = "Guardian"; break;
+        case SPEC_DRUID_RESTORATION: specLabel = "Restoration"; break;
+        case SPEC_WARRIOR_ARMS: specLabel = "Arms"; break;
+        case SPEC_WARRIOR_FURY: specLabel = "Fury"; break;
+        case SPEC_WARRIOR_PROTECTION: specLabel = "Protection"; break;
+        case SPEC_PALADIN_HOLY: specLabel = "Holy"; break;
+        case SPEC_PALADIN_PROTECTION: specLabel = "Protection"; break;
+        case SPEC_PALADIN_RETRIBUTION: specLabel = "Retribution"; break;
+        case SPEC_HUNTER_BEAST_MASTERY: specLabel = "BM"; break;
+        case SPEC_HUNTER_MARKSMANSHIP: specLabel = "MM"; break;
+        case SPEC_HUNTER_SURVIVAL: specLabel = "Survival"; break;
+        case SPEC_ROGUE_ASSASSINATION: specLabel = "Assassination"; break;
+        case SPEC_ROGUE_COMBAT: specLabel = "Combat"; break;
+        case SPEC_ROGUE_SUBTLETY: specLabel = "Subtlety"; break;
+        case SPEC_SHAMAN_ELEMENTAL: specLabel = "Elemental"; break;
+        case SPEC_SHAMAN_ENHANCEMENT: specLabel = "Enhancement"; break;
+        case SPEC_SHAMAN_RESTORATION: specLabel = "Restoration"; break;
+        case SPEC_DEATH_KNIGHT_BLOOD: specLabel = "Blood"; break;
+        case SPEC_DEATH_KNIGHT_FROST: specLabel = "Frost"; break;
+        case SPEC_DEATH_KNIGHT_UNHOLY: specLabel = "Unholy"; break;
+        case SPEC_MONK_BREWMASTER: specLabel = "Brewmaster"; break;
+        case SPEC_MONK_MISTWEAVER: specLabel = "Mistweaver"; break;
+        case SPEC_MONK_WINDWALKER: specLabel = "Windwalker"; break;
+        default:
+            if (specId)
+            {
+                static char specBuf[16];
+                snprintf(specBuf, sizeof(specBuf), "spec%u", specId);
+                specLabel = specBuf;
+            }
+            else
+                specLabel = "none";
+            break;
+    }
+    header << _bot->GetName() << " L" << uint32(_bot->getLevel()) << ' '
+           << classLabel << ' ' << specLabel
+           << " — " << known.size() << " class/spec spells:";
+    ReplyTo(from, header.str());
+
+    if (known.empty())
+    {
+        ReplyTo(from, "(none known — re-run .playerbots init)");
+        return;
+    }
+
+    // Whisper length limit ~255; keep chunks under 220.
+    std::string line;
+    auto flush = [&]()
+    {
+        if (!line.empty())
+        {
+            ReplyTo(from, line);
+            line.clear();
+        }
+    };
+
+    for (Entry const& e : known)
+    {
+        std::ostringstream piece;
+        piece << e.id << ':' << e.name;
+        if (e.passive)
+            piece << '*';
+        std::string const part = piece.str();
+        if (!line.empty() && line.size() + 2 + part.size() > 220)
+            flush();
+        if (!line.empty())
+            line += ", ";
+        line += part;
+    }
+    flush();
+}
+
 float PlayerbotAI::HealthPct() const
 {
     if (!_bot || !_bot->GetMaxHealth())
@@ -5062,7 +5256,13 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
 
     if (cmd == "help")
     {
-        ack("Orders: stay, follow, flee, leave, summon, grind, reset, passive, aggressive, attack, tank/dps attack, pull, rti, go, position, sell, sell all, mount, mount prefer, gossip, quests, eat/drink, maintenance. Strategies: co/nc +name,-name,~name or co?/nc?. Filters: @tank/@dps/@heal/@ranged.");
+        ack("Orders: stay, follow, flee, leave, summon, grind, reset, passive, aggressive, attack, tank/dps attack, pull, rti, go, position, sell, sell all, mount, mount prefer, gossip, quests, eat/drink, maintenance, spells. Strategies: co/nc +name,-name,~name or co?/nc?. Filters: @tank/@dps/@heal/@ranged.");
+        return true;
+    }
+
+    if (cmd == "spells" || cmd == "spell")
+    {
+        ReportClassSpells(from);
         return true;
     }
 
