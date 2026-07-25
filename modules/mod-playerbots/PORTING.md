@@ -192,8 +192,12 @@ Remaining for later phases:
   `position save|go <name>`; `BotMovement::MoveTo` uses PathGenerator +
   generatePath; `TravelAction` walks until arrival. Same-map only — TravelNode /
   portals / RTSC / auto quest POIs still deferred.
-* [TODO] Random teleports to safe anchors (POI / banker / flight master).
-  Use `BotTeleportMaps::CanBotTeleportTo` — never raw random map XY.
+* [DONE] **Init scatter teleports**: `.playerbots init … tele` / `teleport`
+  picks a curated open-world anchor by post-init level + faction via
+  `BotTeleportMaps::TeleportForLevel` (same map/zone gates as above).
+  Master summon / follow-teleport stays unrestricted.
+* [TODO] Broader random teleports to POI / banker / flight master while
+  wandering (reuse `CanBotTeleportTo`).
   Level map gates: `<69` EK/Kalimdor + worgen/goblin/pandaren starts; `69–79`
   + Outland; `80–84` + Northrend; `85+` + Cata/MoP continents. Faction: no
   Alliance scatter into Orgrimmar (etc.), no Horde into Stormwind (etc.).

@@ -72,6 +72,9 @@ public:
 
     // Re-apply role-default strategies (after init/spec change).
     void ResetStrategiesToRoleDefaults();
+    // After teleport/init: clear stale pathing and restore open-world activity
+    // for ungrouped random bots (ResetStrategies alone leaves them on follow).
+    void AfterInitRelocate(bool didTeleport);
     // Sync procedural flags after ChangeStrategy from outside the AI.
     void SyncFlagsFromStrategies();
 

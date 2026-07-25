@@ -8,6 +8,7 @@
 #include "rotations/BotRotation.h"
 #include "AccountMgr.h"
 #include "BotPreferredMounts.h"
+#include "BotTeleportMaps.h"
 #include "BotVendorHubs.h"
 #include "Chat.h"
 #include "Config.h"
@@ -95,6 +96,7 @@ void PlayerbotMgr::LoadConfig()
     _autoMinLevel = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.MinLevel", int32(legacyLevel)));
     _autoMaxLevel = uint32(sConfigMgr->GetIntDefault("Playerbots.AutoCreate.MaxLevel", int32(legacyLevel)));
     _autoInitOnCreate = sConfigMgr->GetBoolDefault("Playerbots.AutoCreate.InitOnCreate", false);
+    _autoTeleportOnInit = sConfigMgr->GetBoolDefault("Playerbots.AutoCreate.TeleportOnInit", true);
     _initPerTick = uint32(sConfigMgr->GetIntDefault("Playerbots.Init.PerTick", 5));
     if (_initPerTick < 1)
         _initPerTick = 1;
@@ -479,7 +481,7 @@ bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* er
         if (BotNeedsGearInit(bot))
         {
             uint32 specId = bot->GetTalentSpecialization(bot->GetActiveSpec());
-            InitializeBot(bot, -1, specId, -1, false);
+            InitializeBot(bot, -1, specId, -1, false, _autoTeleportOnInit);
         }
 
         _ai[characterGuid] = new PlayerbotAI(bot);
@@ -1141,7 +1143,8 @@ namespace
         int qualityMin = std::max(0, std::min(minQuality, qualityCap));
 
         std::ostringstream key;
-        key << where << '|' << level << '|' << classBit << '|' << raceBit << '|'
+        // v3: broader QA/template bans + rare-low-ilvl reject + min ItemLevel floor.
+        key << "v3|" << where << '|' << level << '|' << classBit << '|' << raceBit << '|'
             << minReq << '|' << qualityMin << '|' << qualityCap << '|' << primaryStat
             << '|' << exclude;
         std::string const cacheKey = key.str();
@@ -1154,13 +1157,23 @@ namespace
           << " AND RequiredLevel >= " << minReq
           << " AND Quality BETWEEN " << qualityMin << " AND " << qualityCap
           << " AND duration = 0 AND startquest = 0"
-          // QA / combat-test templates often use RequiredLevel 1 with raid ilvl.
-          << " AND name NOT LIKE 'QA %'"
-          << " AND name NOT LIKE 'Test %'"
-          << " AND name NOT LIKE '%Combat Test%'"
+          // Designer / QA / art / monster templates (RequiredLevel 1, junk names).
+          << " AND name NOT LIKE 'QA%'"
+          << " AND name NOT LIKE '%Test%'"
+          << " AND name NOT LIKE 'ZG %'"
+          << " AND name NOT LIKE '%Raid D0%'"
+          << " AND name NOT LIKE '% D0%'"
+          << " AND name NOT LIKE 'Monster -%'"
+          << " AND name NOT LIKE 'Art Template%'"
+          << " AND name NOT LIKE 'Artwork %'"
           << " AND (Flags & " << uint32(ITEM_PROTO_FLAG_DEPRECATED) << ") = 0"
-          // Soft ilvl ceiling so low-req high-ilvl junk cannot dominate the pool.
+          // Rare+ with tiny ilvl is almost always a leftover template (ZG/Icecrown stubs).
+          << " AND NOT (Quality >= " << int(ITEM_QUALITY_RARE)
+          << " AND ItemLevel < 10 AND RequiredLevel <= 10)"
+          // Soft ilvl ceiling so low-req raid gear cannot dominate the pool.
           << " AND ItemLevel <= " << (level * 8u + 40u)
+          // Prefer real level-scaled gear over ilvl-1 stubs.
+          << " AND ItemLevel >= " << (level > 5 ? (level > 10 ? level - 5 : 3) : 1)
           << " AND (AllowableClass = -1 OR (AllowableClass & " << classBit << "))"
           << " AND (AllowableRace = -1 OR (AllowableRace & " << raceBit << "))";
 
@@ -1807,7 +1820,7 @@ uint32 PlayerbotMgr::CreateBotPopulation(std::string* report)
 }
 
 void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverride,
-    int maxItemQuality, bool relevel)
+    int maxItemQuality, bool relevel, bool teleport, bool teleportFromCommand)
 {
     if (!bot || !bot->IsInWorld())
         return;
@@ -1832,10 +1845,11 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverr
         }
     }
 
-    SF_LOG_INFO("modules", "[mod-playerbots] Initializing bot '%s' (level %u %s %s)%s...",
+    SF_LOG_INFO("modules", "[mod-playerbots] Initializing bot '%s' (level %u %s %s)%s%s...",
         bot->GetName().c_str(), bot->getLevel(),
         SafeRaceName(bot->getRace()), SafeClassName(bot->getClass()),
-        relevel ? " [relevel]" : "");
+        relevel ? " [relevel]" : "",
+        teleport ? (teleportFromCommand ? " [tele]" : " [tele-auto]") : "");
 
     // Specialization + spells. Explicit specOverride wins; otherwise a role
     // override picks the default tab for that role; otherwise keep current.
@@ -1907,20 +1921,29 @@ void PlayerbotMgr::InitializeBot(Player* bot, int roleOverride, uint32 specOverr
     GearBot(bot, role, specId, qualityFloor, qualityCap);
     GiveRestConsumables(bot);
 
+    // After relevel + gear so the destination matches the bot's final level.
+    // Levels 1–5: auto skips; player `tele` resets to homebind/spawn.
+    if (teleport)
+        BotTeleportMaps::TeleportForLevel(bot, teleportFromCommand);
+
     bot->SaveToDB();
 
     if (auto it = _ai.find(bot->GetGUID()); it != _ai.end() && it->second)
+    {
         it->second->ResetStrategiesToRoleDefaults();
+        it->second->AfterInitRelocate(teleport);
+    }
 
     SF_LOG_INFO("modules",
-        "[mod-playerbots] Initialized bot '%s': level %u %s %s, spec %s (%s), gear %s-%s.",
+        "[mod-playerbots] Initialized bot '%s': level %u %s %s, spec %s (%s), gear %s-%s%s.",
         bot->GetName().c_str(), bot->getLevel(),
         SafeRaceName(bot->getRace()), SafeClassName(bot->getClass()),
-        SpecName(specId), RoleName(role), QualityName(qualityFloor), QualityName(qualityCap));
+        SpecName(specId), RoleName(role), QualityName(qualityFloor), QualityName(qualityCap),
+        teleport ? ", teleported" : "");
 }
 
 uint32 PlayerbotMgr::EnqueueInitializeAllBots(int roleOverride, uint32 specOverride,
-    int maxItemQuality, bool relevel, uint64 notifyPlayerGuid)
+    int maxItemQuality, bool relevel, bool teleport, uint64 notifyPlayerGuid)
 {
     uint32 added = 0;
     for (auto const& pair : _bots)
@@ -1935,7 +1958,9 @@ uint32 PlayerbotMgr::EnqueueInitializeAllBots(int roleOverride, uint32 specOverr
             if (!entry || entry->classId != bot->getClass())
                 continue;
         }
-        UpsertInitQueueJob(bot->GetGUID(), roleOverride, specOverride, maxItemQuality, relevel);
+        // Queued from `.playerbots init` — tele token is an explicit command.
+        UpsertInitQueueJob(bot->GetGUID(), roleOverride, specOverride, maxItemQuality,
+            relevel, teleport, teleport);
         ++added;
     }
 
@@ -1954,7 +1979,8 @@ uint32 PlayerbotMgr::EnqueueInitializeAllBots(int roleOverride, uint32 specOverr
 }
 
 bool PlayerbotMgr::EnqueueInitializeBot(uint64 characterGuid, int roleOverride,
-    uint32 specOverride, int maxItemQuality, bool relevel, uint64 notifyPlayerGuid)
+    uint32 specOverride, int maxItemQuality, bool relevel, bool teleport,
+    uint64 notifyPlayerGuid)
 {
     Player* bot = ObjectAccessor::FindPlayer(characterGuid);
     if (!bot || !bot->IsInWorld())
@@ -1968,7 +1994,8 @@ bool PlayerbotMgr::EnqueueInitializeBot(uint64 characterGuid, int roleOverride,
             return false;
     }
 
-    UpsertInitQueueJob(characterGuid, roleOverride, specOverride, maxItemQuality, relevel);
+    UpsertInitQueueJob(characterGuid, roleOverride, specOverride, maxItemQuality,
+        relevel, teleport, teleport);
     if (!_initQueueBatchTotal)
         _initQueueBatchDone = 0;
     _initQueueBatchTotal = uint32(_initQueue.size());
@@ -1978,7 +2005,7 @@ bool PlayerbotMgr::EnqueueInitializeBot(uint64 characterGuid, int roleOverride,
 }
 
 void PlayerbotMgr::UpsertInitQueueJob(uint64 guid, int roleOverride, uint32 specOverride,
-    int maxItemQuality, bool relevel)
+    int maxItemQuality, bool relevel, bool teleport, bool teleportFromCommand)
 {
     for (QueuedBotInit& job : _initQueue)
     {
@@ -1988,6 +2015,8 @@ void PlayerbotMgr::UpsertInitQueueJob(uint64 guid, int roleOverride, uint32 spec
         job.specOverride = specOverride;
         job.maxItemQuality = maxItemQuality;
         job.relevel = relevel;
+        job.teleport = teleport;
+        job.teleportFromCommand = teleportFromCommand;
         return;
     }
 
@@ -1997,6 +2026,8 @@ void PlayerbotMgr::UpsertInitQueueJob(uint64 guid, int roleOverride, uint32 spec
     job.specOverride = specOverride;
     job.maxItemQuality = maxItemQuality;
     job.relevel = relevel;
+    job.teleport = teleport;
+    job.teleportFromCommand = teleportFromCommand;
     _initQueue.push_back(job);
 }
 
@@ -2025,7 +2056,8 @@ void PlayerbotMgr::ProcessInitQueue()
                 continue;
         }
 
-        InitializeBot(bot, job.roleOverride, job.specOverride, job.maxItemQuality, job.relevel);
+        InitializeBot(bot, job.roleOverride, job.specOverride, job.maxItemQuality,
+            job.relevel, job.teleport, job.teleportFromCommand);
     }
 
     if ((_initQueueBatchDone % 25u) == 0u || _initQueue.empty())
@@ -2084,7 +2116,7 @@ void PlayerbotMgr::InitCreatedBot(PendingBotInit const& pending)
     if (auto it = _bots.find(pending.guid); it != _bots.end())
     {
         if (Player* bot = it->second ? it->second->GetPlayer() : nullptr)
-            InitializeBot(bot, pending.role, pending.specId, -1, false);
+            InitializeBot(bot, pending.role, pending.specId, -1, false, _autoTeleportOnInit);
     }
     RemoveBot(pending.guid);
 }

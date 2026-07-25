@@ -557,9 +557,10 @@ public:
         }
     }
 
-    // .playerbots init [<charname>|all|self] [tank|healer|dps|<spec>] [rare|epic|...] [relevel]
+    // .playerbots init [<charname>|all|self] [tank|healer|dps|<spec>] [rare|epic|...] [relevel] [tele]
     // Tokens may appear in any order. Quality caps gear rolls (default: conf MaxQuality).
     // Without relevel, level is unchanged. With relevel, rolls AutoCreate.MinLevel–MaxLevel.
+    // With tele/teleport, scatter to a level/faction-safe anchor after gear (uses post-relevel level).
     static bool HandlePlayerbotInitCommand(ChatHandler* handler, char const* args)
     {
         std::vector<std::string> tokens;
@@ -578,6 +579,7 @@ public:
         int maxItemQuality = -1; // use Playerbots.Gear.MaxQuality
         bool haveQuality = false;
         bool relevel = false;
+        bool teleport = false;
 
         for (std::string const& raw : tokens)
         {
@@ -587,6 +589,11 @@ public:
             if (lower == "relevel" || lower == "re-level")
             {
                 relevel = true;
+                continue;
+            }
+            if (lower == "tele" || lower == "teleport")
+            {
+                teleport = true;
                 continue;
             }
 
@@ -616,7 +623,7 @@ public:
 
             handler->PSendSysMessage(
                 "Unknown init token '%s'. Use self|all|<name>, a role/spec, "
-                "a quality (poor…legendary), and/or relevel.",
+                "a quality (poor…legendary), relevel, and/or tele.",
                 raw.c_str());
             handler->SetSentErrorMessage(true);
             return false;
@@ -624,7 +631,7 @@ public:
 
         Player* master = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
         std::string choiceNote;
-        if (haveChoice || haveQuality || relevel)
+        if (haveChoice || haveQuality || relevel || teleport)
         {
             choiceNote = " (";
             bool firstNote = true;
@@ -649,6 +656,13 @@ public:
                 choiceNote += std::to_string(sPlayerbotMgr->GetAutoMinLevel());
                 choiceNote += "-";
                 choiceNote += std::to_string(sPlayerbotMgr->GetAutoMaxLevel());
+                firstNote = false;
+            }
+            if (teleport)
+            {
+                if (!firstNote)
+                    choiceNote += ", ";
+                choiceNote += "tele";
             }
             choiceNote += ")";
         }
@@ -657,7 +671,7 @@ public:
         {
             uint64 notify = master ? master->GetGUID() : 0;
             uint32 count = sPlayerbotMgr->EnqueueInitializeAllBots(
-                roleOverride, specOverride, maxItemQuality, relevel, notify);
+                roleOverride, specOverride, maxItemQuality, relevel, teleport, notify);
             if (!count)
             {
                 handler->SendSysMessage("No active bots to init.");
@@ -684,7 +698,8 @@ public:
                 handler->SetSentErrorMessage(true);
                 return false;
             }
-            sPlayerbotMgr->InitializeBot(master, roleOverride, specOverride, maxItemQuality, relevel);
+            sPlayerbotMgr->InitializeBot(master, roleOverride, specOverride, maxItemQuality,
+                relevel, teleport, teleport);
             handler->PSendSysMessage("Initialized yourself%s.", choiceNote.c_str());
             return true;
         }
@@ -714,7 +729,8 @@ public:
                 return false;
             }
 
-            sPlayerbotMgr->InitializeBot(bot, roleOverride, specOverride, maxItemQuality, relevel);
+            sPlayerbotMgr->InitializeBot(bot, roleOverride, specOverride, maxItemQuality,
+                relevel, teleport, teleport);
             handler->PSendSysMessage("Initialized bot '%s'%s.", name.c_str(), choiceNote.c_str());
             return true;
         }
@@ -723,7 +739,7 @@ public:
         {
             handler->SendSysMessage(
                 "Usage: .playerbots init [<charname>|all|self] [tank|healer|dps|<spec>] "
-                "[rare|epic|...] [relevel].");
+                "[rare|epic|...] [relevel] [tele].");
             handler->SetSentErrorMessage(true);
             return false;
         }
@@ -735,7 +751,8 @@ public:
             return false;
         }
 
-        sPlayerbotMgr->InitializeBot(master, roleOverride, specOverride, maxItemQuality, relevel);
+        sPlayerbotMgr->InitializeBot(master, roleOverride, specOverride, maxItemQuality,
+            relevel, teleport, teleport);
         uint32 queued = 0;
 
         if (Group* group = master->GetGroup())
@@ -748,7 +765,7 @@ public:
                     if (specOverride && !SpecMatchesClass(specOverride, member->getClass()))
                         continue;
                     if (sPlayerbotMgr->EnqueueInitializeBot(member->GetGUID(), roleOverride,
-                            specOverride, maxItemQuality, relevel, master->GetGUID()))
+                            specOverride, maxItemQuality, relevel, teleport, master->GetGUID()))
                         ++queued;
                 }
             }

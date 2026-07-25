@@ -155,12 +155,14 @@ Playerbots.AutoCreate.HealerPct = 20
 #    Playerbots.AutoCreate.MinLevel
 #    Playerbots.AutoCreate.MaxLevel
 #        Description: Level band for newly created bots, and for
-#                     `.playerbots init … relevel`. Min/Max default to
+#                     `.playerbots init … relevel` / `tele`. Min/Max default to
 #                     AutoCreate.Level when omitted. When Min == Max every new
 #                     (or relevelling) bot is that level (e.g. 80/80). When the
 #                     range spans multiple levels, each bot rolls uniformly.
 #                     Normal `.playerbots init` without `relevel` does not
-#                     change level. Death Knights are excluded from auto-creation.
+#                     change level. Optional `tele`/`teleport` scatters after
+#                     gear using the bot's final level. Death Knights are
+#                     excluded from auto-creation.
 #        Default:     1 / 1 / 1
 
 Playerbots.AutoCreate.Level = 1
@@ -177,6 +179,19 @@ Playerbots.AutoCreate.MaxLevel = 1
 #        Default:     0
 
 Playerbots.AutoCreate.InitOnCreate = 0
+
+#
+#    Playerbots.AutoCreate.TeleportOnInit
+#        Description: When 1 (default), the first gear init for a new bot
+#                     (InitOnCreate or deferred first world login) also scatters
+#                     them to a level/faction-safe open-world anchor. Levels 1–5
+#                     are excluded and stay at their race spawn. Does not affect
+#                     later `.playerbots init` — pass `tele`/`teleport` on that
+#                     command when you want it again (levels 1–5 then go to
+#                     homebind / hearth).
+#        Default:     1
+
+Playerbots.AutoCreate.TeleportOnInit = 1
 
 #
 #    Playerbots.Init.PerTick

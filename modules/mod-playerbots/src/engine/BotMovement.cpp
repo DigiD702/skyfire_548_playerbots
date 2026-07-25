@@ -26,7 +26,12 @@ namespace BotMovement
 
     bool CanMove(Player* bot)
     {
-        return bot && bot->IsAlive() && !IsCasting(bot);
+        if (!bot || !bot->IsAlive() || IsCasting(bot))
+            return false;
+        // Moving while seated cancels drink/food auras — rest must finish first.
+        if (bot->IsSitState())
+            return false;
+        return true;
     }
 
     bool IsAirborne(Unit const* unit)

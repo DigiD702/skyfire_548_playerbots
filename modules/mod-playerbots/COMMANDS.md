@@ -21,7 +21,7 @@ Whisper replies with a short ack. Party/raid orders apply silently (no spam).
 | `.playerbots reload` | Reload `playerbots.conf` and the random-bot candidate pool. |
 | `.playerbots create` | Run the auto-creator (accounts + characters from config; each new char is auto-inited with conf gear). |
 | `.playerbots wipe confirm` | Delete all accounts matching `AccountPrefix` (and their characters). Requires the word `confirm`. |
-| `.playerbots init [<name>\|all\|self] [tank\|healer\|dps\|<spec>] [rare\|epic\|…] [relevel]` | Re-apply specialization, talents, and gear. `all` (and grouped bots on bare init) run in a background queue (`Playerbots.Init.PerTick`). Level stays unless `relevel` is passed. |
+| `.playerbots init [<name>\|all\|self] [tank\|healer\|dps\|<spec>] [rare\|epic\|…] [relevel] [tele]` | Re-apply specialization, talents, and gear. `all` (and grouped bots on bare init) run in a background queue (`Playerbots.Init.PerTick`). Level stays unless `relevel` is passed. `tele` / `teleport` scatters to a level/faction-safe anchor after init (uses post-`relevel` level). |
 | `.playerbots self [on\|off]` | Attach/detach cast-only AI on **your** character. |
 
 ### Resetting the bot pool (e.g. all level 80 epic)
@@ -53,16 +53,24 @@ normal init — they only apply when creating characters, or when you pass
 | `… <spec>` | Switch to an explicit specialization (needed for hybrid DPS). |
 | `… rare` / `epic` / … | Cap gear quality (default **epic**). Also: `blue`, `purple`, `quality=rare`. |
 | `… relevel` | Roll a new level in conf `MinLevel`–`MaxLevel`, then init for that level. |
+| `… tele` / `teleport` | After gear (and after `relevel` if used), teleport to a safe open-world anchor for the bot’s **final** level and faction. Levels **1–5** go to homebind / race spawn instead. |
+
+First-time gear (create with `InitOnCreate`, or deferred first login when still bare)
+also teleports when `Playerbots.AutoCreate.TeleportOnInit = 1` (default), but
+**skips levels 1–5** so starters remain in their normal starting area. Later
+manual inits do **not** auto-teleport — add `tele` explicitly.
 
 Tokens may be in any order, e.g. `.playerbots init self fury rare` or
-`.playerbots init all rare relevel`.
+`.playerbots init all rare relevel tele`.
 
 **Examples**
 
 ```
-.playerbots init all fury rare          # keep levels, re-spec/re-gear
-.playerbots init all rare relevel       # roll 1–25 (or whatever conf says), then gear
-.playerbots init Botname tank           # party bot stays level 30, becomes tank
+.playerbots init all fury rare              # keep levels, re-spec/re-gear
+.playerbots init all rare relevel           # roll 1–25 (or whatever conf says), then gear
+.playerbots init all relevel tele           # relevel, gear, then scatter by new level
+.playerbots init all tele                   # keep levels, re-gear, then scatter by current level
+.playerbots init Botname tank               # party bot stays level 30, becomes tank
 ```
 
 To force everyone to one level: set `MinLevel = MaxLevel = 80`, then

@@ -730,10 +730,12 @@ void WorldSession::HandleWhoOpcode(WorldPacket& recvData)
     //CMSG_WHO
     SF_LOG_DEBUG("network", "WORLD: Recvd CMSG_WHO Message");
 
+    // MoP who UI refresh (clear filters → Refresh) re-queries immediately after
+    // a chat /who. A silent 5s drop leaves the client with an empty/stale list.
     time_t now = time(NULL);
-    if (now - timeLastWhoCommand < 5)
+    if (now - timeLastWhoCommand < 1)
         return;
-    else timeLastWhoCommand = now;
+    timeLastWhoCommand = now;
 
     uint32 levelMin, levelMax, raceMask, classMask, zonesCount, wordCount;
     uint32 zoneIds[10];                                     // 10 is client limit
@@ -816,11 +818,20 @@ void WorldSession::HandleWhoOpcode(WorldPacket& recvData)
     wstrToLower(wPlayerName);
     wstrToLower(wGuildName);
 
-    // SMSG_WHO
+    // Cleared who-UI filters can send inverted or zero level bounds / empty
+    // race·class masks, which match nobody. Normalize before scanning.
+    if (levelMax < levelMin)
+        std::swap(levelMin, levelMax);
+    if (levelMax == 0)
+        levelMax = STRONG_MAX_LEVEL;
     // client send in case not set max level value 100 but Skyfire supports 255 max level,
     // update it to show GMs with characters after 100 level
     if (levelMax >= MAX_LEVEL)
         levelMax = STRONG_MAX_LEVEL;
+    if (!raceMask)
+        raceMask = 0xFFFFFFFFu;
+    if (!classMask)
+        classMask = 0xFFFFFFFFu;
 
     uint32 team = _player->GetTeam();
 

@@ -111,16 +111,21 @@ public:
     // maxItemQuality: ITEM_QUALITY_* cap for gear rolls; -1 = use conf Gear.MaxQuality.
     // relevel: when true, roll a new level in AutoCreate.MinLevel–MaxLevel first
     // (default false keeps the bot's current level).
+    // teleport: after gear (and relevel), place the bot via TeleportForLevel.
+    // teleportFromCommand: true for `.playerbots init … tele` (levels 1–5 go
+    // homebind); false for AutoCreate.TeleportOnInit (levels 1–5 stay put).
     void InitializeBot(Player* bot, int roleOverride = -1, uint32 specOverride = 0,
-        int maxItemQuality = -1, bool relevel = false);
+        int maxItemQuality = -1, bool relevel = false, bool teleport = false,
+        bool teleportFromCommand = false);
     // Queue init for every active socket bot (processed over world ticks).
     // Returns how many jobs were queued. notifyPlayerGuid gets a done message.
     uint32 EnqueueInitializeAllBots(int roleOverride = -1, uint32 specOverride = 0,
-        int maxItemQuality = -1, bool relevel = false, uint64 notifyPlayerGuid = 0);
+        int maxItemQuality = -1, bool relevel = false, bool teleport = false,
+        uint64 notifyPlayerGuid = 0);
     // Queue a single online bot (or no-op if offline). Returns true if queued.
     bool EnqueueInitializeBot(uint64 characterGuid, int roleOverride = -1,
         uint32 specOverride = 0, int maxItemQuality = -1, bool relevel = false,
-        uint64 notifyPlayerGuid = 0);
+        bool teleport = false, uint64 notifyPlayerGuid = 0);
     uint32 GetInitQueueSize() const { return uint32(_initQueue.size()); }
     uint32 GetInitPerTick() const { return _initPerTick; }
 
@@ -152,7 +157,7 @@ private:
     void UpdateLfgAutoJoin(uint32 diff);
     void ProcessInitQueue();
     void UpsertInitQueueJob(uint64 guid, int roleOverride, uint32 specOverride,
-        int maxItemQuality, bool relevel);
+        int maxItemQuality, bool relevel, bool teleport, bool teleportFromCommand);
 
     // Auto-creation helpers.
     struct PendingBotInit
@@ -194,6 +199,10 @@ private:
     // When false (default), create skips world login/gear — first SpawnBot inits.
     // Set true to gear every new char immediately (much slower for large pools).
     bool _autoInitOnCreate = false;
+    // Scatter to a level/faction-safe anchor after first-time gear init
+    // (InitOnCreate and deferred first-login). Manual `.playerbots init` still
+    // needs an explicit `tele` token.
+    bool _autoTeleportOnInit = true;
 
     // Gear quality band for InitializeBot / create auto-init (ITEM_QUALITY_*).
     int _gearMinQuality = 2; // uncommon
@@ -221,6 +230,8 @@ private:
         uint32 specOverride = 0;
         int maxItemQuality = -1;
         bool relevel = false;
+        bool teleport = false;
+        bool teleportFromCommand = false;
     };
     std::deque<QueuedBotInit> _initQueue;
     uint32 _initPerTick = 5;

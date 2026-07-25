@@ -57,7 +57,7 @@ namespace
     class LowResourcesTrigger : public BotTrigger
     {
     public:
-        LowResourcesTrigger(PlayerbotAI* ai) : BotTrigger(ai, "low resources", 1000) {}
+        LowResourcesTrigger(PlayerbotAI* ai) : BotTrigger(ai, "low resources", 0) {}
         bool IsActive() override
         {
             Player* bot = _ai->GetBot();
@@ -109,6 +109,8 @@ namespace
         bool IsActive() override
         {
             if (_ai->IsClientControlled())
+                return false;
+            if (_ai->NeedsRestPublic() || _ai->IsForceResting())
                 return false;
             Player* bot = _ai->GetBot();
             if (!bot || !bot->IsAlive() || bot->IsInCombat())
@@ -166,6 +168,8 @@ namespace
         {
             if (_ai->IsClientControlled())
                 return false;
+            if (_ai->NeedsRestPublic() || _ai->IsForceResting())
+                return false;
             if (_ai->HasTravelDestination())
                 return false;
             if (_ai->HasEngageTarget())
@@ -199,6 +203,8 @@ namespace
         bool IsUseful() override
         {
             if (_ai->IsClientControlled())
+                return false;
+            if (_ai->NeedsRestPublic() || _ai->IsForceResting())
                 return false;
             Player* bot = _ai->GetBot();
             if (!bot || !bot->IsAlive() || bot->IsInCombat())
@@ -253,6 +259,8 @@ namespace
         bool IsUseful() override
         {
             if (_ai->IsClientControlled())
+                return false;
+            if (_ai->NeedsRestPublic() || _ai->IsForceResting())
                 return false;
             if (_ai->HasTravelDestination())
                 return false;
@@ -378,6 +386,13 @@ void BotAiEngine::PushDefaultActions()
     if (_activeState == BotState::Combat || _ai->HasEngageTarget())
     {
         _queue.Push("combat", BotRelevance::Default);
+        return;
+    }
+
+    // Sticky rest: keep drinking every tick so travel/follow cannot interleave.
+    if (_ai->NeedsRestPublic() || _ai->IsForceResting())
+    {
+        _queue.Push("rest", BotRelevance::Rest);
         return;
     }
 

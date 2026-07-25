@@ -268,6 +268,42 @@ void PlayerbotAI::ResetStrategiesToRoleDefaults()
     ClearForcedTarget();
 }
 
+void PlayerbotAI::AfterInitRelocate(bool didTeleport)
+{
+    if (!_bot)
+        return;
+
+    ClearTravelDestination();
+    _forceQuest = false;
+    _wanderTimer = 0;
+    _followGuid = 0;
+    _chaseGuid = 0;
+    StopResting();
+
+    if (!_clientControlled)
+    {
+        if (_bot->GetVictim())
+            _bot->AttackStop();
+        BotMovement::ClearMotion(_bot);
+        BotMovement::StopAndIdle(_bot);
+        if (_bot->getStandState() != UNIT_STAND_STATE_STAND)
+            _bot->SetStandState(UNIT_STAND_STATE_STAND);
+    }
+
+    // Init resets to follow/food/loot — ungrouped random bots must resume
+    // open-world questing/grind or they stand still after a scatter teleport.
+    if (!_clientControlled && !_bot->GetGroup() && sPlayerbotMgr->IsRandomBot(_bot->GetGUID()))
+    {
+        _strategies.ChangeStrategy("+quests,+grind,-follow", BotState::NonCombat);
+        _strategies.Add("grind", BotState::Combat);
+        SyncFlagsFromStrategies();
+        _wasGrouped = false;
+    }
+
+    if (didTeleport)
+        EnsureVisiblePhases();
+}
+
 void PlayerbotAI::SyncFlagsFromStrategies()
 {
     _food = _strategies.Has("food", BotState::NonCombat);
@@ -668,12 +704,15 @@ bool PlayerbotAI::NeedsRestPublic() const
     if (HasFoodOrDrinkAura())
         return true;
 
+    // Sticky: once we started resting, keep the rest action queued until
+    // HandleRest clears _resting (nearly full / combat). Do this before the
+    // master-waiting gate so travel/follow cannot yank us mid-drink.
+    if (_resting)
+        return true;
+
     // Mid-chase: do not park to drink — stay on the leader.
     if (!IsMasterWaitingForRest())
         return false;
-
-    if (_resting)
-        return true;
 
     float const hpPct = HealthPct();
     float const manaPct = ManaPct();
@@ -728,8 +767,10 @@ void PlayerbotAI::UpdateAI(uint32 diff)
         && BotRotation::TryMaintainBuffs(_bot))
         return;
 
-    // Nearby / open-world questing (one step per tick).
+    // Nearby / open-world questing (one step per tick). Skip while drinking —
+    // MovePoint would stand the bot and cancel regen.
     if (!_bot->IsInCombat() && _bot->getAttackers().empty()
+        && !NeedsRestPublic() && !_resting && !HasFoodOrDrinkAura() && !_bot->IsSitState()
         && (_quests || _forceQuest) && HandleAutoQuesting())
         return;
 
@@ -4301,6 +4342,10 @@ bool PlayerbotAI::HandleAutoQuesting()
         return false;
     }
     if (HasEngageTarget())
+        return false;
+
+    // Do not path to quests/vendors while drinking — MovePoint stands us up.
+    if (NeedsRestPublic() || _resting || HasFoodOrDrinkAura() || _bot->IsSitState())
         return false;
 
     // Bag pressure → vendor hub before questing.

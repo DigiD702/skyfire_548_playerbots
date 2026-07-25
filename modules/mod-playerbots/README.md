@@ -83,6 +83,13 @@ created characters are picked up by the random-bot pool automatically.
   upgrades (e.g. gear a fresh level-80 bot).
 * Optional `relevel` rolls a new level in `AutoCreate.MinLevel`–`MaxLevel`
   (set Min=Max for a fixed level), then gears for that level.
+* Optional `tele` / `teleport` scatters the bot to a level- and faction-safe
+  open-world anchor **after** gear (and after `relevel` if used), so the
+  destination matches the bot’s final level. Levels 1–5 go to homebind /
+  race spawn instead of a random hub.
+* First-time gear on create / first login also scatters when
+  `Playerbots.AutoCreate.TeleportOnInit = 1` (default), except levels 1–5
+  which stay at their normal starting area.
 * Learns remaining **class trainer** spells for the bot's level, plus SkillLine /
   specialization spells.
 * Teaches **riding** by level (20/40/60/70/80) and one random mount per unlocked
