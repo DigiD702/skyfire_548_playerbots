@@ -2132,20 +2132,30 @@ void PlayerbotAI::DoTankExtras(Unit* target, bool closing)
     }
 
     // While running in, do not plant for AoE — chase + auto-attack build threat.
-    // Gap-closer / ranged tag only.
+    // Gap-closer only when actually in range. CanTryCast does not check distance;
+    // CastSpell → PrepareHostileCast StopMoving() then fails OOR, which cancels
+    // MoveChase every tick (stutter-step / look like follow ↔ charge thrash).
     if (closing)
     {
         if (_bot->getClass() == CLASS_WARRIOR)
         {
-            // Charge / Heroic Leap / Heroic Throw while closing a peel.
-            static uint32 const gapClosers[] = { 100, 6544, 57755 }; // Charge, Leap, Throw
-            for (uint32 id : gapClosers)
+            float const dist = _bot->GetDistance(target);
+            struct GapCloser { uint32 id; float minDist; float maxDist; };
+            // Charge / Heroic Leap only — Heroic Throw also StopMoving and would
+            // stutter the close; pull opener still uses Throw when standing.
+            static GapCloser const gapClosers[] = {
+                { 100, 8.0f, 25.0f },  // Charge
+                { 6544, 8.0f, 40.0f }, // Heroic Leap
+            };
+            for (GapCloser const& gc : gapClosers)
             {
-                if (!_bot->HasSpell(id) || _bot->HasSpellCooldown(id))
+                if (dist < gc.minDist || dist > gc.maxDist)
                     continue;
-                if (!BotRotation::CanTryCast(_bot, id))
+                if (!_bot->HasSpell(gc.id) || _bot->HasSpellCooldown(gc.id))
                     continue;
-                if (BotRotation::CastSpell(_bot, target, id))
+                if (!BotRotation::CanTryCast(_bot, gc.id))
+                    continue;
+                if (BotRotation::CastSpell(_bot, target, gc.id))
                     return;
             }
         }

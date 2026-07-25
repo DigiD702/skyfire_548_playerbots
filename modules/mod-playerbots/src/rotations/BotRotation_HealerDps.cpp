@@ -117,7 +117,9 @@ uint32 SelectRestorationShamanDps(Context const& ctx)
 
     enum Spells : uint32
     {
-        LIGHTNING_SHIELD    = 324,
+        // Keep Water Shield while DPSing — Lightning Shield replaced it every
+        // healer-dps GCD (worse under save-mana when heal GCDs are skipped).
+        WATER_SHIELD        = 52127,
         FLAME_SHOCK         = 8050,
         LAVA_BURST          = 51505,
         LIGHTNING_BOLT      = 403,
@@ -127,8 +129,8 @@ uint32 SelectRestorationShamanDps(Context const& ctx)
         UNLEASH_ELEMENTS    = 73680,
     };
 
-    if (!HasAuraUp(bot, LIGHTNING_SHIELD) && CanTryCast(bot, LIGHTNING_SHIELD))
-        return LIGHTNING_SHIELD;
+    if (!HasAuraUp(bot, WATER_SHIELD) && CanTryCast(bot, WATER_SHIELD))
+        return WATER_SHIELD;
 
     if (ctx.enemies >= 3 && CanTryCast(bot, CHAIN_LIGHTNING))
         return CHAIN_LIGHTNING;
