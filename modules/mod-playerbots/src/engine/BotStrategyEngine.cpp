@@ -133,7 +133,7 @@ bool BotStrategyEngine::IsKnown(std::string const& name, BotState state) const
         return true;
 
     if (state == BotState::NonCombat)
-        return name == "food" || name == "follow" || name == "stay" || name == "loot";
+        return name == "food" || name == "follow" || name == "stay" || name == "loot" || name == "quests";
 
     // Combat names (role gate applied separately).
     return name == "tank" || name == "tank assist" || name == "dps" || name == "dps assist"
@@ -266,7 +266,7 @@ std::string BotStrategyEngine::Format(BotState state) const
     // List known names for this state/role with +/- like AC "?".
     std::vector<std::string> names;
     if (state == BotState::NonCombat)
-        names = { "food", "follow", "stay", "loot", "passive", "grind" };
+        names = { "food", "follow", "stay", "loot", "quests", "passive", "grind" };
     else if (_isTank)
         names = { "passive", "grind", "tank", "tank assist", "dps",
                   "aoe", "boost", "cc", "avoid aoe" };
@@ -362,7 +362,7 @@ std::string BotStrategyEngine::ChangeStrategy(std::string const& text, BotState 
 void BotStrategyEngine::ApplyFollowPack()
 {
     // AC FollowChatShortcutAction
-    ChangeStrategy("+follow,-passive,-grind", BotState::NonCombat);
+    ChangeStrategy("+follow,-passive,-grind,-quests", BotState::NonCombat);
     ChangeStrategy("-stay,-passive,-grind", BotState::Combat);
     // Ensure follow is on NC even if stay was set.
     Add("follow", BotState::NonCombat);

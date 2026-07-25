@@ -204,9 +204,13 @@ Send these as the message text (case-insensitive).
 | `position save <name>` | Store the bot’s current XYZ under `<name>`. |
 | `position` / `position ?` | List saved position names. |
 | `position go <name>` | Same as `go <name>`. |
-| `sell` / `sell junk` | Walk to a nearby vendor and sell gray (poor) junk; also repairs if the NPC can. Idle bots do this opportunistically. |
+| `sell` / `sell junk` | Walk to a nearby vendor (or same-map vendor hub) and sell gray junk; also repairs if the NPC can. Idle bots do this opportunistically. |
+| `sell all` | Same path, but also vendor-dumps unbound greens+ (soulbound/quest/usable gear kept). |
 | `mount` / `dismount` | Force mount/dismount. Bots also **auto-mount when the master mounts**, matching ground vs flying vs swift flying, and dismount when the master does (or in combat). |
-| `quests` / `accept` / `turn in` | Accept or turn in one quest on a nearby questgiver (interaction range). Idle bots do this opportunistically; first reward choice only. |
+| `mount prefer <spellId>` | Remember a preferred ground or flying mount spell for this bot (`playerbots_preferred_mounts`). |
+| `mount prefer clear` | Clear preferred mounts for this bot. |
+| `gossip` / `gossip <n>` | List or select a gossip menu option on a nearby NPC. |
+| `quests` / `accept` / `turn in` | Accept/turn-in nearby (walks in), with reward-choice AI. With `nc +quests`, also travels to same-map objectives. |
 
 Travel is cancelled by combat, `follow`, `stay`, `flee`, `summon`, or `reset`. Arrival resumes follow when `nc +follow` is on. Same-map only (no TravelNode / portals yet).
 
@@ -226,6 +230,7 @@ Strategies are **role-gated** from the bot's current specialization:
 | `food` | Auto sit + regen HP/mana when low (default on) |
 | `follow` / `stay` | Follow leader or hold position |
 | `loot` | Loot corpses |
+| `quests` | Open-world accept/turn-in + same-map objective travel (default on for ungrouped random bots; cleared by `follow` pack) |
 | `passive` / `grind` | Same shared flags |
 
 Chat shortcuts rewrite strategy packs like AzerothCore (not just one bool):
@@ -310,9 +315,10 @@ Closest equivalents for older one-shot orders:
 | Enable crowd control | `co +cc` |
 | Disable ground AoE dodge | `co -avoid aoe` |
 | Walk to point / master | `go` / `go x y z` / `position save\|go <name>` |
-| Sell gray junk | `sell` / `sell junk` (nearby vendor) |
-| Mount / dismount | `mount` / `dismount` (also auto when master mounts) |
-| Nearby quest accept/turn-in | `quests` / `accept` / `turn in` |
+| Sell junk / greens | `sell` / `sell junk` / `sell all` |
+| Mount / dismount | `mount` / `dismount` / `mount prefer` |
+| Gossip | `gossip` / `gossip <n>` |
+| Nearby / auto quest | `quests` / `accept` / `turn in` / `nc +quests` |
 
 ---
 

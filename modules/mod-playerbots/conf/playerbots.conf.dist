@@ -239,3 +239,27 @@ Playerbots.Flee.Distance = 20
 #        Default:     5
 
 Playerbots.WaitForAttack.Seconds = 5
+
+#
+#    Playerbots.Vendor.SellGreens
+#        Description: Vendor-dump unbound uncommon+ items (soulbound/quest/gear
+#                     keepers are skipped). Grays always sell. Not a real AH post.
+#        Default:     1
+
+Playerbots.Vendor.SellGreens = 1
+
+#
+#    Playerbots.Vendor.HubMaxDistance
+#        Description: Max yards to travel on the same map to a vendor hub when no
+#                     vendor is within the local 20y seek range.
+#        Default:     500
+
+Playerbots.Vendor.HubMaxDistance = 500
+
+#
+#    Playerbots.Quest.AutoPickReward
+#        Description: When turning in quests with a reward choice, pick the best
+#                     upgrade (else highest vendor price). 0 always takes slot 0.
+#        Default:     1
+
+Playerbots.Quest.AutoPickReward = 1

@@ -86,6 +86,10 @@ public:
     bool IsFleeEnabled() const { return _fleeEnabled; }
     float GetSaveManaThreshold() const { return _saveManaThreshold; }
     uint32 GetWaitForAttackSeconds() const { return _waitForAttackSeconds; }
+    bool GetVendorSellGreens() const { return _vendorSellGreens; }
+    float GetVendorHubMaxDistance() const { return _vendorHubMaxDistance; }
+    bool GetQuestAutoPickReward() const { return _questAutoPickReward; }
+    bool IsRandomBot(uint64 characterGuid) const { return _randomBots.count(characterGuid) > 0; }
 
     // Provisions bot accounts (prefix + n) and fills them with characters using
     // the configured faction/role ratios and level range. Incremental: existing
@@ -175,6 +179,9 @@ private:
     bool _fleeEnabled = true;
     float _saveManaThreshold = 60.0f;
     uint32 _waitForAttackSeconds = 5;
+    bool _vendorSellGreens = true;
+    float _vendorHubMaxDistance = 500.0f;
+    bool _questAutoPickReward = true;
 
     uint32 _loginTimer = 0;
     bool _candidatesLoaded = false;

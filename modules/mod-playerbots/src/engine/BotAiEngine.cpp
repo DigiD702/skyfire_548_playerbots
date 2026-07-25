@@ -275,9 +275,12 @@ namespace
                 return false;
             if (_ai->HasTravelDestination())
                 return false;
-            if (_ai->ShouldFollowPublic())
+            if (!_ai->NeedsVendorWorkPublic())
                 return false;
-            return _ai->NeedsVendorWorkPublic();
+            // Follow bots only break for urgent bag/repair pressure (or chat sell).
+            if (_ai->ShouldFollowPublic() && !_ai->NeedsUrgentVendorPublic())
+                return false;
+            return true;
         }
         bool IsPossible() override { return BotMovement::CanMove(_ai->GetBot()); }
         bool Execute() override

@@ -32,6 +32,8 @@ class Unit;
 class Creature;
 class BotAiEngine;
 class SpellInfo;
+class Item;
+class Quest;
 struct MountCapabilityEntry;
 
 class PlayerbotAI
@@ -70,6 +72,8 @@ public:
 
     // Re-apply role-default strategies (after init/spec change).
     void ResetStrategiesToRoleDefaults();
+    // Sync procedural flags after ChangeStrategy from outside the AI.
+    void SyncFlagsFromStrategies();
 
     BotStrategyEngine& GetStrategyEngine() { return _strategies; }
     BotStrategyEngine const& GetStrategyEngine() const { return _strategies; }
@@ -91,6 +95,8 @@ public:
     void RunVendor();
     bool RunTravel();
     bool NeedsVendorWorkPublic() const;
+    bool NeedsUrgentVendorPublic() const;
+    bool HasQuestsStrategyPublic() const { return _quests; }
     bool IsGroupInCombatPublic() const;
     bool ShouldFollowPublic() const;
     bool NeedsRestPublic() const;
@@ -148,6 +154,17 @@ private:
     void HandleStay();
     void HandleVendor();
     bool HandleQuestNpcs();
+    bool HandleAutoQuesting();
+    bool TryGossipForVendorOrQuest(Creature* npc, bool wantVendor, bool wantQuest);
+    bool SelectGossipOption(Creature* npc, uint32 gossipListId);
+    uint32 BestRewardIndex(Quest const* quest) const;
+    bool TravelToVendorHub(bool preferRepair);
+    bool TravelToQuestObjective();
+    bool TravelToNearbyQuestgiver();
+    uint32 CountFreeBagSlots() const;
+    bool ShouldVendorDumpItem(Item* item) const;
+    bool HasVendorJunk() const;
+    uint32 SellVendorJunk(Creature* vendor);
     enum class BotMountKind : uint8 { None = 0, Ground, SwiftGround, Flying, SwiftFlying };
     static BotMountKind ClassifyMountSpell(SpellInfo const* info);
     static BotMountKind ClassifyUnitMount(Unit const* unit);
@@ -189,7 +206,6 @@ private:
 
     // AC-style co / nc strategy engine (role-gated).
     bool HandleStrategyCommand(Player* from, std::string const& cmd, bool acknowledge);
-    void SyncFlagsFromStrategies();
     std::string FormatStrategies(bool combat) const;
     bool StrategyAllowed(bool combat, std::string const& name) const;
 
@@ -272,11 +288,14 @@ private:
     uint8 _travelFailCount = 0;
     std::unordered_map<std::string, TravelPoint> _savedPositions;
     bool _forceVendor = false;
+    bool _forceSellAll = false;
+    bool _forceQuest = false;
 
     // --- Flags synced from _strategies (procedural AI still reads these) ---
     bool _stay;          // nc stay (implies not follow)
     bool _food;          // nc food
     bool _loot;          // nc loot
+    bool _quests;        // nc quests (open-world auto-quest)
 
     bool _passive;       // co/nc passive
     bool _grind;         // co/nc grind

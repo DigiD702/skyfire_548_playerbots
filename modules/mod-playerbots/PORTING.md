@@ -200,9 +200,20 @@ Remaining for later phases:
   `ITEM_QUALITY_POOR` at nearby vendors + free repair; auto-mount OOC outdoors
   when traveling or following far; accept/turn-in on nearby questgivers
   (`PrepareQuestMenu` / `AddQuest` / `RewardQuest`). Chat: `sell`, `mount` /
-  `dismount`, `quests`/`accept`/`turn in`. Still deferred: walk-to-vendor hubs,
-  AH/greens, preferred-mount DB, gossip menu trees, reward-choice AI, open-world
-  auto-questing.
+  `dismount`, `quests`/`accept`/`turn in`.
+* [DONE] **Vendor hubs + greens dump**: in-memory vendor hub index from
+  `creature`/`creature_template`; same-map travel when no vendor in 20y;
+  vendor-dump unbound uncommon+ (not real AH). Conf:
+  `Playerbots.Vendor.SellGreens`, `HubMaxDistance`. Chat: `sell all`.
+* [DONE] **Preferred-mount DB**: `playerbots_preferred_mounts` (characters DB);
+  `TryMount` prefers configured spell. Chat: `mount prefer <spellId>|clear`.
+* [DONE] **Thin gossip**: hello + select by index; 1–2 hop auto for vendor/quest
+  options. Chat: `gossip` / `gossip <n>`.
+* [DONE] **Reward-choice AI**: `BestRewardIndex` (upgrade / sell price). Conf:
+  `Playerbots.Quest.AutoPickReward`.
+* [DONE] **Open-world auto-quest** (`nc +quests`): walk to questgivers, turn-in /
+  accept, same-map objective travel. Default on for ungrouped random bots;
+  off when `follow` pack is applied. Bag pressure routes to vendor hubs.
 
 ## Reference tree
 
@@ -236,7 +247,8 @@ for future updates.
   (LFG). Corpse loot peels briefly when OOC with `nc +loot`.
 * [TODO] LFR: bots fill raid finder queues (auto-accept the LFR prompt/roles).
 * [TODO] Random battlegrounds / rated battlegrounds and arenas.
-* [TODO] Open-world grinding/questing for population.
+* [TODO] Open-world grinding population polish (quest graph / TravelNode still thin;
+  `nc +quests` covers same-map accept/turn-in/objectives).
 
 ## Phase 5 - Content data
 

@@ -7,6 +7,8 @@
 #include "PlayerbotAI.h"
 #include "rotations/BotRotation.h"
 #include "AccountMgr.h"
+#include "BotPreferredMounts.h"
+#include "BotVendorHubs.h"
 #include "Config.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -103,6 +105,9 @@ void PlayerbotMgr::LoadConfig()
     _fleeEnabled = sConfigMgr->GetBoolDefault("Playerbots.Flee.Enabled", true);
     _saveManaThreshold = float(sConfigMgr->GetFloatDefault("Playerbots.SaveMana.Threshold", 60.0f));
     _waitForAttackSeconds = uint32(sConfigMgr->GetIntDefault("Playerbots.WaitForAttack.Seconds", 5));
+    _vendorSellGreens = sConfigMgr->GetBoolDefault("Playerbots.Vendor.SellGreens", true);
+    _vendorHubMaxDistance = float(sConfigMgr->GetFloatDefault("Playerbots.Vendor.HubMaxDistance", 500.0f));
+    _questAutoPickReward = sConfigMgr->GetBoolDefault("Playerbots.Quest.AutoPickReward", true);
 
     // Clamp to sane ranges so bad config can't create invalid characters.
     if (_autoAlliancePct > 100) _autoAlliancePct = 100;
@@ -459,6 +464,15 @@ bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* er
     if (Player* bot = botSession->GetPlayer())
     {
         _ai[characterGuid] = new PlayerbotAI(bot);
+        if (isRandom)
+        {
+            // Ungrouped random bots auto-quest in the open world (nc +quests).
+            if (PlayerbotAI* ai = _ai[characterGuid])
+            {
+                ai->GetStrategyEngine().ChangeStrategy("+quests,-follow", BotState::NonCombat);
+                ai->SyncFlagsFromStrategies();
+            }
+        }
         char const* raceName = GetRaceName(bot->getRace(), LOCALE_enUS);
         char const* className = GetClassName(bot->getClass(), LOCALE_enUS);
         SF_LOG_INFO("modules",

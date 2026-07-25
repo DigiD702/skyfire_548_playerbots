@@ -5,6 +5,9 @@
 * Playerbots module - core script hooks and admin commands.
 */
 
+#include "PlayerbotMgr.h"
+#include "BotPreferredMounts.h"
+#include "BotVendorHubs.h"
 #include "Chat.h"
 #include "DBCStores.h"
 #include "Group.h"
@@ -14,7 +17,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
-#include "PlayerbotMgr.h"
+#include "PlayerbotAI.h"
 #include "RBAC.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
@@ -102,17 +105,18 @@ public:
             std::string report;
             sPlayerbotMgr->DeleteBotAccounts(&report);
             SF_LOG_INFO("modules", "[mod-playerbots] %s", report.c_str());
-            return;
         }
-
-        // Optionally provision bot accounts/characters once the world is fully
-        // loaded (all DBC/db data available for valid race/class/name checks).
-        if (sPlayerbotMgr->IsAutoCreateOnStartup())
+        else if (sPlayerbotMgr->IsAutoCreateOnStartup())
         {
+            // Optionally provision bot accounts/characters once the world is fully
+            // loaded (all DBC/db data available for valid race/class/name checks).
             std::string report;
             sPlayerbotMgr->CreateBotPopulation(&report);
             SF_LOG_INFO("modules", "[mod-playerbots] %s", report.c_str());
         }
+
+        sBotVendorHubs->Load();
+        sBotPreferredMounts->Load();
     }
 
     void OnUpdate(uint32 diff) override
