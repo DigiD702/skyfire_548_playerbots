@@ -344,6 +344,8 @@ namespace lfg
         uint8 GetLFGDungeonCategory(uint32 id);
         /// Check whether the dungeon id belongs to a Raid Finder queue entry
         bool IsRaidFinderDungeon(uint32 dungeonId);
+        /// Check whether the dungeon id belongs to a flexible raid queue entry
+        bool IsFlexibleRaidDungeon(uint32 dungeonId);
 
         // Raid Finder auto-backfill: track under-strength LFR raids so the queue accumulator can
         // pull matching queued players into them without a prompt (retail-style silent backfill).
@@ -373,6 +375,14 @@ namespace lfg
         void SetOptions(uint32 options);
         /// Checks if given lfg option is enabled
         bool isOptionEnabled(uint32 option);
+        /// Gets the server-wide debug override for dungeon and raid finder requirements
+        bool IsDebugRequirementOverrideEnabled() const { return m_debugRequirementOverride; }
+        /// Sets the server-wide debug override for dungeon and raid finder requirements
+        void SetDebugRequirementOverride(bool enabled) { m_debugRequirementOverride = enabled; }
+        /// Gets the server-wide debug override for flexible raid minimum group size
+        bool IsDebugFlexRaidMinimumOverrideEnabled() const { return m_debugFlexRaidMinimumOverride; }
+        /// Sets the server-wide debug override for flexible raid minimum group size
+        void SetDebugFlexRaidMinimumOverride(bool enabled) { m_debugFlexRaidMinimumOverride = enabled; }
         /// Clears queue - Only for internal testing
         void Clean();
         /// Dumps the state of the queue - Only for internal testing
@@ -465,6 +475,8 @@ namespace lfg
         static bool CheckDpsOnlyRoles(LfgRolesMap& groles, uint8 neededDamage);
         /// Assigns queued players to raid finder role slots (caps on tanks/healers/dps)
         static bool CheckRaidFinderRoles(LfgRolesMap& groles, uint8 neededTanks, uint8 neededHealers, uint8 neededDamage);
+        /// Assigns queued players to their preferred combat role for flexible raid queues
+        static bool CheckFlexibleRaidRoles(LfgRolesMap& groles, uint8 maxPlayers);
         /// Checks if given players are ignoring each other
         static bool HasIgnore(uint64 guid1, uint64 guid2);
         /// Sends queue status to player
@@ -511,6 +523,8 @@ namespace lfg
         uint32 m_QueueTimer;                               ///< used to check interval of update
         uint32 m_lfgProposalId;                            ///< used as internal counter for proposals
         uint32 m_options;                                  ///< Stores config options
+        bool m_debugRequirementOverride;                   ///< bypasses LFG entry requirements for server-wide debugging
+        bool m_debugFlexRaidMinimumOverride;               ///< allows flexible raid queues to form below normal minimum for debugging
 
         LfgQueueContainer QueuesStore;                     ///< Queues
         LfgCachedDungeonContainer CachedDungeonMapStore;   ///< Stores all dungeons by groupType

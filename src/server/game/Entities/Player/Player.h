@@ -3141,8 +3141,6 @@ public:
 
     float GetAverageItemLevel();
     bool isDebugAreaTriggers;
-    bool HasDebugLfgRequirementOverride() const { return m_debugLfgRequirementOverride; }
-    void SetDebugLfgRequirementOverride(bool enabled) { m_debugLfgRequirementOverride = enabled; }
 
     void ClearWhisperWhiteList()
     {
@@ -3435,7 +3433,6 @@ protected:
     bool   m_WeeklyQuestChanged;
     bool   m_MonthlyQuestChanged;
     bool   m_SeasonalQuestChanged;
-    bool   m_debugLfgRequirementOverride;
     time_t m_lastDailyQuestTime;
 
     uint32 m_drunkTimer;

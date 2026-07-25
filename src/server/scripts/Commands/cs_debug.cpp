@@ -18,12 +18,16 @@ EndScriptData */
 #include "GossipDef.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "Group.h"
 #include "Language.h"
+#include "LFGMgr.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerRestState.h"
 #include "ScriptMgr.h"
 #include "Transport.h"
+#include "WorldSession.h"
 
 class debug_commandscript : public CommandScript
 {
@@ -58,12 +62,14 @@ public:
         };
         static std::vector<ChatCommand> debugLfgCommandTable =
         {
-            { "requirements",   rbac::RBAC_PERM_COMMAND_DEBUG_LFG_REQUIREMENTS, false, &HandleDebugLfgRequirementsCommand, "", },
+            { "flex",           rbac::RBAC_PERM_COMMAND_DEBUG_LFG_FLEX,         true,  &HandleDebugLfgFlexCommand,         "", },
+            { "group",          rbac::RBAC_PERM_COMMAND_DEBUG_LFG_REQUIREMENTS, false, &HandleDebugLfgGroupCommand,        "", },
+            { "requirements",   rbac::RBAC_PERM_COMMAND_DEBUG_LFG_REQUIREMENTS, true,  &HandleDebugLfgRequirementsCommand, "", },
         };
         static std::vector<ChatCommand> debugCommandTable =
         {
             { "boat",           rbac::RBAC_PERM_COMMAND_DEBUG_BG,            false, NULL,                                "", boatCommandTable },
-            { "lfg",            rbac::RBAC_PERM_COMMAND_DEBUG_LFG_REQUIREMENTS, false, NULL,                             "", debugLfgCommandTable },
+            { "lfg",            rbac::RBAC_PERM_COMMAND_DEBUG_LFG_REQUIREMENTS, true,  NULL,                             "", debugLfgCommandTable },
             { "setbit",        rbac::RBAC_PERM_COMMAND_DEBUG_SETBIT,        false, &HandleDebugSet32BitCommand,         "", },
             { "threat",        rbac::RBAC_PERM_COMMAND_DEBUG_THREAT,        false, &HandleDebugThreatListCommand,       "", },
             { "hostil",        rbac::RBAC_PERM_COMMAND_DEBUG_HOSTIL,        false, &HandleDebugHostileRefListCommand,   "", },
@@ -167,38 +173,159 @@ public:
         return true;
     }
 
+    static void RefreshLfgLockInfoForOnlinePlayers()
+    {
+        SF_SHARED_GUARD readGuard(*HashMapHolder<Player>::GetLock());
+        HashMapHolder<Player>::MapType const& players = sObjectAccessor->GetPlayers();
+        for (HashMapHolder<Player>::MapType::const_iterator itr = players.begin(); itr != players.end(); ++itr)
+            if (WorldSession* session = itr->second->GetSession())
+                session->SendLfgPlayerLockInfo();
+    }
+
     static bool HandleDebugLfgRequirementsCommand(ChatHandler* handler, char const* args)
     {
         if (!*args)
         {
+            handler->PSendSysMessage("LFG requirement override is currently %s server-wide.", sLFGMgr->IsDebugRequirementOverrideEnabled() ? "ON" : "OFF");
             handler->SendSysMessage("Usage: .debug lfg requirements on|off");
-            handler->SetSentErrorMessage(true);
-            return false;
-        }
-
-        Player* player = handler->GetSession() ? handler->GetSession()->GetPlayer() : NULL;
-        if (!player)
-        {
-            handler->SendSysMessage("LFG requirement debug override requires an in-game player session.");
             handler->SetSentErrorMessage(true);
             return false;
         }
 
         if (!stricmp(args, "on"))
         {
-            player->SetDebugLfgRequirementOverride(true);
-            handler->SendSysMessage("LFG scenario requirement override is ON for this character.");
+            sLFGMgr->SetDebugRequirementOverride(true);
+            RefreshLfgLockInfoForOnlinePlayers();
+            handler->SendSysMessage("LFG requirement override is ON server-wide.");
             return true;
         }
 
         if (!stricmp(args, "off"))
         {
-            player->SetDebugLfgRequirementOverride(false);
-            handler->SendSysMessage("LFG scenario requirement override is OFF for this character.");
+            sLFGMgr->SetDebugRequirementOverride(false);
+            RefreshLfgLockInfoForOnlinePlayers();
+            handler->SendSysMessage("LFG requirement override is OFF server-wide.");
             return true;
         }
 
         handler->SendSysMessage("Usage: .debug lfg requirements on|off");
+        handler->SetSentErrorMessage(true);
+        return false;
+    }
+
+    static bool HandleDebugLfgFlexCommand(ChatHandler* handler, char const* args)
+    {
+        if (!*args || !stricmp(args, "status"))
+        {
+            handler->PSendSysMessage("LFG flex raid minimum override is currently %s server-wide.", sLFGMgr->IsDebugFlexRaidMinimumOverrideEnabled() ? "ON" : "OFF");
+            handler->SendSysMessage("Usage: .debug lfg flex on|off|status");
+            return true;
+        }
+
+        if (!stricmp(args, "on"))
+        {
+            sLFGMgr->SetDebugFlexRaidMinimumOverride(true);
+            handler->SendSysMessage("LFG flex raid minimum override is ON server-wide.");
+            return true;
+        }
+
+        if (!stricmp(args, "off"))
+        {
+            sLFGMgr->SetDebugFlexRaidMinimumOverride(false);
+            handler->SendSysMessage("LFG flex raid minimum override is OFF server-wide.");
+            return true;
+        }
+
+        handler->SendSysMessage("Usage: .debug lfg flex on|off|status");
+        handler->SetSentErrorMessage(true);
+        return false;
+    }
+
+    static bool HandleDebugLfgGroupCommand(ChatHandler* handler, char const* args)
+    {
+        WorldSession* session = handler->GetSession();
+        Player* player = session ? session->GetPlayer() : NULL;
+        if (!player)
+        {
+            handler->SendSysMessage("Usage: .debug lfg group raid|party|status");
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        Group* group = player->GetGroup();
+        if (!group)
+        {
+            handler->SendSysMessage("You are not in a group.");
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        if (!group->IsLeader(player->GetGUID()))
+        {
+            handler->SendSysMessage("Only the group leader can convert the group.");
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        if (!*args || !stricmp(args, "status"))
+        {
+            uint32 missingRoles = 0;
+            Group::MemberSlotList const& slots = group->GetMemberSlots();
+            for (Group::MemberSlotList::const_iterator itr = slots.begin(); itr != slots.end(); ++itr)
+                if (!itr->roles)
+                    ++missingRoles;
+
+            handler->PSendSysMessage("Current group mode: %s (%u/%u members).",
+                group->isRaidGroup() ? "raid" : "party",
+                group->GetMembersCount(),
+                group->isRaidGroup() ? MAXRAIDSIZE : MAXGROUPSIZE);
+            handler->PSendSysMessage("Members missing LFG roles: %u.", missingRoles);
+            handler->SendSysMessage("Usage: .debug lfg group raid|party|status");
+            return true;
+        }
+
+        if (!stricmp(args, "raid"))
+        {
+            if (!group->isRaidGroup())
+                group->ConvertToRaid();
+
+            uint32 seededRoles = 0;
+            Group::MemberSlotList const& slots = group->GetMemberSlots();
+            for (Group::MemberSlotList::const_iterator itr = slots.begin(); itr != slots.end(); ++itr)
+            {
+                if (itr->roles)
+                    continue;
+
+                group->SetMemberRole(itr->guid, lfg::PLAYER_ROLE_DAMAGE);
+                ++seededRoles;
+            }
+
+            if (seededRoles)
+                group->SendUpdate();
+
+            handler->PSendSysMessage("Current group converted to raid mode (%u/%u members).", group->GetMembersCount(), MAXRAIDSIZE);
+            if (seededRoles)
+                handler->PSendSysMessage("Seeded %u missing LFG role(s) as damage for flex raid testing.", seededRoles);
+            return true;
+        }
+
+        if (!stricmp(args, "party"))
+        {
+            if (group->GetMembersCount() > MAXGROUPSIZE)
+            {
+                handler->PSendSysMessage("Cannot convert back to party while the group has %u members.", group->GetMembersCount());
+                handler->SetSentErrorMessage(true);
+                return false;
+            }
+
+            if (group->isRaidGroup())
+                group->ConvertToGroup();
+
+            handler->PSendSysMessage("Current group converted to party mode (%u/%u members).", group->GetMembersCount(), MAXGROUPSIZE);
+            return true;
+        }
+
+        handler->SendSysMessage("Usage: .debug lfg group raid|party|status");
         handler->SetSentErrorMessage(true);
         return false;
     }
