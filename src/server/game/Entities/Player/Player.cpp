@@ -1225,7 +1225,9 @@ void Player::HandleDrowning(uint32 time_diff)
                 m_MirrorTimer[BREATH_TIMER] += 1 * IN_MILLISECONDS;
                 // Calculate and deal damage
                 /// @todo Check this formula
-                uint32 damage = GetMaxHealth() / 5 + std::rand() % (getLevel() - 1);
+                // getLevel()-1 is 0 at level 1 → modulo-by-zero crash (bots often start at 1).
+                uint32 const levelSpread = getLevel() > 1 ? (getLevel() - 1) : 1;
+                uint32 damage = GetMaxHealth() / 5 + uint32(std::rand() % levelSpread);
                 EnvironmentalDamage(DAMAGE_DROWNING, damage);
             }
             else if (!(m_MirrorTimerFlagsLast & UNDERWATER_INWATER))      // Update time in client if need
@@ -1261,7 +1263,8 @@ void Player::HandleDrowning(uint32 time_diff)
                 m_MirrorTimer[FATIGUE_TIMER] += 1 * IN_MILLISECONDS;
                 if (IsAlive())                                            // Calculate and deal damage
                 {
-                    uint32 damage = GetMaxHealth() / 5 + std::rand() % (getLevel() - 1);
+                    uint32 const levelSpread = getLevel() > 1 ? (getLevel() - 1) : 1;
+                    uint32 damage = GetMaxHealth() / 5 + uint32(std::rand() % levelSpread);
                     EnvironmentalDamage(DAMAGE_EXHAUSTED, damage);
                 }
                 else if (HasFlag(PLAYER_FIELD_PLAYER_FLAGS, PLAYER_FLAGS_GHOST))       // Teleport ghost to graveyard
