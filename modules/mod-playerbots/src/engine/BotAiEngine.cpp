@@ -20,7 +20,7 @@ float BotPassiveMultiplier::GetValue(BotAction* action)
     if (_ai && _ai->HasEngageTarget() && action->GetName() == "combat")
         return 1.0f;
     std::string const& n = action->GetName();
-    if (n == "follow" || n == "stay" || n == "rest" || n == "vendor")
+    if (n == "follow" || n == "stay" || n == "rest" || n == "vendor" || n == "heal")
         return 1.0f;
     if (n.find("follow") != std::string::npos || n.find("stay") != std::string::npos)
         return 1.0f;
@@ -74,6 +74,16 @@ namespace
         }
     };
 
+    class InjuredAllyTrigger : public BotTrigger
+    {
+    public:
+        InjuredAllyTrigger(PlayerbotAI* ai) : BotTrigger(ai, "injured ally", 0) {}
+        bool IsActive() override
+        {
+            return _ai->NeedsOocHealPublic();
+        }
+    };
+
     class FarFromMasterTrigger : public BotTrigger
     {
     public:
@@ -84,6 +94,8 @@ namespace
                 return false;
             // Don't chase the master when we were ordered onto a target.
             if (_ai->HasEngageTarget())
+                return false;
+            if (_ai->NeedsOocHealPublic())
                 return false;
             // Prefer looting nearby corpses over re-issuing follow.
             if (_ai->HasNearbyLootPublic())
@@ -111,6 +123,8 @@ namespace
             if (_ai->IsClientControlled())
                 return false;
             if (_ai->NeedsRestPublic() || _ai->IsForceResting())
+                return false;
+            if (_ai->NeedsOocHealPublic())
                 return false;
             Player* bot = _ai->GetBot();
             if (!bot || !bot->IsAlive() || bot->IsInCombat())
@@ -160,6 +174,25 @@ namespace
         bool Execute() override { return _ai->RunRest(); }
     };
 
+    class HealAction : public BotAction
+    {
+    public:
+        HealAction(PlayerbotAI* ai) : BotAction(ai, "heal") {}
+        bool IsUseful() override
+        {
+            Player* bot = _ai->GetBot();
+            if (!bot || !bot->IsAlive())
+                return false;
+            return _ai->NeedsOocHealPublic();
+        }
+        bool IsPossible() override
+        {
+            Player* bot = _ai->GetBot();
+            return bot && !bot->HasUnitState(UNIT_STATE_CASTING);
+        }
+        bool Execute() override { return _ai->RunHeal(); }
+    };
+
     class FollowAction : public BotAction
     {
     public:
@@ -170,6 +203,8 @@ namespace
                 return false;
             if (_ai->NeedsRestPublic() || _ai->IsForceResting())
                 return false;
+            if (_ai->NeedsOocHealPublic())
+                return false; // top up allies before chasing the master
             if (_ai->HasTravelDestination())
                 return false;
             if (_ai->HasEngageTarget())
@@ -316,6 +351,7 @@ void BotAiEngine::RegisterCoreActions()
 {
     _actions["combat"] = std::make_unique<CombatAction>(_ai);
     _actions["rest"] = std::make_unique<RestAction>(_ai);
+    _actions["heal"] = std::make_unique<HealAction>(_ai);
     _actions["travel"] = std::make_unique<TravelAction>(_ai);
     _actions["follow"] = std::make_unique<FollowAction>(_ai);
     _actions["stay"] = std::make_unique<StayAction>(_ai);
@@ -344,6 +380,11 @@ void BotAiEngine::Rebuild()
     if (_ai->HasStrategy("food", BotState::NonCombat))
         addTrigger(std::make_unique<LowResourcesTrigger>(_ai),
             { BotNextAction("rest", BotRelevance::Rest) });
+
+    // OOC heal above follow so injured party members get topped before the pack moves.
+    if (_ai->HasStrategy("heal", BotState::NonCombat))
+        addTrigger(std::make_unique<InjuredAllyTrigger>(_ai),
+            { BotNextAction("heal", BotRelevance::Rest + 5.0f) });
 
     // Above follow/loot, below rest/combat — finish go destinations.
     addTrigger(std::make_unique<HasTravelDestinationTrigger>(_ai),
@@ -393,6 +434,15 @@ void BotAiEngine::PushDefaultActions()
     if (_ai->NeedsRestPublic() || _ai->IsForceResting())
     {
         _queue.Push("rest", BotRelevance::Rest);
+        // Still allow OOC heals to interleave above drink when allies are hurt.
+        if (_ai->NeedsOocHealPublic())
+            _queue.Push("heal", BotRelevance::Rest + 5.0f);
+        return;
+    }
+
+    if (_ai->NeedsOocHealPublic())
+    {
+        _queue.Push("heal", BotRelevance::Rest + 5.0f);
         return;
     }
 

@@ -249,7 +249,7 @@ uint32 SelectRestorationShaman(HealContext const& ctx)
         return false;
     };
 
-    if (!HasAuraUp(bot, WATER_SHIELD) && CanTryCast(bot, WATER_SHIELD))
+    if (!HasAuraUp(bot, WATER_SHIELD) && !urgent && CanTryCast(bot, WATER_SHIELD))
         return WATER_SHIELD;
 
     // Real triage heals before totems / long CDs — HST every GCD starved the line.
@@ -273,6 +273,9 @@ uint32 SelectRestorationShaman(HealContext const& ctx)
 
     if (NeedsMaintenance(ctx) && ctx.healTargetHealthPct < 85.0f && CanTryCast(bot, HEALING_WAVE))
         return HEALING_WAVE;
+
+    if (!HasAuraUp(bot, WATER_SHIELD) && CanTryCast(bot, WATER_SHIELD))
+        return WATER_SHIELD;
 
     if (!HasAuraUp(ally, EARTH_SHIELD) && CanTryCast(bot, EARTH_SHIELD))
         return EARTH_SHIELD;

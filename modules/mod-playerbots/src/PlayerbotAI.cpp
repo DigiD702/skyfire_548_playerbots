@@ -84,6 +84,11 @@ namespace
     // Distance ranged/caster bots try to hold from their target.
     constexpr float BOT_CAST_DIST = 25.0f;
 
+    // Healer OOC top-up / combat triage band (SelectHealTarget default).
+    constexpr float BOT_HEAL_BELOW_PCT = 90.0f;
+    // Hybrid DPS emergency off-heal (co +offheal).
+    constexpr float BOT_OFFHEAL_BELOW_PCT = 30.0f;
+
     // How far a bot will walk to loot a corpse or reach a repairer.
     // Keep loot near the group — long seeks cause follow↔loot thrash.
     constexpr float BOT_LOOT_SEEK_DIST = 25.0f;
@@ -255,7 +260,8 @@ PlayerbotAI::PlayerbotAI(Player* bot, bool clientControlled)
       _stay(false), _food(true), _loot(true), _quests(false),
       _passive(false), _grind(false),
       _tankMode(false), _tankAssist(false), _dpsMode(false), _dpsAssist(false),
-      _threat(false), _healerDps(false), _saveMana(false), _waitForAttack(false),
+      _threat(false), _healerDps(false), _saveMana(false), _offHeal(false), _ncHeal(false),
+      _waitForAttack(false),
       _aoe(false), _boost(true), _cc(false), _avoidAoe(true),
       _forceRest(false), _resting(false), _holdAssist(false),
       _forcedTargetGuid(0), _lfgRoleResponded(false), _lfgProposalResponded(false),
@@ -337,6 +343,8 @@ void PlayerbotAI::SyncFlagsFromStrategies()
     _threat = _strategies.Has("threat", BotState::Combat);
     _healerDps = _strategies.Has("healer dps", BotState::Combat);
     _saveMana = _strategies.Has("save mana", BotState::Combat);
+    _offHeal = _strategies.Has("offheal", BotState::Combat);
+    _ncHeal = _strategies.Has("heal", BotState::NonCombat);
     _waitForAttack = _strategies.Has("wait for attack", BotState::Combat);
     _aoe = _strategies.Has("aoe", BotState::Combat);
     _boost = _strategies.Has("boost", BotState::Combat);
@@ -363,6 +371,14 @@ void PlayerbotAI::RebuildAiEngine()
 bool PlayerbotAI::RunCombat() { return HandleCombat(); }
 bool PlayerbotAI::RunCombatCastOnly() { return HandleCombatCastOnly(); }
 bool PlayerbotAI::RunRest() { return HandleRest(); }
+bool PlayerbotAI::RunHeal()
+{
+    if (!_bot || !_ncHeal)
+        return false;
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+        return false;
+    return HandleHealing(BOT_HEAL_BELOW_PCT);
+}
 void PlayerbotAI::RunFollow() { HandleFollow(); }
 void PlayerbotAI::RunStay() { HandleStay(); }
 bool PlayerbotAI::RunLoot() { return HandleLoot(); }
@@ -746,6 +762,20 @@ bool PlayerbotAI::NeedsRestPublic() const
     return needHp || needMana;
 }
 
+bool PlayerbotAI::NeedsOocHealPublic() const
+{
+    if (!_bot || !_ncHeal)
+        return false;
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+        return false;
+    if (HasEngageTarget())
+        return false;
+    if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
+        return true; // finish the cast
+    // const_cast: SelectHealTarget is logically read-only for this check.
+    return const_cast<PlayerbotAI*>(this)->SelectHealTarget(BOT_HEAL_BELOW_PCT) != nullptr;
+}
+
 void PlayerbotAI::UpdateAI(uint32 diff)
 {
     if (!_bot || !_bot->IsInWorld())
@@ -810,11 +840,18 @@ void PlayerbotAI::UpdateAI(uint32 diff)
         // Self-bot: never auto-drink while combat is active (engine RestAction
         // is also gated; keep the fallback aligned).
         if (!_bot->IsInCombat() && !GroupInCombat() && _bot->getAttackers().empty())
-            HandleRest();
+        {
+            if (NeedsOocHealPublic())
+                RunHeal();
+            else
+                HandleRest();
+        }
         return;
     }
 
     if (HandleCombat())
+        return;
+    if (NeedsOocHealPublic() && RunHeal())
         return;
     if (HandleRest())
         return;
@@ -1079,7 +1116,7 @@ bool PlayerbotAI::HandleCombat()
 
     if (GetCombatRole() == CombatRole::Healer)
     {
-        if (SelectHealTarget() && HandleHealing())
+        if (HandleHealing(BOT_HEAL_BELOW_PCT))
         {
             StopResting();
             return true;
@@ -1100,6 +1137,11 @@ bool PlayerbotAI::HandleCombat()
             }
             return false;
         }
+    }
+    else if (_offHeal && CanOffHealClass() && HandleHealing(BOT_OFFHEAL_BELOW_PCT))
+    {
+        StopResting();
+        return true;
     }
 
     Unit* target = SelectTarget();
@@ -1290,13 +1332,18 @@ bool PlayerbotAI::HandleCombatCastOnly()
     // Heal only when someone is actually injured; otherwise healer-dps may attack.
     if (GetCombatRole() == CombatRole::Healer)
     {
-        if (SelectHealTarget() && HandleHealing())
+        if (HandleHealing(BOT_HEAL_BELOW_PCT))
         {
             StopResting();
             return true;
         }
         if (!_healerDps)
             return GroupInCombat() || !_bot->getAttackers().empty();
+    }
+    else if (_offHeal && CanOffHealClass() && HandleHealing(BOT_OFFHEAL_BELOW_PCT))
+    {
+        StopResting();
+        return true;
     }
 
     Unit* target = SelectTarget();
@@ -1841,34 +1888,41 @@ bool PlayerbotAI::HandleResurrect()
     return BotRotation::CastHealSpell(_bot, dead, rezId);
 }
 
-bool PlayerbotAI::HandleHealing()
+bool PlayerbotAI::HandleHealing(float belowPct)
 {
     if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
         return true;
 
-    // Kick / racial / trinket before heals when a hostile is available.
-    if (BotRotation::TryMaintainBuffs(_bot))
-        return true;
-
-    Unit* utilityTarget = _bot->GetVictim();
-    if (!IsSafeAttackTarget(utilityTarget))
-    {
-        utilityTarget = nullptr;
-        for (Unit* attacker : _bot->getAttackers())
-        {
-            if (IsSafeAttackTarget(attacker))
-            {
-                utilityTarget = attacker;
-                break;
-            }
-        }
-    }
-    if (BotRotation::TryCombatUtilities(_bot, utilityTarget))
-        return true;
-
-    Player* ally = SelectHealTarget();
+    Player* ally = SelectHealTarget(belowPct);
     if (!ally)
         return false;
+
+    float const allyPct = ally->GetMaxHealth()
+        ? (100.0f * float(ally->GetHealth()) / float(ally->GetMaxHealth())) : 100.0f;
+    bool const urgent = allyPct < 40.0f;
+
+    // When someone is dying, skip buffs / utility — they ate the GCD every tick.
+    if (!urgent)
+    {
+        if (BotRotation::TryMaintainBuffs(_bot))
+            return true;
+
+        Unit* utilityTarget = _bot->GetVictim();
+        if (!IsSafeAttackTarget(utilityTarget))
+        {
+            utilityTarget = nullptr;
+            for (Unit* attacker : _bot->getAttackers())
+            {
+                if (IsSafeAttackTarget(attacker))
+                {
+                    utilityTarget = attacker;
+                    break;
+                }
+            }
+        }
+        if (BotRotation::TryCombatUtilities(_bot, utilityTarget))
+            return true;
+    }
 
     uint32 healId = BotRotation::SelectNextHeal(_bot, ally, _saveMana,
         sPlayerbotMgr->GetSaveManaThreshold());
@@ -1885,12 +1939,40 @@ bool PlayerbotAI::HandleHealing()
         return true;
     }
 
-    if (!_clientControlled && !_bot->IsWithinMeleeRange(ally))
-        _bot->StopMoving();
+    if (!_clientControlled)
+    {
+        if (!_bot->IsStopped())
+            _bot->StopMoving();
+        _bot->RemoveUnitMovementFlag(MOVEMENTFLAG_MASK_MOVING);
+    }
 
     _bot->SetSelection(ally->GetGUID());
-    BotRotation::CastHealSpell(_bot, ally, healId);
-    return true;
+    if (BotRotation::CastHealSpell(_bot, ally, healId))
+        return true;
+
+    // Selected cast failed to start — try the class filler heal once.
+    uint32 const filler = GetHealSpell();
+    if (filler && filler != healId && BotRotation::CanTryCast(_bot, filler)
+        && BotRotation::CastHealSpell(_bot, ally, filler))
+        return true;
+    return false;
+}
+
+bool PlayerbotAI::CanOffHealClass() const
+{
+    if (!_bot)
+        return false;
+    switch (_bot->getClass())
+    {
+        case CLASS_PALADIN:
+        case CLASS_PRIEST:
+        case CLASS_SHAMAN:
+        case CLASS_DRUID:
+        case CLASS_MONK:
+            return true;
+        default:
+            return false;
+    }
 }
 
 Unit* PlayerbotAI::SelectTankTarget()
@@ -2050,16 +2132,55 @@ void PlayerbotAI::DoTankExtras(Unit* target, bool closing)
     }
 
     // While running in, do not plant for AoE — chase + auto-attack build threat.
+    // Gap-closer / ranged tag only.
     if (closing)
+    {
+        if (_bot->getClass() == CLASS_WARRIOR)
+        {
+            // Charge / Heroic Leap / Heroic Throw while closing a peel.
+            static uint32 const gapClosers[] = { 100, 6544, 57755 }; // Charge, Leap, Throw
+            for (uint32 id : gapClosers)
+            {
+                if (!_bot->HasSpell(id) || _bot->HasSpellCooldown(id))
+                    continue;
+                if (!BotRotation::CanTryCast(_bot, id))
+                    continue;
+                if (BotRotation::CastSpell(_bot, target, id))
+                    return;
+            }
+        }
+        return;
+    }
+
+    // AoE threat only when something in the pack is not on us — never spam
+    // Thunder Clap every GCD (that starved Shield Slam / Revenge / Devastate).
+    if (BotRotation::CountNearbyEnemies(_bot, 10.0f) < 2)
         return;
 
-    // Multi-target: drop an AoE / ranged threat ability when 2+ hostiles are nearby.
-    if (BotRotation::CountNearbyEnemies(_bot, 10.0f) >= 2)
+    bool needPackThreat = false;
     {
-        if (uint32 aoe = GetAoeThreatSpell())
-            if (BotRotation::CanTryCast(_bot, aoe) && BotRotation::CastSpell(_bot, target, aoe))
-                return;
+        std::list<Unit*> nearby;
+        Skyfire::AnyUnfriendlyUnitInObjectRangeCheck check(_bot, _bot, 10.0f);
+        Skyfire::UnitListSearcher<Skyfire::AnyUnfriendlyUnitInObjectRangeCheck> searcher(_bot, nearby, check);
+        _bot->VisitNearbyObject(10.0f, searcher);
+        for (Unit* enemy : nearby)
+        {
+            if (!enemy || !enemy->IsAlive() || !IsSafeAttackTarget(enemy))
+                continue;
+            Unit* ev = enemy->GetVictim();
+            if (ev && ev != _bot)
+            {
+                needPackThreat = true;
+                break;
+            }
+        }
     }
+    if (!needPackThreat)
+        return;
+
+    if (uint32 aoe = GetAoeThreatSpell())
+        if (BotRotation::CanTryCast(_bot, aoe) && BotRotation::CastSpell(_bot, target, aoe))
+            return;
 }
 
 Unit* PlayerbotAI::SelectGroupThreatTarget()
@@ -2146,11 +2267,11 @@ Unit* PlayerbotAI::SelectLowestHpGroupEnemy()
     return SelectGroupThreatTarget();
 }
 
-Player* PlayerbotAI::SelectHealTarget()
+Player* PlayerbotAI::SelectHealTarget(float belowPct)
 {
     Group* group = _bot->GetGroup();
     Player* best = nullptr;
-    float bestPct = 90.0f; // only heal when below this
+    float bestPct = belowPct; // only heal when strictly below this
 
     auto consider = [&](Player* member)
     {
@@ -2324,8 +2445,9 @@ uint32 PlayerbotAI::GetAoeThreatSpell() const
     switch (_bot->getClass())
     {
         case CLASS_WARRIOR:
-            candidates[0] = 6343;     // Thunder Clap
-            candidates[1] = 1680;     // Whirlwind
+            candidates[0] = 46968;    // Shockwave
+            candidates[1] = 6343;     // Thunder Clap
+            candidates[2] = 1680;     // Whirlwind
             break;
         case CLASS_PALADIN:
             candidates[0] = 31935;    // Avenger's Shield (ranged)
@@ -5146,14 +5268,14 @@ bool PlayerbotAI::StrategyAllowed(bool combat, std::string const& name) const
     if (n == "passive" || n == "grind")
         return true;
     if (!combat)
-        return n == "food" || n == "follow" || n == "stay" || n == "loot";
+        return n == "food" || n == "follow" || n == "stay" || n == "loot" || n == "heal";
     if (n == "aoe" || n == "boost" || n == "cc" || n == "avoid aoe")
         return true;
     if (role == CombatRole::Tank)
         return n == "tank" || n == "tank assist" || n == "dps";
     if (role == CombatRole::Healer)
         return n == "heal" || n == "healer dps" || n == "save mana" || n == "wait for attack";
-    return n == "dps" || n == "dps assist" || n == "threat" || n == "wait for attack";
+    return n == "dps" || n == "dps assist" || n == "threat" || n == "wait for attack" || n == "offheal";
 }
 
 bool PlayerbotAI::HandleStrategyCommand(Player* from, std::string const& cmd, bool /*acknowledge*/)
@@ -5596,6 +5718,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
     if (cmd == "heal")
     {
         std::string const report = _strategies.ChangeStrategy("+heal", BotState::Combat);
+        _strategies.ChangeStrategy("+heal", BotState::NonCombat);
         SyncFlagsFromStrategies();
         ack(report.c_str());
         return true;

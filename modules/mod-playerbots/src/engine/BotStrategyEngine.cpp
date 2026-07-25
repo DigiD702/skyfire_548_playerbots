@@ -72,6 +72,7 @@ void BotStrategyEngine::ResetToRoleDefaults(bool isTank, bool isHealer, uint8 cl
     else if (isHealer)
     {
         Add("heal", BotState::Combat);
+        Add("heal", BotState::NonCombat); // OOC top-ups after pulls
         Add("save mana", BotState::Combat);
         // Healers: aoe off unless explicitly enabled.
     }
@@ -83,6 +84,10 @@ void BotStrategyEngine::ResetToRoleDefaults(bool isTank, bool isHealer, uint8 cl
         Add("aoe", BotState::Combat);
         // AC-style: give the tank a few seconds before DPS open.
         Add("wait for attack", BotState::Combat);
+        // Hybrid DPS emergency-heal below threshold (co +/-offheal).
+        if (_cls == CLASS_PALADIN || _cls == CLASS_PRIEST || _cls == CLASS_SHAMAN
+            || _cls == CLASS_DRUID || _cls == CLASS_MONK)
+            Add("offheal", BotState::Combat);
     }
 
     // CC default ON for classes that rely on it (AC AiFactory).
@@ -124,6 +129,7 @@ std::string BotStrategyEngine::NormalizeName(std::string name)
     if (out == "dpsassist") out = "dps assist";
     if (out == "waitforattack" || out == "wait attack") out = "wait for attack";
     if (out == "avoidaoe" || out == "avoid") out = "avoid aoe";
+    if (out == "off heal" || out == "off-heal") out = "offheal";
     return out;
 }
 
@@ -133,12 +139,13 @@ bool BotStrategyEngine::IsKnown(std::string const& name, BotState state) const
         return true;
 
     if (state == BotState::NonCombat)
-        return name == "food" || name == "follow" || name == "stay" || name == "loot" || name == "quests";
+        return name == "food" || name == "follow" || name == "stay" || name == "loot"
+            || name == "quests" || name == "heal";
 
     // Combat names (role gate applied separately).
     return name == "tank" || name == "tank assist" || name == "dps" || name == "dps assist"
         || name == "heal" || name == "healer dps" || name == "save mana" || name == "threat"
-        || name == "wait for attack"
+        || name == "wait for attack" || name == "offheal"
         || name == "aoe" || name == "boost" || name == "cc" || name == "avoid aoe";
 }
 
@@ -147,7 +154,11 @@ bool BotStrategyEngine::IsRoleAllowed(std::string const& name, BotState state, b
     if (name == "passive" || name == "grind")
         return true;
     if (state == BotState::NonCombat)
+    {
+        if (name == "heal")
+            return isHealer; // dedicated healers only for nc +heal
         return IsKnown(name, state);
+    }
 
     // Shared combat toggles — any role may enable/disable.
     if (name == "aoe" || name == "boost" || name == "cc" || name == "avoid aoe")
@@ -157,7 +168,8 @@ bool BotStrategyEngine::IsRoleAllowed(std::string const& name, BotState state, b
         return name == "tank" || name == "tank assist" || name == "dps";
     if (isHealer)
         return name == "heal" || name == "healer dps" || name == "save mana" || name == "wait for attack";
-    return name == "dps" || name == "dps assist" || name == "threat" || name == "wait for attack";
+    return name == "dps" || name == "dps assist" || name == "threat" || name == "wait for attack"
+        || name == "offheal";
 }
 
 void BotStrategyEngine::ApplyMutualExclusions(std::string const& name, BotState state, bool enabled)
@@ -266,7 +278,7 @@ std::string BotStrategyEngine::Format(BotState state) const
     // List known names for this state/role with +/- like AC "?".
     std::vector<std::string> names;
     if (state == BotState::NonCombat)
-        names = { "food", "follow", "stay", "loot", "quests", "passive", "grind" };
+        names = { "food", "follow", "stay", "loot", "quests", "heal", "passive", "grind" };
     else if (_isTank)
         names = { "passive", "grind", "tank", "tank assist", "dps",
                   "aoe", "boost", "cc", "avoid aoe" };
@@ -274,7 +286,7 @@ std::string BotStrategyEngine::Format(BotState state) const
         names = { "passive", "grind", "heal", "healer dps", "save mana", "wait for attack",
                   "aoe", "boost", "cc", "avoid aoe" };
     else
-        names = { "passive", "grind", "dps", "dps assist", "threat", "wait for attack",
+        names = { "passive", "grind", "dps", "dps assist", "threat", "wait for attack", "offheal",
                   "aoe", "boost", "cc", "avoid aoe" };
 
     std::string out;
@@ -367,6 +379,9 @@ void BotStrategyEngine::ApplyFollowPack()
     // Ensure follow is on NC even if stay was set.
     Add("follow", BotState::NonCombat);
     Remove("stay", BotState::NonCombat);
+    // Healers should top up OOC after pulls (nc +heal).
+    if (_isHealer)
+        Add("heal", BotState::NonCombat);
 }
 
 void BotStrategyEngine::ApplyStayPack()

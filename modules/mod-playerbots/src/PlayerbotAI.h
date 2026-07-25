@@ -91,6 +91,7 @@ public:
     bool RunCombat();
     bool RunCombatCastOnly();
     bool RunRest();
+    bool RunHeal();
     void RunFollow();
     void RunStay();
     bool RunLoot();
@@ -106,6 +107,8 @@ public:
     bool IsGroupInCombatPublic() const;
     bool ShouldFollowPublic() const;
     bool NeedsRestPublic() const;
+    // nc +heal: party member below OOC heal threshold while out of combat.
+    bool NeedsOocHealPublic() const;
     bool IsForceResting() const { return _forceRest || _resting; }
     // Used by questgiver grid search — skip empty/bugged QUESTGIVER NPCs.
     bool QuestgiverHasUsefulWork(Creature const* npc) const;
@@ -159,7 +162,8 @@ private:
     void HandleInteractions();
     bool HandleCombat();
     bool HandleCombatCastOnly();
-    bool HandleHealing();
+    // belowPct: only heal allies under this HP% (90 combat healer, 30 offheal, etc).
+    bool HandleHealing(float belowPct = 90.0f);
     bool TryAcceptResurrect();
     bool HandleResurrect();
     bool HandleRest();
@@ -232,7 +236,7 @@ private:
     Unit* SelectGroupThreatTarget();
     Unit* SelectAssistTankTarget();
     Unit* SelectLowestHpGroupEnemy();
-    Player* SelectHealTarget();
+    Player* SelectHealTarget(float belowPct = 90.0f);
     Unit* GetForcedTarget() const;
     void SetForcedTarget(Unit* target);
     void ClearForcedTarget();
@@ -262,6 +266,7 @@ private:
     // Healer/ranged: stand at cast range from focus — never master formation in combat.
     void HoldRangedCombatPosition(Unit* focus, float maxRange);
     Unit* SelectHealerCombatAnchor();
+    bool CanOffHealClass() const;
     uint32 GetHealSpell() const;
     void DoRotation(Unit* target);
     void DoTankExtras(Unit* target, bool closing = false);
@@ -329,6 +334,8 @@ private:
     bool _threat;        // damage: throttle when high on threat
     bool _healerDps;     // healer: damage when nobody needs heals
     bool _saveMana;      // healer: efficient heals when low mana
+    bool _offHeal;       // DPS hybrid: emergency heal below threshold
+    bool _ncHeal;        // healer: top up allies out of combat
     bool _waitForAttack; // non-tanks delay DPS after combat starts
     bool _aoe;           // multi-target rotation branches
     bool _boost;         // trinkets + offensive racials

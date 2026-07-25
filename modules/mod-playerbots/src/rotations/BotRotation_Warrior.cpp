@@ -159,6 +159,7 @@ uint32 SelectFury(Context const& ctx)
 uint32 SelectProtectionWarrior(Context const& ctx)
 {
     Player* bot = ctx.bot;
+    Unit* target = ctx.target;
     uint32 const rage = bot->GetPower(POWER_RAGE);
 
     enum ProtWarSpells : uint32
@@ -169,11 +170,15 @@ uint32 SelectProtectionWarrior(Context const& ctx)
         REVENGE             = 6572,
         DEVASTATE           = 20243,
         THUNDER_CLAP        = 6343,
+        WEAKENED_BLOWS      = 115798, // applied by Thunder Clap
         SHIELD_BLOCK        = 2565,
         SHIELD_BLOCK_BUFF   = 132404,
         HEROIC_STRIKE       = 78,
+        CLEAVE              = 845,
         SHIELD_WALL         = 871,
         DEMORALIZING_SHOUT  = 1160,
+        SHOCKWAVE           = 46968,
+        HEROIC_THROW        = 57755,
     };
 
     bool const inDefensive = bot->GetShapeshiftForm() == FORM_DEFENSIVESTANCE
@@ -193,20 +198,37 @@ uint32 SelectProtectionWarrior(Context const& ctx)
         && CanTryCast(bot, SHIELD_BLOCK))
         return SHIELD_BLOCK;
 
-    if (ctx.enemies >= 2 && CanTryCast(bot, THUNDER_CLAP))
-        return THUNDER_CLAP;
-    if (ctx.enemies >= 2 && CanTryCast(bot, DEMORALIZING_SHOUT))
-        return DEMORALIZING_SHOUT;
-
+    // Single-target threat builders first — Thunder Clap used to sit above these
+    // whenever enemies >= 2, so peel/pack tanks never Shield Slam / Revenge.
     if (hasShield && CanTryCast(bot, SHIELD_SLAM))
         return SHIELD_SLAM;
     if (CanTryCast(bot, REVENGE))
         return REVENGE;
+
+    if (ctx.enemies >= 2)
+    {
+        if (CanTryCast(bot, SHOCKWAVE))
+            return SHOCKWAVE;
+        // Keep Weakened Blows up; do not hard-cast TC every GCD before Devastate.
+        if (target
+            && (!HasAuraUp(target, WEAKENED_BLOWS) || AuraRemains(target, WEAKENED_BLOWS) <= 3.0f)
+            && CanTryCast(bot, THUNDER_CLAP))
+            return THUNDER_CLAP;
+        if (CanTryCast(bot, DEMORALIZING_SHOUT))
+            return DEMORALIZING_SHOUT;
+        if (rage >= 40 && CanTryCast(bot, CLEAVE))
+            return CLEAVE;
+    }
+
     if (CanTryCast(bot, DEVASTATE))
         return DEVASTATE;
 
     if (rage >= 60 && CanTryCast(bot, HEROIC_STRIKE))
         return HEROIC_STRIKE;
+
+    // Out of melee fillers while chasing a peel.
+    if (target && !bot->IsWithinMeleeRange(target) && CanTryCast(bot, HEROIC_THROW))
+        return HEROIC_THROW;
 
     return 0;
 }
