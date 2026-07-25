@@ -226,6 +226,10 @@ namespace
                 return false;
             if (!_bot->IsWithinDist(creature, _range))
                 return false;
+            // Class/profession trainers often also carry QUESTGIVER. Spells come from
+            // init — never walk up and open trainer gossip (spams DB/gossip errors).
+            if (creature->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_TRAINER))
+                return false;
             return creature->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER);
         }
 
@@ -4138,6 +4142,10 @@ bool PlayerbotAI::TryGossipForVendorOrQuest(Creature* npc, bool wantVendor, bool
     if (!_bot || !npc || !_bot->PlayerTalkClass)
         return false;
 
+    // Never open trainer menus — bots learn spells via InitializeBot.
+    if (npc->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_TRAINER))
+        return false;
+
     // Already has the needed npcflag — no gossip hop required.
     if (wantVendor && npc->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_VENDOR))
         return false;
@@ -4161,20 +4169,28 @@ bool PlayerbotAI::TryGossipForVendorOrQuest(Creature* npc, bool wantVendor, bool
         {
             GossipMenuItem const& item = kv.second;
             uint32 const id = kv.first;
+            // Never select trainer / dual-spec / unlearn options.
+            if (item.OptionType == GOSSIP_OPTION_TRAINER
+                || item.OptionType == GOSSIP_OPTION_UNLEARNTALENTS
+                || item.OptionType == GOSSIP_OPTION_UNLEARNPETTALENTS
+                || item.OptionType == GOSSIP_OPTION_LEARNDUALSPEC
+                || item.OptionType == GOSSIP_OPTION_UNLEARN_SPEC
+                || item.MenuItemIcon == GOSSIP_ICON_TRAINER)
+                continue;
+
             if (wantVendor && (item.OptionType == GOSSIP_OPTION_VENDOR
                 || item.MenuItemIcon == GOSSIP_ICON_VENDOR))
             {
                 pick = int(id);
                 break;
             }
-            if (wantQuest && (item.OptionType == GOSSIP_OPTION_QUESTGIVER
-                || item.MenuItemIcon == GOSSIP_ICON_CHAT
-                || item.MenuItemIcon == GOSSIP_ICON_TALK))
+            if (wantQuest && item.OptionType == GOSSIP_OPTION_QUESTGIVER)
             {
                 pick = int(id);
                 break;
             }
-            if (pick < 0 && item.OptionType == GOSSIP_OPTION_GOSSIP)
+            if (pick < 0 && item.OptionType == GOSSIP_OPTION_GOSSIP
+                && item.MenuItemIcon != GOSSIP_ICON_TRAINER)
                 pick = int(id);
         }
         if (pick < 0)
