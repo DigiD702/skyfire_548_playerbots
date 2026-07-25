@@ -1154,6 +1154,13 @@ namespace
           << " AND RequiredLevel >= " << minReq
           << " AND Quality BETWEEN " << qualityMin << " AND " << qualityCap
           << " AND duration = 0 AND startquest = 0"
+          // QA / combat-test templates often use RequiredLevel 1 with raid ilvl.
+          << " AND name NOT LIKE 'QA %'"
+          << " AND name NOT LIKE 'Test %'"
+          << " AND name NOT LIKE '%Combat Test%'"
+          << " AND (Flags & " << uint32(ITEM_PROTO_FLAG_DEPRECATED) << ") = 0"
+          // Soft ilvl ceiling so low-req high-ilvl junk cannot dominate the pool.
+          << " AND ItemLevel <= " << (level * 8u + 40u)
           << " AND (AllowableClass = -1 OR (AllowableClass & " << classBit << "))"
           << " AND (AllowableRace = -1 OR (AllowableRace & " << raceBit << "))";
 
@@ -1167,7 +1174,8 @@ namespace
               << " OR stat_type7=" << primaryStat << " OR stat_type8=" << primaryStat
               << " OR stat_type9=" << primaryStat << " OR stat_type10=" << primaryStat << ")";
 
-        q << " ORDER BY ItemLevel DESC, RequiredLevel DESC LIMIT 25";
+        // Prefer items the bot actually leveled into; only then pick the strongest.
+        q << " ORDER BY RequiredLevel DESC, ItemLevel DESC LIMIT 25";
 
         std::vector<uint32> entries;
         if (QueryResult result = WorldDatabase.Query(q.str().c_str()))
