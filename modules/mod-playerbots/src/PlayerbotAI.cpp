@@ -90,6 +90,9 @@ namespace
     constexpr float BOT_REPAIR_SEEK_DIST = 20.0f;
     constexpr float BOT_VENDOR_SEEK_DIST = 20.0f;
     constexpr float BOT_QUEST_SEEK_DIST = 20.0f;
+    // Skip quest NPCs with no takeable/turn-in work (bugged flags, wrong phase,
+    // already done). Re-check after this so level-ups can unlock them later.
+    constexpr uint32 BOT_QUEST_NPC_IGNORE_MS = 10 * MINUTE * IN_MILLISECONDS;
     // Once within this of a quest spawn, hunt/wander locally instead of re-pathing.
     constexpr float BOT_QUEST_HUNT_RADIUS = 40.0f;
 
@@ -218,7 +221,8 @@ namespace
 
     struct BotQuestgiverCheck
     {
-        BotQuestgiverCheck(Player* bot, float range) : _bot(bot), _range(range) { }
+        BotQuestgiverCheck(Player* bot, float range, PlayerbotAI* ai)
+            : _bot(bot), _range(range), _ai(ai) { }
 
         bool operator()(Creature* creature) const
         {
@@ -230,11 +234,17 @@ namespace
             // init — never walk up and open trainer gossip (spams DB/gossip errors).
             if (creature->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_TRAINER))
                 return false;
-            return creature->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER);
+            if (!creature->HasFlag(UNIT_FIELD_NPC_FLAGS, UNIT_NPC_FLAG_QUESTGIVER))
+                return false;
+            if (_ai && (_ai->IsQuestNpcIgnored(creature->GetEntry())
+                || !_ai->QuestgiverHasUsefulWork(creature)))
+                return false;
+            return true;
         }
 
         Player* _bot;
         float _range;
+        PlayerbotAI* _ai;
     };
 }
 
@@ -646,6 +656,18 @@ bool PlayerbotAI::HasEngageTarget() const
     if (_targets.GetPullGuid())
         return _targets.GetPullTarget(const_cast<PlayerbotAI*>(this)) != nullptr;
     return false;
+}
+
+bool PlayerbotAI::IsSafeAttackTarget(Unit const* target) const
+{
+    if (!_bot || !target || !target->IsAlive())
+        return false;
+    // GetMap() ASSERTs when m_currMap is null — never call visibility checks then.
+    if (!_bot->IsInWorld() || !target->IsInWorld())
+        return false;
+    if (!_bot->FindMap() || !target->FindMap() || _bot->FindMap() != target->FindMap())
+        return false;
+    return _bot->IsValidAttackTarget(target);
 }
 
 bool PlayerbotAI::ShouldWaitForAttack() const
@@ -1197,10 +1219,11 @@ bool PlayerbotAI::HandleCombat()
     }
     _bot->Attack(target, false);
 
-    // Too close for casting: kite out with FleeManager before planting.
+    // Too close for casting: kite only when a tank holds the mob in a dungeon.
+    // Solo / open-world casters stand ground and cast (mob will stick on them).
     if (!casting && (_bot->IsWithinMeleeRange(target) || dist < BOT_CAST_DIST * 0.40f))
     {
-        if (TryCombatFlee(target))
+        if (WantsRangedKiting() && TryCombatFlee(target))
             return true;
     }
 
@@ -1512,7 +1535,7 @@ Unit* PlayerbotAI::GetForcedTarget() const
         return nullptr;
 
     Unit* target = ObjectAccessor::GetUnit(*_bot, _forcedTargetGuid);
-    if (!target || !target->IsAlive() || !_bot->IsValidAttackTarget(target))
+    if (!IsSafeAttackTarget(target))
         return nullptr;
     return target;
 }
@@ -1646,10 +1669,13 @@ void PlayerbotAI::DoRotation(Unit* target)
     if (ShouldThrottleThreat(target))
         return;
 
-    // Interrupts first. Keep raid/self buffs up, then sync trinkets to burst.
+    // Interrupts first. Keep raid/self buffs up only between pulls — Fortitude/
+    // Kings spam while a party member lacks the buff was eating every GCD and
+    // left shadow priests (etc.) silent except for interrupts.
     if (BotRotation::TryInterrupt(_bot, target))
         return;
-    if (BotRotation::TryMaintainBuffs(_bot))
+    bool const midFight = _bot->IsInCombat() || HasEngageTarget() || GroupInCombat();
+    if (!midFight && BotRotation::TryMaintainBuffs(_bot))
         return;
     if (BotRotation::IsBursting(_bot) && BotRotation::TryTrinkets(_bot))
         return;
@@ -1794,11 +1820,12 @@ bool PlayerbotAI::HandleHealing()
         return true;
 
     Unit* utilityTarget = _bot->GetVictim();
-    if (!utilityTarget || !utilityTarget->IsAlive() || !_bot->IsValidAttackTarget(utilityTarget))
+    if (!IsSafeAttackTarget(utilityTarget))
     {
+        utilityTarget = nullptr;
         for (Unit* attacker : _bot->getAttackers())
         {
-            if (attacker && attacker->IsAlive() && _bot->IsValidAttackTarget(attacker))
+            if (IsSafeAttackTarget(attacker))
             {
                 utilityTarget = attacker;
                 break;
@@ -2193,10 +2220,10 @@ void PlayerbotAI::HoldRangedCombatPosition(Unit* focus, float maxRange)
     bool const hasLos = _bot->IsWithinLOSInMap(focus);
     float const standDist = maxRange * 0.85f;
 
-    // Too close — step out (same kite path as ranged DPS).
+    // Too close — step out only when dungeon kiting is enabled.
     if (_bot->IsWithinMeleeRange(focus) || dist < maxRange * 0.40f)
     {
-        if (TryCombatFlee(focus))
+        if (WantsRangedKiting() && TryCombatFlee(focus))
             return;
     }
 
@@ -2638,6 +2665,56 @@ bool PlayerbotAI::TryAvoidAoe()
     return true;
 }
 
+bool PlayerbotAI::WantsRangedKiting() const
+{
+    if (!_bot || _clientControlled)
+        return false;
+
+    // Emergency: low HP always allow backing off if flee is enabled.
+    if (_bot->GetHealthPct() <= 30.0f)
+        return true;
+
+    // Above 30%: only hold cast range when a tank can keep the mob and we're
+    // in a dungeon/instance. Open-world solo casters plant and cast instead of
+    // endlessly kiting a chasing mob.
+    Map* map = _bot->FindMap();
+    if (!map || !map->IsDungeon())
+        return false;
+
+    Group* group = _bot->GetGroup();
+    if (!group)
+        return false;
+
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || member == _bot || !member->IsAlive() || !member->IsInWorld())
+            continue;
+        if (member->GetMap() != map)
+            continue;
+
+        uint32 const specId = member->GetTalentSpecialization(member->GetActiveSpec());
+        uint8 const cls = member->getClass();
+        uint32 const* specs = GetClassSpecializations(cls);
+        if (!specs)
+            continue;
+
+        bool isTank = false;
+        switch (cls)
+        {
+            case CLASS_WARRIOR: isTank = (specId == specs[2]); break;
+            case CLASS_PALADIN: isTank = (specId == specs[1]); break;
+            case CLASS_DEATH_KNIGHT: isTank = (specId == specs[0]); break;
+            case CLASS_DRUID: isTank = (specId == specs[2]); break;
+            case CLASS_MONK: isTank = (specId == specs[0]); break;
+            default: break;
+        }
+        if (isTank)
+            return true;
+    }
+    return false;
+}
+
 bool PlayerbotAI::TryCombatFlee(Unit* focus)
 {
     if (!_bot || _clientControlled || _stay)
@@ -2647,6 +2724,8 @@ bool PlayerbotAI::TryCombatFlee(Unit* focus)
     if (GetCombatRole() == CombatRole::Tank && _tankMode)
         return false;
     if (!IsRangedClass() && GetCombatRole() != CombatRole::Healer)
+        return false;
+    if (!WantsRangedKiting())
         return false;
     if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
         return false;
@@ -3428,7 +3507,7 @@ Creature* PlayerbotAI::FindNearbyVendor()
 Creature* PlayerbotAI::FindNearbyQuestgiver()
 {
     std::list<Creature*> list;
-    BotQuestgiverCheck check(_bot, BOT_QUEST_SEEK_DIST);
+    BotQuestgiverCheck check(_bot, BOT_QUEST_SEEK_DIST, this);
     Skyfire::CreatureListSearcher<BotQuestgiverCheck> searcher(_bot, list, check);
     _bot->VisitNearbyGridObject(BOT_QUEST_SEEK_DIST, searcher);
 
@@ -3444,6 +3523,59 @@ Creature* PlayerbotAI::FindNearbyQuestgiver()
         }
     }
     return best;
+}
+
+bool PlayerbotAI::IsQuestNpcIgnored(uint32 entry) const
+{
+    auto it = _ignoredQuestNpcEntries.find(entry);
+    if (it == _ignoredQuestNpcEntries.end())
+        return false;
+    return getMSTime() < it->second;
+}
+
+void PlayerbotAI::IgnoreQuestNpc(uint32 entry, uint32 durationMs)
+{
+    if (!entry)
+        return;
+    uint32 const dur = durationMs ? durationMs : BOT_QUEST_NPC_IGNORE_MS;
+    _ignoredQuestNpcEntries[entry] = getMSTime() + dur;
+}
+
+bool PlayerbotAI::QuestgiverHasUsefulWork(Creature const* npc) const
+{
+    if (!_bot || !npc)
+        return false;
+
+    uint32 const entry = npc->GetEntry();
+    if (IsQuestNpcIgnored(entry))
+        return false;
+
+    QuestRelationBounds const involved = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(entry);
+    for (auto itr = involved.first; itr != involved.second; ++itr)
+    {
+        Quest const* quest = sObjectMgr->GetQuestTemplate(itr->second);
+        if (!quest)
+            continue;
+        QuestStatus const status = _bot->GetQuestStatus(itr->second);
+        if (status == QUEST_STATUS_COMPLETE && _bot->CanRewardQuest(quest, false))
+            return true;
+    }
+
+    QuestRelationBounds const starters = sObjectMgr->GetCreatureQuestRelationBounds(entry);
+    for (auto itr = starters.first; itr != starters.second; ++itr)
+    {
+        Quest const* quest = sObjectMgr->GetQuestTemplate(itr->second);
+        if (!quest)
+            continue;
+        if (_bot->GetQuestStatus(itr->second) != QUEST_STATUS_NONE)
+            continue;
+        if (_bot->CanTakeQuest(quest, false) && _bot->CanAddQuest(quest, false))
+            return true;
+    }
+
+    // QUESTGIVER flag with no relations (e.g. Verner Osgood 415) or nothing
+    // this bot can use right now — do not path to them.
+    return false;
 }
 
 bool PlayerbotAI::NeedsRepair() const
@@ -4075,7 +4207,7 @@ bool PlayerbotAI::HandleQuestNpcs()
     if (!_bot->PlayerTalkClass)
         return false;
 
-    // Walk toward a nearby questgiver first when out of interaction range.
+    // Walk toward a nearby useful questgiver first when out of interaction range.
     if (!HasTravelDestination())
     {
         if (Creature* nearQg = FindNearbyQuestgiver())
@@ -4089,7 +4221,7 @@ bool PlayerbotAI::HandleQuestNpcs()
     }
 
     std::list<Creature*> list;
-    BotQuestgiverCheck check(_bot, BOT_QUEST_SEEK_DIST);
+    BotQuestgiverCheck check(_bot, BOT_QUEST_SEEK_DIST, this);
     Skyfire::CreatureListSearcher<BotQuestgiverCheck> searcher(_bot, list, check);
     _bot->VisitNearbyGridObject(BOT_QUEST_SEEK_DIST, searcher);
 
@@ -4102,6 +4234,7 @@ bool PlayerbotAI::HandleQuestNpcs()
 
         _bot->PrepareQuestMenu(npc->GetGUID());
         QuestMenu& qm = _bot->PlayerTalkClass->GetQuestMenu();
+        bool useful = false;
         for (uint8 i = 0; i < qm.GetMenuItemCount(); ++i)
         {
             QuestMenuItem const& mi = qm.GetItem(i);
@@ -4127,7 +4260,15 @@ bool PlayerbotAI::HandleQuestNpcs()
                     return true;
                 }
             }
+            // Menu shows something for this bot even if we couldn't act yet
+            // (e.g. full log) — don't blacklist permanently this tick.
+            useful = true;
         }
+
+        // Empty or unusable questgiver (bugged flag / conditions). Skip for a while
+        // so we leave and grind / find another NPC instead of pathing in place.
+        if (!useful)
+            IgnoreQuestNpc(npc->GetEntry());
     }
     return false;
 }
@@ -5296,7 +5437,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
     if (cmd == "attack")
     {
         Unit* target = from->GetSelectedUnit();
-        if (!target || !target->IsAlive() || !_bot->IsValidAttackTarget(target))
+        if (!IsSafeAttackTarget(target))
         {
             ack("No valid target.");
             return true;
@@ -5320,7 +5461,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
         if (GetCombatRole() != CombatRole::Tank)
             return true;
         Unit* target = from->GetSelectedUnit();
-        if (!target || !target->IsAlive() || !_bot->IsValidAttackTarget(target))
+        if (!IsSafeAttackTarget(target))
         {
             ack("No valid target.");
             return true;
@@ -5344,9 +5485,9 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
         if (GetCombatRole() != CombatRole::Tank)
             return true;
         Unit* target = from->GetSelectedUnit();
-        if (!target || !target->IsAlive() || !_bot->IsValidAttackTarget(target))
+        if (!IsSafeAttackTarget(target))
             target = _targets.GetRtiTarget(this);
-        if (!target || !target->IsAlive() || !_bot->IsValidAttackTarget(target))
+        if (!IsSafeAttackTarget(target))
         {
             ack("No valid pull target.");
             return true;
@@ -5395,7 +5536,7 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
         if (GetCombatRole() != CombatRole::Damage)
             return true;
         Unit* target = from->GetSelectedUnit();
-        if (!target || !target->IsAlive() || !_bot->IsValidAttackTarget(target))
+        if (!IsSafeAttackTarget(target))
         {
             ack("No valid target.");
             return true;

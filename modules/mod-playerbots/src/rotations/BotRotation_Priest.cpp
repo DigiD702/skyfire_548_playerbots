@@ -14,7 +14,6 @@ namespace
     {
         SHADOWFORM          = 15473,
         INNER_FIRE          = 588,
-        POWER_WORD_FORTITUDE = 21562,
         SHADOW_WORD_PAIN    = 589,
         VAMPIRIC_TOUCH      = 34914,
         DEVOURING_PLAGUE    = 2944,
@@ -30,6 +29,7 @@ namespace
         DIVINE_STAR         = 110744,
         POWER_INFUSION      = 10060,
         VAMPIRIC_EMBRACE    = 15286,
+        SMITE               = 585,
     };
 }
 
@@ -37,35 +37,24 @@ uint32 SelectShadow(Context const& ctx)
 {
     Player* bot = ctx.bot;
     Unit* target = ctx.target;
+    if (!bot || !target)
+        return 0;
+
     uint32 const orbs = bot->GetPower(POWER_SHADOW_ORBS);
 
+    // Form / armor first — required for shadow damage, then fight.
     if (!HasAuraUp(bot, SHADOWFORM) && CanTryCast(bot, SHADOWFORM))
         return SHADOWFORM;
     if (!HasAuraUp(bot, INNER_FIRE) && CanTryCast(bot, INNER_FIRE))
         return INNER_FIRE;
-    if (!HasAuraUp(bot, POWER_WORD_FORTITUDE) && CanTryCast(bot, POWER_WORD_FORTITUDE))
-        return POWER_WORD_FORTITUDE;
 
     if (bot->GetHealthPct() <= 40.0f && CanTryCast(bot, VAMPIRIC_EMBRACE))
         return VAMPIRIC_EMBRACE;
 
-    if (CanTryCast(bot, SHADOWFIEND))
-        return SHADOWFIEND;
-    if (CanTryCast(bot, POWER_INFUSION))
-        return POWER_INFUSION;
-
     float const swp = AuraRemains(target, SHADOW_WORD_PAIN);
     float const vt = AuraRemains(target, VAMPIRIC_TOUCH);
 
-    if (orbs >= 3 && swp > 3.0f && vt > 3.0f && CanTryCast(bot, DEVOURING_PLAGUE))
-        return DEVOURING_PLAGUE;
-
-    if (ctx.enemies <= 5 && CanTryCast(bot, MIND_BLAST))
-        return MIND_BLAST;
-
-    if (ctx.enemies <= 5 && CanTryCast(bot, SHADOW_WORD_DEATH))
-        return SHADOW_WORD_DEATH;
-
+    // Core damage rotation before long CDs so a failed Shadowfiend cannot starve DPS.
     if (swp <= 1.0f && CanTryCast(bot, SHADOW_WORD_PAIN))
         return SHADOW_WORD_PAIN;
     if (vt <= 2.5f && CanTryCast(bot, VAMPIRIC_TOUCH))
@@ -74,9 +63,20 @@ uint32 SelectShadow(Context const& ctx)
     if (orbs >= 3 && CanTryCast(bot, DEVOURING_PLAGUE))
         return DEVOURING_PLAGUE;
 
+    if (CanTryCast(bot, MIND_BLAST))
+        return MIND_BLAST;
+
+    if (ctx.targetHealthPct <= 20.0f && CanTryCast(bot, SHADOW_WORD_DEATH))
+        return SHADOW_WORD_DEATH;
+
     uint32 const surge = AuraStacks(bot, SURGE_OF_DARKNESS);
-    if (surge >= 1 && ctx.enemies <= 5 && CanTryCast(bot, MIND_SPIKE))
+    if (surge >= 1 && CanTryCast(bot, MIND_SPIKE))
         return MIND_SPIKE;
+
+    if (CanTryCast(bot, SHADOWFIEND))
+        return SHADOWFIEND;
+    if (CanTryCast(bot, POWER_INFUSION))
+        return POWER_INFUSION;
 
     if (CanTryCast(bot, HALO))
         return HALO;
@@ -90,6 +90,10 @@ uint32 SelectShadow(Context const& ctx)
 
     if (CanTryCast(bot, MIND_FLAY))
         return MIND_FLAY;
+
+    // Low-level / missing spells: Smite still deals damage.
+    if (CanTryCast(bot, SMITE))
+        return SMITE;
 
     return 0;
 }

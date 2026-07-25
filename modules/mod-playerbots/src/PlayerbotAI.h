@@ -107,6 +107,10 @@ public:
     bool ShouldFollowPublic() const;
     bool NeedsRestPublic() const;
     bool IsForceResting() const { return _forceRest || _resting; }
+    // Used by questgiver grid search — skip empty/bugged QUESTGIVER NPCs.
+    bool QuestgiverHasUsefulWork(Creature const* npc) const;
+    bool IsQuestNpcIgnored(uint32 entry) const;
+    void IgnoreQuestNpc(uint32 entry, uint32 durationMs = 0);
     void RebuildAiEngine();
 
     // Same-map destination travel (chat go / position).
@@ -125,6 +129,9 @@ public:
     // True when attack / tank attack / pull target is set — engage even while OOC.
     bool HasEngageTarget() const;
     bool HasNearbyLootPublic() const;
+    // Safe wrapper: never call IsValidAttackTarget when either side lacks a map
+    // (GetMap() asserts) — e.g. mid-teleport bots or stale selected units.
+    bool IsSafeAttackTarget(Unit const* target) const;
     BotTargetValues& GetTargetValues() { return _targets; }
     BotTargetValues const& GetTargetValues() const { return _targets; }
 
@@ -248,6 +255,8 @@ private:
     void BeginPullSequence(Unit* target);
     void EndPullSequence(bool keepForcedTarget);
     bool TryCombatFlee(Unit* focus);
+    // Dungeon + tank: maintain cast range. Solo/open-world: stand ground above 30% HP.
+    bool WantsRangedKiting() const;
     bool TryAvoidAoe();
     bool TryAutoMarkRti();
     // Healer/ranged: stand at cast range from focus — never master formation in combat.
@@ -299,6 +308,8 @@ private:
     bool _forceVendor = false;
     bool _forceSellAll = false;
     bool _forceQuest = false;
+    // creature_template.entry → getMSTime() expiry for empty/bugged questgivers.
+    std::unordered_map<uint32, uint32> _ignoredQuestNpcEntries;
 
     // --- Flags synced from _strategies (procedural AI still reads these) ---
     bool _stay;          // nc stay (implies not follow)
