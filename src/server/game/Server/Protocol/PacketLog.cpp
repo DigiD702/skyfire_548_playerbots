@@ -166,7 +166,13 @@ void PacketLog::LogPacket(WorldPacket const& packet, Direction direction)
         return;
 
     ByteBuffer data(4 + 4 + 4 + 1 + packet.size());
-    uint32 opcode = direction == CLIENT_TO_SERVER ? const_cast<WorldPacket&>(packet).GetReceivedOpcode() : serverOpcodeTable[packet.GetOpcode()]->OpcodeNumber;
+    uint32 opcode = 0;
+    if (direction == CLIENT_TO_SERVER)
+        opcode = const_cast<WorldPacket&>(packet).GetReceivedOpcode();
+    else if (OpcodeHandler const* handler = serverOpcodeTable[packet.GetOpcode()])
+        opcode = handler->OpcodeNumber;
+    else
+        return;
 
     data << int32(opcode);
     data << int32(packet.size());
@@ -317,7 +323,13 @@ void PacketLog::LogPacket(void const* sessionKey, PacketLogSessionInfo const& se
 
     SessionLog& session = _sessionLogs[sessionKey];
     session.info = sessionInfo;
-    uint32 opcode = direction == CLIENT_TO_SERVER ? const_cast<WorldPacket&>(packet).GetReceivedOpcode() : serverOpcodeTable[packet.GetOpcode()]->OpcodeNumber;
+    uint32 opcode = 0;
+    if (direction == CLIENT_TO_SERVER)
+        opcode = const_cast<WorldPacket&>(packet).GetReceivedOpcode();
+    else if (OpcodeHandler const* handler = serverOpcodeTable[packet.GetOpcode()])
+        opcode = handler->OpcodeNumber;
+    else
+        return;
     std::string opcodeName = GetOpcodeNameForLogging(packet.GetOpcode(), direction == SERVER_TO_CLIENT);
 
     fprintf(file, "%llu %u %s 0x%04X %s %u ",

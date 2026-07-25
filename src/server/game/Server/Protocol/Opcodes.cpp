@@ -1096,6 +1096,9 @@ void OpcodeTable::InitializeServerTable()
     DEFINE_OPCODE_HANDLER(SMSG_WHOIS,                                          0x12BA, STATUS_NEVER    ); // 5.4.8 18414
     DEFINE_OPCODE_HANDLER(SMSG_WORLD_SERVER_INFO,                              0x0082, STATUS_NEVER    ); // 5.4.8 18414
     DEFINE_OPCODE_HANDLER(SMSG_ZONE_UNDER_ATTACK,                              0x10C2, STATUS_NEVER    ); // 5.4.8 18414
+    // Connectivity challenge uses wire value 0x4F57 ("WO"); must exist in the server table
+    // because WorldSocket::SendPacket / PacketLog look up SERVER_TO_CLIENT opcodes here.
+    DEFINE_OPCODE_HANDLER(MSG_VERIFY_CONNECTIVITY,                             0x4F57, STATUS_NEVER    ); // Not a normal SMSG
 
 #undef DEFINE_OPCODE_HANDLER
 };
