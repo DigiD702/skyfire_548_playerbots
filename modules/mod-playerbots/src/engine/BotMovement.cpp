@@ -35,6 +35,16 @@ namespace BotMovement
         return true;
     }
 
+    // Point/follow Launch() copies walkmode from MOVEMENTFLAG_WALKING. A stuck
+    // walk flag makes every MovePoint crawl; strip it before issuing motion.
+    void EnsureRunning(Player* bot)
+    {
+        if (!bot)
+            return;
+        if (bot->IsWalking())
+            bot->SetWalk(false);
+    }
+
     bool IsAirborne(Unit const* unit)
     {
         if (!unit)
@@ -64,6 +74,7 @@ namespace BotMovement
         // early-outs and leaves the flag stuck. Casters then only land instants
         // (DoTs) and look like a broken rotation.
         bot->RemoveUnitMovementFlag(MOVEMENTFLAG_MASK_MOVING);
+        EnsureRunning(bot);
 
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
         {
@@ -137,6 +148,7 @@ namespace BotMovement
     {
         if (!CanMove(bot) || !leader)
             return false;
+        EnsureRunning(bot);
         bot->GetMotionMaster()->Clear();
         bot->GetMotionMaster()->MoveFollow(leader, distance, angle);
         return true;
@@ -146,6 +158,7 @@ namespace BotMovement
     {
         if (!CanMove(bot) || !target || !target->IsAlive())
             return false;
+        EnsureRunning(bot);
         bot->GetMotionMaster()->Clear();
         bot->GetMotionMaster()->MoveChase(target, distance);
         return true;
@@ -155,6 +168,7 @@ namespace BotMovement
     {
         if (!CanMove(bot))
             return false;
+        EnsureRunning(bot);
         bot->GetMotionMaster()->Clear();
         bot->GetMotionMaster()->MovePoint(0, x, y, z, generatePath);
         return true;
@@ -164,6 +178,7 @@ namespace BotMovement
     {
         if (!CanMove(bot))
             return false;
+        EnsureRunning(bot);
 
         bot->UpdateAllowedPositionZ(x, y, z);
         if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))

@@ -723,15 +723,16 @@ bool PlayerbotAI::NeedsRestPublic() const
         return true;
 
     // Finish an in-progress drink even if the master just started moving — the
-    // next HandleRest tick will stand us up if they keep running.
-    if (HasFoodOrDrinkAura())
+    // next HandleRest tick will stand us up if they keep running. Stand once
+    // topped up even if the aura still has time left.
+    if (HasFoodOrDrinkAura() || _resting)
+    {
+        float const hpPct = HealthPct();
+        float const manaPct = ManaPct();
+        if (hpPct >= 98.0f && (!UsesMana() || manaPct >= 98.0f))
+            return true; // HandleRest clears aura + stands
         return true;
-
-    // Sticky: once we started resting, keep the rest action queued until
-    // HandleRest clears _resting (nearly full / combat). Do this before the
-    // master-waiting gate so travel/follow cannot yank us mid-drink.
-    if (_resting)
-        return true;
+    }
 
     // Mid-chase: do not park to drink — stay on the leader.
     if (!IsMasterWaitingForRest())
@@ -3179,21 +3180,20 @@ void PlayerbotAI::HandleFollow()
         ? _bot->GetDistance(slotX, slotY, slotZ)
         : dist;
 
-    // Catch up / re-slot when far from leader or far from formation point, or
-    // when currently clipped into geometry (bad Z vs ground).
-    bool const needReslot = BotMovement::IsBadlyOffGround(_bot)
-        || dist > BOT_FOLLOW_DIST + 3.5f
-        || slotDist > 2.5f
-        || (_followGuid != leaderGuid)
-        || (moveType != FOLLOW_MOTION_TYPE && moveType != IDLE_MOTION_TYPE
-            && moveType != POINT_MOTION_TYPE && !_bot->IsStopped());
+    // Prefer continuous MoveFollow while the master is moving — parking then
+    // re-issuing short MovePoints looked like walk→run→snail crawl in LFG.
+    // MovePoint only when clipped into geometry (Follow can slide into walls).
+    bool const masterMoving = leader->isMoving();
+    bool const badlyOff = BotMovement::IsBadlyOffGround(_bot);
+    bool const outOfSlot = !haveSlot || slotDist > 3.0f || dist > followDist + 4.0f;
+    bool const needFollow = badlyOff || outOfSlot || masterMoving
+        || _followGuid != leaderGuid
+        || (moveType != FOLLOW_MOTION_TYPE && moveType != IDLE_MOTION_TYPE);
 
-    if (needReslot)
+    if (needFollow)
     {
-        // Prefer validated MovePoint so we do not idle inside walls/stairs that
-        // continuous MoveFollow can slide into.
         bool moved = false;
-        if (haveSlot && (dist > followDist + 1.5f || BotMovement::IsBadlyOffGround(_bot) || slotDist > 1.5f))
+        if (badlyOff && haveSlot)
             moved = BotMovement::MoveToFollowSlot(_bot, leader, followDist, followAngle, false);
         if (!moved)
             moved = BotMovement::MoveFollowLeader(_bot, leader, followDist, followAngle);
@@ -3203,17 +3203,11 @@ void PlayerbotAI::HandleFollow()
             _chaseGuid = 0;
         }
     }
-    else if (dist <= BOT_FOLLOW_DIST + 2.5f && slotDist <= 2.5f
-        && (moveType == FOLLOW_MOTION_TYPE || moveType == POINT_MOTION_TYPE || !_bot->IsStopped()))
+    else
     {
-        // Only park when the slot is valid and we are not clipped.
-        if (BotMovement::IsBadlyOffGround(_bot) && haveSlot)
-            BotMovement::MoveToFollowSlot(_bot, leader, followDist, followAngle, false);
-        else
-        {
-            BotMovement::StopAndIdle(_bot);
-            BotMovement::ClearDeadSelection(_bot);
-        }
+        // Master stopped and we are in formation — park.
+        BotMovement::StopAndIdle(_bot);
+        BotMovement::ClearDeadSelection(_bot);
     }
 }
 
@@ -4936,9 +4930,23 @@ bool PlayerbotAI::PartyNotAlmostReady() const
             return false;
         if (!_bot->IsInMap(member) || !_bot->IsWithinDistInMap(member, 50.0f))
             return false;
-        // Only aura / resource state — bare IsSitState caused empty-sit contagion.
+        // Aura alone is not "not ready" — bots stand at ~98% even if the buff
+        // still has duration. Only wait on allies who still need resources.
         if (MemberHasFoodOrDrinkAura(member))
-            return true;
+        {
+            float const hp = member->GetMaxHealth()
+                ? (100.0f * float(member->GetHealth()) / float(member->GetMaxHealth())) : 100.0f;
+            if (hp < almostHp)
+                return true;
+            if (member->GetMaxPower(POWER_MANA) > 0)
+            {
+                float const mana = 100.0f * float(member->GetPower(POWER_MANA))
+                    / float(member->GetMaxPower(POWER_MANA));
+                if (mana < mediumMana)
+                    return true;
+            }
+            return false;
+        }
 
         float const hp = member->GetMaxHealth()
             ? (100.0f * float(member->GetHealth()) / float(member->GetMaxHealth())) : 100.0f;
@@ -5067,9 +5075,18 @@ bool PlayerbotAI::HandleRest()
 
     // Not at the follow slot yet (or master is moving) — let Follow run.
     // Do not cancel an in-progress drink for brief master fidgets; only stand
-    // up when we are not already regenerating.
+    // up when we are not already regenerating — or when already topped up.
     if (!_forceRest && !IsMasterWaitingForRest())
     {
+        float const earlyHp = HealthPct();
+        float const earlyMana = ManaPct();
+        bool const earlyFull = earlyHp >= 98.0f && (!UsesMana() || earlyMana >= 98.0f);
+        if (earlyFull)
+        {
+            CancelRestConsumables();
+            StopResting();
+            return false;
+        }
         if (HasFoodOrDrinkAura() || (_bot->IsSitState() && _bot->IsNonMeleeSpellCasted(false)))
             return StartRefreshment(); // finish the glass
         if (_resting || _bot->IsSitState())
@@ -5095,8 +5112,9 @@ bool PlayerbotAI::HandleRest()
     if (!shouldRest)
         return false;
 
-    // Fully topped up — resume follow (formation stays on the master).
-    if (nearlyFull && !itemResting && !_forceRest)
+    // Fully topped up — stand immediately even if the food/drink aura still has
+    // duration left (previously waited for the aura to expire).
+    if (nearlyFull && !_forceRest)
     {
         CancelRestConsumables();
         StopResting();

@@ -10,6 +10,8 @@
  */
 
 #include "BotRotationLists.h"
+#include "Creature.h"
+#include "ObjectAccessor.h"
 #include "Player.h"
 #include "Unit.h"
 
@@ -231,15 +233,30 @@ uint32 SelectRestorationShaman(HealContext const& ctx)
         ASCENDANCE              = 114049,
     };
 
+    auto hasAliveTotem = [](Player* sham) -> bool
+    {
+        if (!sham)
+            return false;
+        for (uint8 slot = SUMMON_SLOT_TOTEM; slot < MAX_TOTEM_SLOT; ++slot)
+        {
+            uint64 const guid = sham->m_SummonSlot[slot];
+            if (!guid)
+                continue;
+            if (Creature* totem = ObjectAccessor::GetCreature(*sham, guid))
+                if (totem->IsAlive())
+                    return true;
+        }
+        return false;
+    };
+
     if (!HasAuraUp(bot, WATER_SHIELD) && CanTryCast(bot, WATER_SHIELD))
         return WATER_SHIELD;
-    if (!HasAuraUp(ally, EARTH_SHIELD) && CanTryCast(bot, EARTH_SHIELD))
-        return EARTH_SHIELD;
 
-    if (NeedsMaintenance(ctx) && CanTryCast(bot, ASCENDANCE))
-        return ASCENDANCE;
-    if (CanTryCast(bot, HEALING_STREAM_TOTEM))
-        return HEALING_STREAM_TOTEM;
+    // Real triage heals before totems / long CDs — HST every GCD starved the line.
+    if (urgent && AllowExpensiveHeal(ctx) && CanTryCast(bot, HEALING_SURGE))
+        return HEALING_SURGE;
+    if (big && AllowExpensiveHeal(ctx) && CanTryCast(bot, GREATER_HEALING_WAVE))
+        return GREATER_HEALING_WAVE;
 
     if (NeedsMaintenance(ctx)
         && (!HasAuraUp(ally, RIPTIDE) || AuraRemains(ally, RIPTIDE) <= 3.0f)
@@ -254,12 +271,18 @@ uint32 SelectRestorationShaman(HealContext const& ctx)
             return CHAIN_HEAL;
     }
 
-    if (urgent && AllowExpensiveHeal(ctx) && CanTryCast(bot, HEALING_SURGE))
-        return HEALING_SURGE;
-    if (big && AllowExpensiveHeal(ctx) && CanTryCast(bot, GREATER_HEALING_WAVE))
-        return GREATER_HEALING_WAVE;
     if (NeedsMaintenance(ctx) && ctx.healTargetHealthPct < 85.0f && CanTryCast(bot, HEALING_WAVE))
         return HEALING_WAVE;
+
+    if (!HasAuraUp(ally, EARTH_SHIELD) && CanTryCast(bot, EARTH_SHIELD))
+        return EARTH_SHIELD;
+
+    // Ascendance is a short CD save, not a maintenance filler.
+    if (urgent && CanTryCast(bot, ASCENDANCE))
+        return ASCENDANCE;
+
+    if (NeedsMaintenance(ctx) && !hasAliveTotem(bot) && CanTryCast(bot, HEALING_STREAM_TOTEM))
+        return HEALING_STREAM_TOTEM;
 
     return 0;
 }
