@@ -127,8 +127,14 @@ void AddSC_boss_flamegor();
 void AddSC_boss_chromaggus();
 void AddSC_boss_nefarian();
 void AddSC_instance_blackwing_lair();
-//void AddSC_deadmines();                      //Deadmines
-//void AddSC_instance_deadmines();
+void AddSC_deadmines();                      //Deadmines
+void AddSC_instance_deadmines();
+void AddSC_boss_glubtok();
+void AddSC_boss_helix_gearbreaker();
+void AddSC_boss_foereaper5000();
+void AddSC_boss_admiral_ripsnarl();
+void AddSC_boss_captain_cookie();
+void AddSC_boss_vanessa_vancleef();
 void AddSC_gnomeregan();                     //Gnomeregan
 void AddSC_instance_gnomeregan();
 void AddSC_boss_attumen();                   //Karazhan
@@ -160,7 +166,11 @@ void AddSC_boss_sulfuron();
 void AddSC_boss_majordomo();
 void AddSC_boss_ragnaros();
 void AddSC_instance_molten_core();
-//void AddSC_instance_ragefire_chasm();        //Ragefire Chasm
+void AddSC_instance_ragefire_chasm();        //Ragefire Chasm
+void AddSC_boss_adarogg();
+void AddSC_boss_dark_shaman_koranthal();
+void AddSC_boss_slagmaw();
+void AddSC_boss_lava_guard_gordoth();
 void AddSC_the_scarlet_enclave();            //Scarlet Enclave
 void AddSC_the_scarlet_enclave_c1();
 void AddSC_the_scarlet_enclave_c2();
@@ -797,8 +807,14 @@ void AddEasternKingdomsScripts()
     AddSC_boss_chromaggus();
     AddSC_boss_nefarian();
     AddSC_instance_blackwing_lair();
-    //AddSC_deadmines();                      //Deadmines
-    //AddSC_instance_deadmines();
+    AddSC_deadmines();                      //Deadmines
+    AddSC_instance_deadmines();
+    AddSC_boss_glubtok();
+    AddSC_boss_helix_gearbreaker();
+    AddSC_boss_foereaper5000();
+    AddSC_boss_admiral_ripsnarl();
+    AddSC_boss_captain_cookie();
+    AddSC_boss_vanessa_vancleef();
     AddSC_gnomeregan();                     //Gnomeregan
     AddSC_instance_gnomeregan();
     AddSC_boss_attumen();                   //Karazhan
@@ -830,7 +846,6 @@ void AddEasternKingdomsScripts()
     AddSC_boss_majordomo();
     AddSC_boss_ragnaros();
     AddSC_instance_molten_core();
-    //AddSC_instance_ragefire_chasm();        //Ragefire Chasm
     AddSC_the_scarlet_enclave();            //Scarlet Enclave
     AddSC_the_scarlet_enclave_c1();
     AddSC_the_scarlet_enclave_c2();
@@ -943,6 +958,11 @@ void AddKalimdorScripts()
     AddSC_culling_of_stratholme();
     AddSC_instance_culling_of_stratholme();
     AddSC_instance_dire_maul();             //Dire Maul
+    AddSC_instance_ragefire_chasm();        //Ragefire Chasm
+    AddSC_boss_adarogg();
+    AddSC_boss_dark_shaman_koranthal();
+    AddSC_boss_slagmaw();
+    AddSC_boss_lava_guard_gordoth();
     AddSC_boss_celebras_the_cursed();       //Maraudon
     AddSC_boss_tinkerer_gizlock();
     AddSC_boss_landslide();
