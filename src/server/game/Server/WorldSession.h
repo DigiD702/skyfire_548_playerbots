@@ -306,8 +306,21 @@ public:
     // World::m_sessions; it is owned and updated by the playerbots module.
     void SetBot(bool on) { m_isBot = on; }
     bool IsBot() const { return m_isBot; }
-    // Synchronously loads a character into the world through this session.
-    // Intended for bot sessions; runs on the caller's (world) thread.
+
+    // Async bot login (DB on worker thread). Prefer this for mass pool logins —
+    // PollBotCharacterLogin from PlayerbotMgr each tick; do not spin-wait.
+    bool BeginBotCharacterLogin(uint64 playerGuid);
+    enum class BotLoginPollStatus : uint8
+    {
+        Pending = 0,
+        Success = 1,
+        Failed = 2
+    };
+    // When discard is true, frees a ready query holder without LoadFromDB.
+    BotLoginPollStatus PollBotCharacterLogin(bool discard = false);
+
+    // Synchronously loads a character (Begin + wait + Poll). Prefer for single
+    // bots (.playerbots add / create init); random pool uses the async path.
     bool LoginBotCharacter(uint64 playerGuid);
     // Completes a pending near/far teleport immediately. Bots have no client to
     // send the teleport ack, so the module calls this after Player::TeleportTo.

@@ -24,9 +24,9 @@ well-isolated hooks (prefer new `ScriptMgr` hooks over scattered edits):
   null-socket guards in `WorldSession::Update`, and `SendPacket` already no-ops
   without a socket. Bot sessions are NOT tracked in `World::m_sessions`; they are
   owned by `PlayerbotMgr`.
-* [DONE] Synchronous character login for a session:
-  `WorldSession::LoginBotCharacter(guid)` (in `CharacterHandler.cpp`) builds the
-  login query holder, waits for it, and calls `HandlePlayerLogin`.
+* [DONE] Character login for a session: `BeginBotCharacterLogin` /
+  `PollBotCharacterLogin` (async; random pool) and sync `LoginBotCharacter`
+  (single-bot add/create). Random pool never spin-waits the world thread on DB.
 * [DONE] Per-`Player` tick hook: `PlayerScript::OnUpdate(Player*, uint32)`,
   dispatched from `Player::Update` via `ScriptMgr::OnPlayerUpdate`. Because bot
   players are updated by their `Map`, this fires for bots automatically - the
@@ -49,9 +49,10 @@ Remaining for later phases:
   character databases).
 * [DONE] `PlayerbotMgr::Update()` driven from the module's
   `WorldScript::OnUpdate` (no core change): keeps up to
-  `Playerbots.RandomBots.MaxBots` online, spawns one bot per
-  `Playerbots.RandomBots.LoginInterval` ms, trims excess when the cap is lowered,
-  and cleans up bots whose player left the world.
+  `Playerbots.RandomBots.MaxBots` online via async login pipeline
+  (`LoginInterval` starts, `MaxPendingLogins` in flight, `LoginsPerTick`
+  completes LoadFromDB), trims excess when the cap is lowered, and cleans up
+  bots whose player left the world. `Init.PerTick` is gear-only.
 * [DONE] `.playerbots reload` (re-reads config + candidate pool) and richer
   `.playerbots status` (random/active/candidate counts).
 * [DONE] Bot auto-creator (`Playerbots.AutoCreate.*` / `.playerbots create`):
@@ -70,9 +71,9 @@ Remaining for later phases:
 * [DONE] Role change via `.playerbots init <name> <tank|healer|dps>`: switches
   the bot's spec and re-gears it for the new role.
 * [TODO] Per-master "alt bots" (a real player summoning their own alts).
-* [TODO] Async login path for the pool (current logins reuse the synchronous
-  `LoginBotCharacter`, throttled to one per interval to keep world-thread
-  hitching negligible).
+* [DONE] Async random-bot login pipeline (`BeginBotCharacterLogin` /
+  `PollBotCharacterLogin`, `MaxPendingLogins` + `LoginsPerTick`) so the world
+  thread does not spin-wait on character DB queries.
 
 ## Phase 3 - Bot AI framework (IN PROGRESS)
 

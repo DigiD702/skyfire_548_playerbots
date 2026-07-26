@@ -13,7 +13,7 @@ Whisper replies with a short ack. Party/raid orders apply silently (no spam).
 
 | Command | What it does |
 | --- | --- |
-| `.playerbots status` | Module on/off, random-bot counts, active bot count. |
+| `.playerbots status` | Module on/off, random-bot counts, pending logins, login/init pacing. |
 | `.playerbots list` | Names/GUIDs of active (socket) bots. |
 | `.playerbots add <name>` | Log an offline character in as a full bot session. |
 | `.playerbots remove <name>` | Log that bot out and free its session. |

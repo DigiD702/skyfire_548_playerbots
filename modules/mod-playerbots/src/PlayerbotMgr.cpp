@@ -74,7 +74,19 @@ void PlayerbotMgr::LoadConfig()
     _randomBotsEnabled = sConfigMgr->GetBoolDefault("Playerbots.RandomBots.Enable", false);
     _maxRandomBots = uint32(sConfigMgr->GetIntDefault("Playerbots.RandomBots.MaxBots", 0));
     _accountPrefix = sConfigMgr->GetStringDefault("Playerbots.RandomBots.AccountPrefix", "RNDBOT");
-    _loginIntervalMs = uint32(sConfigMgr->GetIntDefault("Playerbots.RandomBots.LoginInterval", 2000));
+    _loginIntervalMs = uint32(sConfigMgr->GetIntDefault("Playerbots.RandomBots.LoginInterval", 250));
+    if (_loginIntervalMs < 1)
+        _loginIntervalMs = 1;
+    _maxPendingLogins = uint32(sConfigMgr->GetIntDefault("Playerbots.RandomBots.MaxPendingLogins", 8));
+    if (_maxPendingLogins < 1)
+        _maxPendingLogins = 1;
+    if (_maxPendingLogins > 64)
+        _maxPendingLogins = 64;
+    _loginsPerTick = uint32(sConfigMgr->GetIntDefault("Playerbots.RandomBots.LoginsPerTick", 1));
+    if (_loginsPerTick < 1)
+        _loginsPerTick = 1;
+    if (_loginsPerTick > 10)
+        _loginsPerTick = 10;
 
     _joinLfg = sConfigMgr->GetBoolDefault("Playerbots.RandomBotJoinLfg", false);
     _joinLfgMaxBots = uint32(sConfigMgr->GetIntDefault("Playerbots.RandomBotJoinLfg.MaxBots", 10));
@@ -176,7 +188,11 @@ void PlayerbotMgr::Update(uint32 diff)
     // Drop bots whose player has left the world for any reason.
     CleanupDeadBots();
 
-    // Mass init must run on the world thread, a few bots per tick.
+    // Finish ready async logins (at most LoginsPerTick LoadFromDB per tick).
+    ProcessPendingLogins();
+
+    // Mass gear init must run on the world thread, a few bots per tick.
+    // This is NOT the random-bot login rate — see RandomBots.LoginsPerTick.
     ProcessInitQueue();
 
     // LFG role checks + proposal accepts must run on the world thread. Calling
@@ -206,13 +222,14 @@ void PlayerbotMgr::Update(uint32 diff)
     while (_randomBots.size() > _maxRandomBots)
         RemoveBot(*_randomBots.begin());
 
-    // Spawn at most one random bot per interval to spread the login load.
+    // Start at most one new async login per interval while under caps.
     _loginTimer += diff;
     if (_loginTimer < _loginIntervalMs)
         return;
     _loginTimer = 0;
 
-    if (_randomBots.size() < _maxRandomBots)
+    uint32 const onlineOrPending = uint32(_randomBots.size() + _pendingLogins.size());
+    if (onlineOrPending < _maxRandomBots && _pendingLogins.size() < _maxPendingLogins)
         TrySpawnRandomBot();
 }
 
@@ -247,8 +264,9 @@ void PlayerbotMgr::LoadCandidates()
         first = false;
     } while (accounts->NextRow());
 
+    // Cache accountId with guid so BeginSpawnBot skips GetPlayerAccountIdByGUID.
     QueryResult characters = CharacterDatabase.PQuery(
-        "SELECT guid FROM characters WHERE account IN (%s)", accountIds.str().c_str());
+        "SELECT guid, account FROM characters WHERE account IN (%s)", accountIds.str().c_str());
     if (!characters)
     {
         SF_LOG_INFO("modules", "[mod-playerbots] Bot accounts have no characters (prefix '%s').", _accountPrefix.c_str());
@@ -257,8 +275,11 @@ void PlayerbotMgr::LoadCandidates()
 
     do
     {
-        uint32 lowGuid = (*characters)[0].GetUInt32();
-        _candidates.push_back(MAKE_NEW_GUID(lowGuid, 0, HIGHGUID_PLAYER));
+        Field* fields = characters->Fetch();
+        BotCandidate c;
+        c.guid = MAKE_NEW_GUID(fields[0].GetUInt32(), 0, HIGHGUID_PLAYER);
+        c.accountId = fields[1].GetUInt32();
+        _candidates.push_back(c);
     } while (characters->NextRow());
 
     SF_LOG_INFO("modules", "[mod-playerbots] Loaded %u candidate bot character(s) from prefix '%s'.",
@@ -267,18 +288,21 @@ void PlayerbotMgr::LoadCandidates()
 
 void PlayerbotMgr::TrySpawnRandomBot()
 {
-    for (uint64 guid : _candidates)
+    for (BotCandidate const& candidate : _candidates)
     {
-        if (_bots.find(guid) != _bots.end())            // already a bot
+        uint64 const guid = candidate.guid;
+        if (_bots.find(guid) != _bots.end())
             continue;
-        if (ObjectAccessor::FindPlayer(guid))           // online as a real player
+        if (_pendingLoginGuids.find(guid) != _pendingLoginGuids.end())
+            continue;
+        if (ObjectAccessor::FindPlayer(guid))
             continue;
 
         std::string error;
-        if (SpawnBot(guid, true, &error))
+        if (BeginSpawnBot(guid, true, candidate.accountId, &error))
         {
-            SF_LOG_INFO("modules", "[mod-playerbots] Random bot pool: %u/%u online.",
-                uint32(_randomBots.size()), _maxRandomBots);
+            SF_LOG_INFO("modules", "[mod-playerbots] Random bot login started (pending %u, online %u/%u).",
+                uint32(_pendingLogins.size()), uint32(_randomBots.size()), _maxRandomBots);
             return;
         }
 
@@ -411,6 +435,9 @@ bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* er
     if (IsBot(characterGuid))
         return fail("That character is already an active bot.");
 
+    if (_pendingLoginGuids.find(characterGuid) != _pendingLoginGuids.end())
+        return fail("That character is already logging in.");
+
     // Refuse if the character is already in the world (real player or otherwise);
     // a second Player with the same GUID would collide in the object accessor.
     if (ObjectAccessor::FindPlayer(characterGuid))
@@ -428,9 +455,32 @@ bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* er
     WorldSession* botSession = new WorldSession(accountId, nullptr, AccountTypes::SEC_PLAYER, expansion,
         0, LOCALE_enUS, 0, false, false);
     botSession->SetBot(true);
-    // Match the realm real characters use so name queries and /who resolve
-    // the bot correctly (a socketless session otherwise reports realm 0 / -1).
-    uint32 botRealm = 0;
+    uint32 const botRealm = ResolveBotVirtualRealm();
+    botSession->SetVirtualRealmID(botRealm);
+
+    if (!botSession->LoginBotCharacter(characterGuid))
+    {
+        delete botSession;
+        return fail("Failed to load the character into the world.");
+    }
+
+    PendingBotLogin pending;
+    pending.session = botSession;
+    pending.characterGuid = characterGuid;
+    pending.isRandom = isRandom;
+    pending.botRealm = botRealm;
+    FinishSpawnBot(pending);
+    if (_bots.find(characterGuid) == _bots.end())
+        return fail("Failed to load the character into the world.");
+
+    return true;
+}
+
+uint32 PlayerbotMgr::ResolveBotVirtualRealm()
+{
+    if (_botVirtualRealm && _botVirtualRealm != uint32(-1))
+        return _botVirtualRealm;
+
     {
         SF_SHARED_GUARD readGuard(*HashMapHolder<Player>::GetLock());
         for (auto const& kv : sObjectAccessor->GetPlayers())
@@ -441,36 +491,158 @@ bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* er
             uint32 r = p->GetSession()->GetVirtualRealmID();
             if (r && r != uint32(-1))
             {
-                botRealm = r;
-                break;
+                _botVirtualRealm = r;
+                return _botVirtualRealm;
             }
         }
     }
-    if (!botRealm || botRealm == uint32(-1))
-        botRealm = (realmID && realmID != uint32(-1)) ? realmID : 1;
+
+    _botVirtualRealm = (realmID && realmID != uint32(-1)) ? realmID : 1;
+    return _botVirtualRealm;
+}
+
+bool PlayerbotMgr::BeginSpawnBot(uint64 characterGuid, bool isRandom, uint32 accountId,
+    std::string* errorOut)
+{
+    auto fail = [errorOut](char const* reason) -> bool
+    {
+        if (errorOut)
+            *errorOut = reason;
+        return false;
+    };
+
+    if (!_enabled)
+        return fail("Playerbots module is disabled (set Playerbots.Enable = 1).");
+    if (!characterGuid)
+        return fail("Invalid character.");
+    if (IsBot(characterGuid))
+        return fail("That character is already an active bot.");
+    if (_pendingLoginGuids.find(characterGuid) != _pendingLoginGuids.end())
+        return fail("That character is already logging in.");
+    if (ObjectAccessor::FindPlayer(characterGuid))
+        return fail("That character is already online.");
+    if (!accountId)
+        accountId = sObjectMgr->GetPlayerAccountIdByGUID(characterGuid);
+    if (!accountId)
+        return fail("Could not resolve the character's account.");
+
+    uint8 expansion = uint8(sWorld->getIntConfig(WorldIntConfigs::CONFIG_EXPANSION));
+    WorldSession* botSession = new WorldSession(accountId, nullptr, AccountTypes::SEC_PLAYER, expansion,
+        0, LOCALE_enUS, 0, false, false);
+    botSession->SetBot(true);
+    uint32 const botRealm = ResolveBotVirtualRealm();
     botSession->SetVirtualRealmID(botRealm);
 
-    if (!botSession->LoginBotCharacter(characterGuid))
+    if (!botSession->BeginBotCharacterLogin(characterGuid))
     {
         delete botSession;
-        return fail("Failed to load the character into the world.");
+        return fail("Failed to start character login.");
     }
 
+    PendingBotLogin pending;
+    pending.session = botSession;
+    pending.characterGuid = characterGuid;
+    pending.isRandom = isRandom;
+    pending.botRealm = botRealm;
+    pending.startedMs = getMSTime();
+    _pendingLogins.push_back(pending);
+    _pendingLoginGuids.insert(characterGuid);
+    return true;
+}
+
+void PlayerbotMgr::ProcessPendingLogins()
+{
+    if (_pendingLogins.empty())
+        return;
+
+    uint32 completed = 0;
+    for (auto it = _pendingLogins.begin(); it != _pendingLogins.end();)
+    {
+        PendingBotLogin& pending = *it;
+        if (!pending.session)
+        {
+            _pendingLoginGuids.erase(pending.characterGuid);
+            it = _pendingLogins.erase(it);
+            continue;
+        }
+
+        // Abandon stalled logins so a wedged DB query cannot fill the pipeline.
+        uint32 const ageMs = GetMSTimeDiffToNow(pending.startedMs);
+        if (!pending.discard && ageMs > 30000)
+        {
+            SF_LOG_ERROR("modules",
+                "[mod-playerbots] Async bot login timed out (GUID %u) after %u ms.",
+                GUID_LOPART(pending.characterGuid), ageMs);
+            pending.discard = true;
+        }
+
+        // Limit world-thread LoadFromDB work per tick (discard polls are cheap).
+        if (!pending.discard && completed >= _loginsPerTick)
+        {
+            ++it;
+            continue;
+        }
+
+        WorldSession::BotLoginPollStatus const status =
+            pending.session->PollBotCharacterLogin(pending.discard);
+
+        if (status == WorldSession::BotLoginPollStatus::Pending)
+        {
+            ++it;
+            continue;
+        }
+
+        if (status == WorldSession::BotLoginPollStatus::Success && !pending.discard)
+        {
+            FinishSpawnBot(pending);
+            if (_bots.find(pending.characterGuid) != _bots.end())
+            {
+                ++completed;
+                SF_LOG_INFO("modules", "[mod-playerbots] Random bot pool: %u/%u online (%u login pending).",
+                    uint32(_randomBots.size()), _maxRandomBots,
+                    uint32(_pendingLogins.size() > 0 ? _pendingLogins.size() - 1 : 0));
+            }
+        }
+        else
+        {
+            AbortPendingLogin(pending);
+        }
+
+        _pendingLoginGuids.erase(pending.characterGuid);
+        it = _pendingLogins.erase(it);
+    }
+}
+
+void PlayerbotMgr::AbortPendingLogin(PendingBotLogin& pending)
+{
+    if (!pending.session)
+        return;
+    delete pending.session;
+    pending.session = nullptr;
+}
+
+void PlayerbotMgr::FinishSpawnBot(PendingBotLogin& pending)
+{
+    WorldSession* botSession = pending.session;
+    uint64 const characterGuid = pending.characterGuid;
+    bool const isRandom = pending.isRandom;
+    uint32 const botRealm = pending.botRealm;
+    if (!botSession)
+        return;
+
     // Bots have no client to ACK login teleports (instance eject / homebind).
-    // Finish those here in the module rather than patching CharacterHandler.
     if (Player* loggedIn = botSession->GetPlayer())
     {
         if (loggedIn->IsBeingTeleported())
             botSession->FinalizeBotTeleport();
-        // Re-assert after login — some paths leave session realm 0 and blank /who.
         botSession->SetVirtualRealmID(botRealm);
         loggedIn->SetUInt32Value(PLAYER_FIELD_VIRTUAL_PLAYER_REALM, botRealm);
     }
 
     if (!botSession->GetPlayer() || !botSession->GetPlayer()->IsInWorld())
     {
-        delete botSession;
-        return fail("Failed to load the character into the world.");
+        AbortPendingLogin(pending);
+        return;
     }
 
     _bots[characterGuid] = botSession;
@@ -480,6 +652,7 @@ bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* er
     if (Player* bot = botSession->GetPlayer())
     {
         // Deferred create: gear/spells on first world login when still bare.
+        // Already-init'd bots skip this — login is LoadFromDB + AI only.
         if (BotNeedsGearInit(bot))
         {
             uint32 specId = bot->GetTalentSpecialization(bot->GetActiveSpec());
@@ -489,7 +662,6 @@ bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* er
         _ai[characterGuid] = new PlayerbotAI(bot);
         if (isRandom)
         {
-            // Ungrouped random bots auto-quest and grind in the open world.
             if (PlayerbotAI* ai = _ai[characterGuid])
             {
                 ai->GetStrategyEngine().ChangeStrategy("+quests,+grind,-follow", BotState::NonCombat);
@@ -506,7 +678,8 @@ bool PlayerbotMgr::SpawnBot(uint64 characterGuid, bool isRandom, std::string* er
             isRandom ? ", random" : "");
     }
 
-    return true;
+    // Ownership transferred to _bots; clear so Abort won't delete.
+    pending.session = nullptr;
 }
 
 void PlayerbotMgr::UpdateBotAI(Player* bot, uint32 diff)
@@ -738,6 +911,15 @@ bool PlayerbotMgr::RemoveBot(uint64 characterGuid)
 
 void PlayerbotMgr::LogoutAllBots()
 {
+    for (PendingBotLogin& pending : _pendingLogins)
+    {
+        if (pending.session)
+            pending.session->PollBotCharacterLogin(true);
+        AbortPendingLogin(pending);
+    }
+    _pendingLogins.clear();
+    _pendingLoginGuids.clear();
+
     for (auto& pair : _ai)
         delete pair.second;
     _ai.clear();

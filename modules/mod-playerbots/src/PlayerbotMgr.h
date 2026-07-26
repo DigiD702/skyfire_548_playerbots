@@ -4,7 +4,8 @@
 *
 * Playerbots module - central configuration/state manager.
 *
-* Phase 1: socketless bot WorldSessions + synchronous login.
+* Phase 1: socketless bot WorldSessions + character login (async pool path;
+*          sync LoginBotCharacter for single-bot add/create).
 * Phase 2: random-bot pool sourced from dedicated bot accounts, managed by a
 *          throttled update loop (bot AI still arrives in Phase 3, see PORTING.md).
 */
@@ -136,6 +137,9 @@ public:
     uint32 GetActiveBotCount() const { return uint32(_bots.size()); }
     uint32 GetRandomBotCount() const { return uint32(_randomBots.size()); }
     uint32 GetCandidateCount() const { return uint32(_candidates.size()); }
+    uint32 GetPendingLoginCount() const { return uint32(_pendingLogins.size()); }
+    uint32 GetLoginsPerTick() const { return _loginsPerTick; }
+    uint32 GetMaxPendingLogins() const { return _maxPendingLogins; }
     void GetBotGuids(std::vector<uint64>& out) const;
 
 private:
@@ -144,11 +148,34 @@ private:
     PlayerbotMgr(PlayerbotMgr const&) = delete;
     PlayerbotMgr& operator=(PlayerbotMgr const&) = delete;
 
+    struct BotCandidate
+    {
+        uint64 guid = 0;
+        uint32 accountId = 0;
+    };
+
+    struct PendingBotLogin
+    {
+        WorldSession* session = nullptr;
+        uint64 characterGuid = 0;
+        bool isRandom = false;
+        uint32 botRealm = 0;
+        uint32 startedMs = 0;
+        bool discard = false;
+    };
+
     // Shared bot spawn path. isRandom marks the bot as pool-managed.
     // accountIdOverride skips the GUID→account DB lookup (needed right after
     // async character create, before the INSERT is visible to sync queries).
     bool SpawnBot(uint64 characterGuid, bool isRandom, std::string* errorOut,
         uint32 accountIdOverride = 0);
+    // Starts async login for the random pool (no world-thread DB spin-wait).
+    bool BeginSpawnBot(uint64 characterGuid, bool isRandom, uint32 accountId,
+        std::string* errorOut);
+    void ProcessPendingLogins();
+    void FinishSpawnBot(PendingBotLogin& pending);
+    void AbortPendingLogin(PendingBotLogin& pending);
+    uint32 ResolveBotVirtualRealm();
     void LoadCandidates();
     void TrySpawnRandomBot();
     void CleanupDeadBots();
@@ -177,7 +204,14 @@ private:
     bool _randomBotsEnabled = false;
     uint32 _maxRandomBots = 0;
     std::string _accountPrefix = "RNDBOT";
-    uint32 _loginIntervalMs = 2000;
+    // Delay between *starting* a new async login (not gear init).
+    uint32 _loginIntervalMs = 250;
+    // Cap in-flight login query holders for the random pool.
+    uint32 _maxPendingLogins = 8;
+    // Max HandlePlayerLogin (LoadFromDB + map add) completions per world tick.
+    uint32 _loginsPerTick = 1;
+    // Cached virtual realm for socketless sessions (avoids scanning players).
+    uint32 _botVirtualRealm = 0;
 
     // Auto-join LFG when a real player queues (AC-style fill).
     bool _joinLfg = false;
@@ -241,7 +275,9 @@ private:
 
     uint32 _loginTimer = 0;
     bool _candidatesLoaded = false;
-    std::vector<uint64> _candidates;                        // eligible character GUIDs
+    std::vector<BotCandidate> _candidates;
+    std::deque<PendingBotLogin> _pendingLogins;
+    std::unordered_set<uint64> _pendingLoginGuids;
 
     std::unordered_map<uint64 /*characterGuid*/, WorldSession*> _bots;
     std::unordered_map<uint64 /*characterGuid*/, PlayerbotAI*> _ai;

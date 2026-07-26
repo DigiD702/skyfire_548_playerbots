@@ -52,12 +52,34 @@ Playerbots.DeleteRandomBotAccounts = 0
 
 #
 #    Playerbots.RandomBots.LoginInterval
-#        Description: Minimum time in milliseconds between random-bot logins.
-#                     Bots are spawned one at a time on this cadence so logins
-#                     are spread out instead of happening all at once.
-#        Default:     2000
+#        Description: Minimum milliseconds between *starting* a new async random
+#                     bot login. DB load runs on a worker thread; LoadFromDB into
+#                     the world is paced by LoginsPerTick. Lower = fill the pool
+#                     faster (more in-flight queries). Does NOT control gear init
+#                     (see Playerbots.Init.PerTick).
+#        Default:     250
 
-Playerbots.RandomBots.LoginInterval = 2000
+Playerbots.RandomBots.LoginInterval = 250
+
+#
+#    Playerbots.RandomBots.MaxPendingLogins
+#        Description: How many random-bot character logins may be in flight at
+#                     once (query holders waiting on the DB). Higher fills faster
+#                     but uses more DB concurrency. Clamped to 1–64.
+#        Default:     8
+
+Playerbots.RandomBots.MaxPendingLogins = 8
+
+#
+#    Playerbots.RandomBots.LoginsPerTick
+#        Description: Max character LoadFromDB / map-add completions per world
+#                     tick for the random pool. Keep at 1 to avoid multi-bot
+#                     freezes; raise only if the world tick can absorb it.
+#                     Clamped to 1–10. This is the knob that spreads hitch cost —
+#                     Init.PerTick is only for `.playerbots init` gear jobs.
+#        Default:     1
+
+Playerbots.RandomBots.LoginsPerTick = 1
 
 #
 #    Playerbots.RandomBotJoinLfg
@@ -196,8 +218,11 @@ Playerbots.AutoCreate.TeleportOnInit = 1
 #
 #    Playerbots.Init.PerTick
 #        Description: How many bots `.playerbots init all` (and queued group
-#                     inits) process each world tick. Higher = faster finish,
-#                     more hitch risk. Clamped to 1–50.
+#                     inits) process each world tick. This is gear/talent/spell
+#                     rebuild only — not random-bot world login. For login pacing
+#                     use RandomBots.LoginsPerTick / LoginInterval /
+#                     MaxPendingLogins. Higher init = faster finish, more hitch
+#                     risk. Clamped to 1–50.
 #        Default:     5
 
 Playerbots.Init.PerTick = 5

@@ -194,10 +194,13 @@ public:
     {
         handler->PSendSysMessage("Playerbots module: %s.",
             sPlayerbotMgr->IsEnabled() ? "enabled" : "disabled");
-        handler->PSendSysMessage("Random bots: %s (%u/%u, %u candidate(s)).",
+        handler->PSendSysMessage("Random bots: %s (%u/%u, %u candidate(s), %u login pending).",
             sPlayerbotMgr->IsRandomBotsEnabled() ? "enabled" : "disabled",
             sPlayerbotMgr->GetRandomBotCount(), sPlayerbotMgr->GetMaxRandomBots(),
-            sPlayerbotMgr->GetCandidateCount());
+            sPlayerbotMgr->GetCandidateCount(), sPlayerbotMgr->GetPendingLoginCount());
+        handler->PSendSysMessage("Login pacing: %u per tick, max %u pending (Init.PerTick=%u is gear only).",
+            sPlayerbotMgr->GetLoginsPerTick(), sPlayerbotMgr->GetMaxPendingLogins(),
+            sPlayerbotMgr->GetInitPerTick());
         handler->PSendSysMessage("Active bots: %u.", sPlayerbotMgr->GetActiveBotCount());
         return true;
     }

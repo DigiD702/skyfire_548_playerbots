@@ -1768,11 +1768,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder* holder)
     delete holder;
 }
 
-// Synchronously logs a character into the world through this (bot) session.
-// Mirrors HandlePlayerLoginOpcode but blocks for the login query holder instead
-// of relying on the asynchronous character-login callback, since bot sessions
-// are not driven by World::UpdateSessions.
-bool WorldSession::LoginBotCharacter(uint64 playerGuid)
+bool WorldSession::BeginBotCharacterLogin(uint64 playerGuid)
 {
     if (PlayerLoading() || GetPlayer())
         return false;
@@ -1782,33 +1778,70 @@ bool WorldSession::LoginBotCharacter(uint64 playerGuid)
     LoginQueryHolder* holder = new LoginQueryHolder(GetAccountId(), playerGuid);
     if (!holder->Initialize())
     {
-        delete holder;                                      // delete all unprocessed queries
+        delete holder;
         m_playerLoading = false;
         return false;
     }
 
-    QueryResultHolderFuture future = CharacterDatabase.DelayQueryHolder((SQLQueryHolder*)holder);
+    // Same async path as a real client login; bot sessions are not in
+    // World::UpdateSessions, so PlayerbotMgr must PollBotCharacterLogin.
+    _charLoginCallback = CharacterDatabase.DelayQueryHolder((SQLQueryHolder*)holder);
+    return true;
+}
 
-    // Block until the database worker has finished the holder. Keep the wait
-    // bounded so a stalled DB can never hang the world thread indefinitely.
-    uint32 waitedMs = 0;
-    while (!future.ready())
+WorldSession::BotLoginPollStatus WorldSession::PollBotCharacterLogin(bool discard /*= false*/)
+{
+    if (!discard && GetPlayer())
+        return BotLoginPollStatus::Success;
+
+    if (!_charLoginCallback.ready())
+        return m_playerLoading ? BotLoginPollStatus::Pending : BotLoginPollStatus::Failed;
+
+    SQLQueryHolder* param = nullptr;
+    _charLoginCallback.get(param);
+    _charLoginCallback.cancel();
+
+    if (discard || !param)
     {
+        delete param;
+        m_playerLoading = false;
+        return BotLoginPollStatus::Failed;
+    }
+
+    HandlePlayerLogin((LoginQueryHolder*)param);            // clears m_playerLoading, deletes holder
+    return GetPlayer() ? BotLoginPollStatus::Success : BotLoginPollStatus::Failed;
+}
+
+// Sync wrapper for single-bot paths (.playerbots add / create auto-init).
+bool WorldSession::LoginBotCharacter(uint64 playerGuid)
+{
+    if (!BeginBotCharacterLogin(playerGuid))
+        return false;
+
+    uint32 waitedMs = 0;
+    for (;;)
+    {
+        BotLoginPollStatus const status = PollBotCharacterLogin();
+        if (status == BotLoginPollStatus::Success)
+            return true;
+        if (status == BotLoginPollStatus::Failed)
+            return false;
+
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        if (++waitedMs > 15000)                             // 15s safety timeout
+        if (++waitedMs > 15000)
         {
             SF_LOG_ERROR("misc", "LoginBotCharacter: timed out loading character (GUID: %u) for account %u.",
                 GUID_LOPART(playerGuid), GetAccountId());
-            m_playerLoading = false;
+            // Wait for the holder so we can free it without LoadFromDB.
+            while (!_charLoginCallback.ready() && waitedMs < 20000)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                ++waitedMs;
+            }
+            PollBotCharacterLogin(true);
             return false;
         }
     }
-
-    SQLQueryHolder* param = nullptr;
-    future.get(param);
-    HandlePlayerLogin((LoginQueryHolder*)param);            // sets m_playerLoading = false and deletes the holder
-
-    return GetPlayer() != nullptr;
 }
 
 uint32 WorldSession::CreateBotCharacter(std::string const& name, uint8 race, uint8 cls, uint8 gender,
