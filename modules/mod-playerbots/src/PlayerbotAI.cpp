@@ -1907,6 +1907,16 @@ uint32 PlayerbotAI::GetFillerSpell() const
         case CLASS_WARLOCK: return 686;   // Shadow Bolt
         case CLASS_SHAMAN:  return 403;   // Lightning Bolt (ranged) / melee still auto-attacks
         case CLASS_MONK:    return 100780; // Jab
+        case CLASS_WARRIOR:
+            if (_bot->HasSpell(23922) && BotRotation::HasShieldEquipped(_bot))
+                return 23922; // Shield Slam
+            if (_bot->HasSpell(20243))
+                return 20243; // Devastate
+            if (_bot->HasSpell(7386))
+                return 7386;  // Sunder Armor
+            if (_bot->HasSpell(78))
+                return 78;    // Heroic Strike
+            return 0;
         default:            return 0;
     }
 }

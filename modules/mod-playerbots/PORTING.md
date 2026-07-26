@@ -249,6 +249,10 @@ for future updates.
   bots via `LFGMgr::TeleportPlayer`, which finalizes bot worldports with
   `FinalizeBotTeleport` (no client ack). Leaving the dungeon guards `Group::Disband`
   against re-entry when bots finalize their exit teleports.
+* [DONE] **Solo LFG fill** (`Playerbots.RandomBotJoinLfg=1`): ungrouped bots
+  `JoinLfg` the same dungeons as queued real players, with console join logs.
+  Excludes bot tanks when a player queued tank, and bot healers when a player
+  queued healer. Bot-only LFG groups are still ejected.
 * [DONE] Between-pull food: socket + self-bots sit only while food/drink auras
   are active (no empty-sit contagion); full allies stand and wait. Refreshment
   uses Food/Drink auras — no bag food/drink. Cancels at full resources.

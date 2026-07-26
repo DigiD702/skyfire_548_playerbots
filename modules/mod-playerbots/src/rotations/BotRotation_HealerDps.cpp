@@ -33,8 +33,16 @@ uint32 SelectHolyPaladinDps(Context const& ctx)
         if (!HasAuraUp(bot, SEAL_OF_RIGHTEOUSNESS) && CanTryCast(bot, SEAL_OF_RIGHTEOUSNESS))
             return SEAL_OF_RIGHTEOUSNESS;
     }
-    else if (!HasAuraUp(bot, SEAL_OF_TRUTH) && CanTryCast(bot, SEAL_OF_TRUTH))
-        return SEAL_OF_TRUTH;
+    else if (!HasAuraUp(bot, SEAL_OF_TRUTH) && !HasAuraUp(bot, SEAL_OF_RIGHTEOUSNESS)
+        && !HasAuraUp(bot, 20165))
+    {
+        if (CanTryCast(bot, SEAL_OF_TRUTH))
+            return SEAL_OF_TRUTH;
+        if (CanTryCast(bot, SEAL_OF_RIGHTEOUSNESS))
+            return SEAL_OF_RIGHTEOUSNESS;
+        if (CanTryCast(bot, 20165)) // Seal of Insight
+            return 20165;
+    }
 
     if (CanTryCast(bot, AVENGING_WRATH))
         return AVENGING_WRATH;
@@ -90,8 +98,8 @@ uint32 SelectDisciplineDps(Context const& ctx)
             return DIVINE_STAR;
     }
 
-    if ((!HasAuraUp(target, SHADOW_WORD_PAIN) || AuraRemains(target, SHADOW_WORD_PAIN) <= 2.0f)
-        && CanTryCast(bot, SHADOW_WORD_PAIN))
+    // Keep OUR SW:P up — do not thrash refresh every GCD.
+    if (NeedsMyAuraRefresh(bot, target, SHADOW_WORD_PAIN, 3.0f) && CanTryCast(bot, SHADOW_WORD_PAIN))
         return SHADOW_WORD_PAIN;
     if (CanTryCast(bot, PENANCE))
         return PENANCE;

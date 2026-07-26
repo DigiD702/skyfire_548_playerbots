@@ -163,10 +163,11 @@ is preferred as **LFG group leader** so bots auto-follow them like a normal part
 Queue needs a workable mix (at least one tank + healer for normal dungeons). All-DPS
 parties will fail the role check with wrong roles.
 
-**LFG with bots:** invite bots to your party, set roles, then queue. Grouped bots
-answer the role check and ready check. Do **not** rely on `RandomBotJoinLfg` —
-solo JoinLfg fill was removed because bots formed their own LFG groups and left
-the open world.
+**LFG with bots:** set `Playerbots.RandomBotJoinLfg = 1` so ungrouped bots fill
+your dungeon finder queue (console logs each join). Bot tanks are skipped when
+you queue as tank; bot healers are skipped when you queue as healer. You can
+still invite bots to your party — grouped bots answer the role check and ready
+check. Bot-only LFG groups are ejected back to the open world.
 
 Init also teaches level-gated armor proficiency (mail at 40 for hunter/shaman,
 plate at 40 for warrior/paladin, etc.) and gears by **RequiredLevel** near the

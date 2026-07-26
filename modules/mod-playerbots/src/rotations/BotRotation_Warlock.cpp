@@ -21,6 +21,8 @@ namespace
         HAUNT               = 48181,
         MALEFIC_GRASP       = 103103,
         DRAIN_SOUL          = 1120,
+        DRAIN_LIFE          = 689,
+        SHADOW_BOLT         = 686,
         LIFE_TAP            = 1454,
         DARK_SOUL_MISERY    = 113860,
         SOULBURN            = 74434,
@@ -35,6 +37,9 @@ uint32 SelectAffliction(Context const& ctx)
 {
     Player* bot = ctx.bot;
     Unit* target = ctx.target;
+    if (!bot || !target)
+        return 0;
+
     uint32 const shards = bot->GetPower(POWER_SOUL_SHARDS);
     uint32 const manaMax = bot->GetMaxPower(POWER_MANA);
     float const manaPct = manaMax ? (100.0f * float(bot->GetPower(POWER_MANA)) / float(manaMax)) : 100.0f;
@@ -63,44 +68,46 @@ uint32 SelectAffliction(Context const& ctx)
             return SEED_OF_CORRUPTION;
     }
 
-    bool const agony = HasAuraUp(target, AGONY);
-    bool const corr = HasAuraUp(target, CORRUPTION);
-    bool const ua = HasAuraUp(target, UNSTABLE_AFFLICTION);
-
-    if (!agony && CanTryCast(bot, AGONY))
+    // Apply / refresh OUR DoTs only (caster-filtered). Use a short pandemic
+    // window so we do not thrash Agony <-> Corruption every GCD.
+    if (NeedsMyAuraRefresh(bot, target, AGONY, 3.0f) && CanTryCast(bot, AGONY))
         return AGONY;
-    if (!corr && CanTryCast(bot, CORRUPTION))
+    if (NeedsMyAuraRefresh(bot, target, CORRUPTION, 3.0f) && CanTryCast(bot, CORRUPTION))
         return CORRUPTION;
-    if (!ua && CanTryCast(bot, UNSTABLE_AFFLICTION))
+    if (NeedsMyAuraRefresh(bot, target, UNSTABLE_AFFLICTION, 3.0f) && CanTryCast(bot, UNSTABLE_AFFLICTION))
         return UNSTABLE_AFFLICTION;
 
-    if (ctx.targetHealthPct <= 20.0f && agony && corr && ua && shards < 4 && CanTryCast(bot, DRAIN_SOUL))
+    bool const agony = HasMyAura(bot, target, AGONY);
+    bool const corr = HasMyAura(bot, target, CORRUPTION);
+    bool const ua = HasMyAura(bot, target, UNSTABLE_AFFLICTION);
+    bool const dotsReady = agony && corr && (ua || !bot->HasSpell(UNSTABLE_AFFLICTION));
+
+    if (ctx.targetHealthPct <= 20.0f && dotsReady && shards < 4 && CanTryCast(bot, DRAIN_SOUL))
         return DRAIN_SOUL;
 
-    float const hauntRemains = AuraRemains(target, HAUNT);
-    if (agony && corr && ua && shards >= 1 && hauntRemains < 3.0f && CanTryCast(bot, HAUNT))
+    float const hauntRemains = MyAuraRemains(bot, target, HAUNT);
+    if (dotsReady && shards >= 1 && hauntRemains < 3.0f && CanTryCast(bot, HAUNT))
         return HAUNT;
-    if (shards >= 4 && agony && corr && ua && CanTryCast(bot, HAUNT))
+    if (shards >= 4 && dotsReady && CanTryCast(bot, HAUNT))
         return HAUNT;
 
-    if (AuraRemains(target, AGONY) <= 12.0f && CanTryCast(bot, AGONY))
-        return AGONY;
-    if (AuraRemains(target, UNSTABLE_AFFLICTION) <= 7.0f && CanTryCast(bot, UNSTABLE_AFFLICTION))
-        return UNSTABLE_AFFLICTION;
-    if (AuraRemains(target, CORRUPTION) <= 9.0f && CanTryCast(bot, CORRUPTION))
-        return CORRUPTION;
-
-    if (manaPct <= 15.0f && CanTryCast(bot, LIFE_TAP))
+    // Critical mana only — do not Life Tap every GCD under 80%.
+    if (manaPct <= 20.0f && CanTryCast(bot, LIFE_TAP))
         return LIFE_TAP;
 
-    if (agony && corr && ua && manaPct > 20.0f && CanTryCast(bot, MALEFIC_GRASP))
+    if (dotsReady && manaPct > 20.0f && CanTryCast(bot, MALEFIC_GRASP))
         return MALEFIC_GRASP;
 
-    if (manaPct < 80.0f && CanTryCast(bot, LIFE_TAP))
-        return LIFE_TAP;
-
+    // Low-level fillers when MG / Haunt are unknown.
+    if (dotsReady && CanTryCast(bot, DRAIN_LIFE))
+        return DRAIN_LIFE;
     if (CanTryCast(bot, FEL_FLAME))
         return FEL_FLAME;
+    if (CanTryCast(bot, SHADOW_BOLT))
+        return SHADOW_BOLT;
+
+    if (manaPct < 35.0f && CanTryCast(bot, LIFE_TAP))
+        return LIFE_TAP;
 
     return 0;
 }

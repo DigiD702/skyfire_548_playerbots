@@ -185,6 +185,8 @@ private:
     void ProcessInitQueue();
     void UpsertInitQueueJob(uint64 guid, int roleOverride, uint32 specOverride,
         int maxItemQuality, bool relevel, bool teleport, bool teleportFromCommand);
+    // Periodically queue online bots that still only have starter whites.
+    void EnqueueUngearedOnlineBots(uint32 diff);
 
     // Auto-creation helpers.
     struct PendingBotInit
@@ -272,12 +274,15 @@ private:
     uint32 _initQueueBatchTotal = 0;
     uint32 _initQueueBatchDone = 0;
     uint64 _initQueueNotifyGuid = 0;
+    uint32 _ungearedSweepTimer = 0;
 
     uint32 _loginTimer = 0;
     bool _candidatesLoaded = false;
     std::vector<BotCandidate> _candidates;
     std::deque<PendingBotLogin> _pendingLogins;
     std::unordered_set<uint64> _pendingLoginGuids;
+    // Role/spec remembered at create when InitOnCreate=0; applied on first login.
+    std::unordered_map<uint64, PendingBotInit> _deferredInits;
 
     std::unordered_map<uint64 /*characterGuid*/, WorldSession*> _bots;
     std::unordered_map<uint64 /*characterGuid*/, PlayerbotAI*> _ai;

@@ -80,11 +80,18 @@ namespace BotRotation
     // Nearest valid hostile other than `exclude` (for Havoc / multi-DoT).
     Unit* FindSecondaryEnemy(Player* bot, Unit* exclude, float range);
     float AuraRemains(Unit* unit, uint32 spellId);
+    // Remaining time of OUR aura on the unit (caster-GUID filtered).
+    float MyAuraRemains(Player* bot, Unit* unit, uint32 spellId);
     bool HasAuraUp(Unit* unit, uint32 spellId);
+    bool HasMyAura(Player* bot, Unit* unit, uint32 spellId);
+    // True when our DoT is missing or remaining duration <= refreshAt seconds.
+    bool NeedsMyAuraRefresh(Player* bot, Unit* unit, uint32 spellId, float refreshAt);
     uint32 AuraStacks(Unit* unit, uint32 spellId);
     bool SpellReady(Player* bot, uint32 spellId);
     bool CanTryCast(Player* bot, uint32 spellId);
     bool IsSelfCastSpell(uint32 spellId);
+    // Off-hand is an actual shield (not a held weapon / tome).
+    bool HasShieldEquipped(Player* bot);
 }
 
 #endif // _SF_BOT_ROTATION_H

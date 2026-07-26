@@ -342,6 +342,8 @@ namespace lfg
         uint32 GetLFGDungeonEntry(uint32 id);
         /// Return Lfg dungeon category for given dungeon id
         uint8 GetLFGDungeonCategory(uint32 id);
+        /// Return Lfg dungeon data for given dungeon id (or entry)
+        LFGDungeonData const* GetLFGDungeon(uint32 id);
         /// Check whether the dungeon id belongs to a Raid Finder queue entry
         bool IsRaidFinderDungeon(uint32 dungeonId);
         /// Check whether the dungeon id belongs to a flexible raid queue entry
@@ -498,7 +500,6 @@ namespace lfg
         void RemovePlayerData(uint64 guid);
         void GetCompatibleDungeons(LfgDungeonSet& dungeons, LfgGuidSet const& players, LfgLockPartyMap& lockMap, bool isContinue);
         void _SaveToDB(uint64 guid, uint32 db_guid);
-        LFGDungeonData const* GetLFGDungeon(uint32 id);
 
         // Proposals
         void RemoveProposal(LfgProposalContainer::iterator itProposal, LfgUpdateType type);

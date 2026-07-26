@@ -139,6 +139,7 @@ namespace
             case 71:     // Defensive Stance
             case 48263:  // Blood Presence
             case 20165:  // Seal of Insight
+            case 20164:  // Seal of Justice
             case 6117:   // Mage Armor
             case 30482:  // Molten Armor
             case 1459:   // Arcane Brilliance
@@ -274,6 +275,20 @@ float AuraRemains(Unit* unit, uint32 spellId)
     return aura->GetDuration() / 1000.0f;
 }
 
+float MyAuraRemains(Player* bot, Unit* unit, uint32 spellId)
+{
+    if (!bot || !unit)
+        return 0.0f;
+    Aura* aura = unit->GetAura(spellId, bot->GetGUID());
+    if (!aura)
+        aura = unit->GetAuraOfRankedSpell(spellId, bot->GetGUID());
+    if (!aura)
+        return 0.0f;
+    if (aura->IsPermanent() || aura->GetDuration() < 0)
+        return 9999.0f;
+    return aura->GetDuration() / 1000.0f;
+}
+
 bool HasAuraUp(Unit* unit, uint32 spellId)
 {
     if (!unit)
@@ -281,6 +296,35 @@ bool HasAuraUp(Unit* unit, uint32 spellId)
     if (unit->HasAura(spellId))
         return true;
     return unit->GetAuraOfRankedSpell(spellId) != nullptr;
+}
+
+bool HasMyAura(Player* bot, Unit* unit, uint32 spellId)
+{
+    if (!bot || !unit)
+        return false;
+    if (unit->HasAura(spellId, bot->GetGUID()))
+        return true;
+    return unit->GetAuraOfRankedSpell(spellId, bot->GetGUID()) != nullptr;
+}
+
+bool NeedsMyAuraRefresh(Player* bot, Unit* unit, uint32 spellId, float refreshAt)
+{
+    if (!bot || !unit)
+        return true;
+    float const remains = MyAuraRemains(bot, unit, spellId);
+    if (remains <= 0.0f)
+        return true;
+    return remains <= refreshAt;
+}
+
+bool HasShieldEquipped(Player* bot)
+{
+    if (!bot)
+        return false;
+    Item* offhand = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
+    if (!offhand || !offhand->GetTemplate())
+        return false;
+    return offhand->GetTemplate()->InventoryType == INVTYPE_SHIELD;
 }
 
 uint32 AuraStacks(Unit* unit, uint32 spellId)

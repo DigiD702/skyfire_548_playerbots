@@ -83,25 +83,29 @@ Playerbots.RandomBots.LoginsPerTick = 1
 
 #
 #    Playerbots.RandomBotJoinLfg
-#        Description: Legacy flag (kept for config compatibility). Solo LFG bot
-#                     fill via JoinLfg is disabled — it queued bots separately and
-#                     they formed bot-only LFG groups (leaving the open world).
-#                     To run LFG with bots: invite them to your party, then queue.
-#                     Grouped bots still answer role checks / proposals.
-#        Default:     0 - (Ignored; solo JoinLfg fill is not used)
+#        Description: When 1, ungrouped random bots JoinLfg to fill real players
+#                     already in the dungeon finder queue (same dungeons / level
+#                     band). Bot tanks are skipped if a player queued as tank;
+#                     bot healers are skipped if a player queued as healer. DPS
+#                     bots are never skipped by that safety. Bot-only LFG groups
+#                     are still ejected. Grouped bots continue to answer party
+#                     role checks / proposals via HandleLfg.
+#                     Console: each join logs at INFO (modules).
+#        Default:     0 - (Disabled)
+#                     1 - (Fill LFG for queued players)
 
 Playerbots.RandomBotJoinLfg = 0
 
 #
 #    Playerbots.RandomBotJoinLfg.MaxBots
-#        Description: Unused (solo JoinLfg fill removed). Kept for compatibility.
+#        Description: Max bots kept in LFG fill at once when RandomBotJoinLfg=1.
 #        Default:     10
 
 Playerbots.RandomBotJoinLfg.MaxBots = 10
 
 #
 #    Playerbots.RandomBotJoinLfg.LevelRange
-#        Description: Unused (solo JoinLfg fill removed). Kept for compatibility.
+#        Description: Max |botLevel - playerLevel| when picking LFG fill bots.
 #        Default:     5
 
 Playerbots.RandomBotJoinLfg.LevelRange = 5

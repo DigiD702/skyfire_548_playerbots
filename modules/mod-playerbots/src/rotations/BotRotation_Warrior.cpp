@@ -169,6 +169,8 @@ uint32 SelectProtectionWarrior(Context const& ctx)
         SHIELD_SLAM         = 23922,
         REVENGE             = 6572,
         DEVASTATE           = 20243,
+        SUNDER_ARMOR        = 7386,
+        WEAKENED_ARMOR      = 113746,
         THUNDER_CLAP        = 6343,
         WEAKENED_BLOWS      = 115798, // applied by Thunder Clap
         SHIELD_BLOCK        = 2565,
@@ -188,13 +190,20 @@ uint32 SelectProtectionWarrior(Context const& ctx)
     if (!HasAuraUp(bot, BATTLE_SHOUT) && CanTryCast(bot, BATTLE_SHOUT))
         return BATTLE_SHOUT;
 
-    bool const hasShield = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND) != nullptr;
+    // Must be a real shield — any off-hand item used to starve the rotation on
+    // failed Shield Block / Shield Slam casts.
+    bool const hasShield = HasShieldEquipped(bot);
 
     float const hpPct = bot->GetMaxHealth()
         ? (100.0f * float(bot->GetHealth()) / float(bot->GetMaxHealth())) : 100.0f;
     if (hasShield && hpPct < 40.0f && CanTryCast(bot, SHIELD_WALL))
         return SHIELD_WALL;
-    if (hasShield && !HasAuraUp(bot, SHIELD_BLOCK_BUFF) && !HasAuraUp(bot, SHIELD_BLOCK)
+
+    // Only attempt Shield Block when stance + shield are valid; otherwise the
+    // selector would return it every GCD, CastSpell would fail, and warriors
+    // would sit on auto-attacks (no class filler).
+    if (hasShield && inDefensive
+        && !HasAuraUp(bot, SHIELD_BLOCK_BUFF) && !HasAuraUp(bot, SHIELD_BLOCK)
         && CanTryCast(bot, SHIELD_BLOCK))
         return SHIELD_BLOCK;
 
@@ -216,14 +225,28 @@ uint32 SelectProtectionWarrior(Context const& ctx)
             return THUNDER_CLAP;
         if (CanTryCast(bot, DEMORALIZING_SHOUT))
             return DEMORALIZING_SHOUT;
-        if (rage >= 40 && CanTryCast(bot, CLEAVE))
-            return CLEAVE;
     }
 
+    // Devastate replaces Sunder at higher levels; use Sunder while learning.
     if (CanTryCast(bot, DEVASTATE))
         return DEVASTATE;
+    if (target && CanTryCast(bot, SUNDER_ARMOR))
+    {
+        uint32 const armorStacks = AuraStacks(target, WEAKENED_ARMOR);
+        if (armorStacks < 3 || NeedsMyAuraRefresh(bot, target, WEAKENED_ARMOR, 3.0f))
+            return SUNDER_ARMOR;
+    }
 
-    if (rage >= 60 && CanTryCast(bot, HEROIC_STRIKE))
+    // ST Weakened Blows via Thunder Clap when nothing else is ready.
+    if (target
+        && (!HasAuraUp(target, WEAKENED_BLOWS) || AuraRemains(target, WEAKENED_BLOWS) <= 3.0f)
+        && CanTryCast(bot, THUNDER_CLAP))
+        return THUNDER_CLAP;
+
+    // Rage dumps (cost 30). Dump from 40 so level-20 tanks actually spend rage.
+    if (ctx.enemies >= 2 && rage >= 40 && CanTryCast(bot, CLEAVE))
+        return CLEAVE;
+    if (rage >= 40 && CanTryCast(bot, HEROIC_STRIKE))
         return HEROIC_STRIKE;
 
     // Out of melee fillers while chasing a peel.

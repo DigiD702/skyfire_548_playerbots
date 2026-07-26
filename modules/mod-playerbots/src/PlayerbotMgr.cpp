@@ -25,6 +25,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "RBAC.h"
 #include "SharedDefines.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -195,6 +196,10 @@ void PlayerbotMgr::Update(uint32 diff)
     // This is NOT the random-bot login rate — see RandomBots.LoginsPerTick.
     ProcessInitQueue();
 
+    // Catch bots that logged in before deferred init existed (or after a
+    // restart that lost in-memory deferred role/spec) — queue ungeared ones.
+    EnqueueUngearedOnlineBots(diff);
+
     // LFG role checks + proposal accepts must run on the world thread. Calling
     // UpdateProposal from Map::Update (via PlayerbotAI::UpdateAI) races the LFG
     // mgr and can crash in MakeNewGroup / RemoveFromQueue (premade party enter).
@@ -339,9 +344,9 @@ void PlayerbotMgr::CleanupDeadBots()
     }
 }
 
-// Party LFG (master invites bots, then queues) is handled by PlayerbotAI::HandleLfg.
-// Never call JoinLfg on solo bots — that creates separate queue entries that match
-// into bot-only groups and pull them out of the open world.
+// Party LFG: grouped bots answer role checks via PlayerbotAI::HandleLfg.
+// When RandomBotJoinLfg is on, solo bots fill complementary roles for real
+// players already in queue. Bot-only LFG groups are always ejected.
 void PlayerbotMgr::UpdateLfgAutoJoin(uint32 diff)
 {
     if (_bots.empty())
@@ -352,8 +357,23 @@ void PlayerbotMgr::UpdateLfgAutoJoin(uint32 diff)
         return;
     _lfgJoinTimer = 0;
 
-    // Kick any bot that is solo-queued (no real party). Leave grouped bots alone —
-    // they are filling a master's party queue via role-check / proposal answers.
+    auto isRealPlayer = [](Player* p) -> bool
+    {
+        return p && p->GetSession() && !p->GetSession()->IsBot();
+    };
+
+    auto lfgRoleName = [](uint8 roles) -> char const*
+    {
+        if (roles & lfg::PLAYER_ROLE_TANK)
+            return "TANK";
+        if (roles & lfg::PLAYER_ROLE_HEALER)
+            return "HEALER";
+        if (roles & lfg::PLAYER_ROLE_DAMAGE)
+            return "DPS";
+        return "NONE";
+    };
+
+    // Always eject bots stuck in bot-only LFG dungeon groups.
     for (auto const& pair : _bots)
     {
         WorldSession* session = pair.second;
@@ -362,28 +382,13 @@ void PlayerbotMgr::UpdateLfgAutoJoin(uint32 diff)
             continue;
 
         Group* group = bot->GetGroup();
-        if (!group)
-        {
-            lfg::LfgState const botState = sLFGMgr->GetState(bot->GetGUID());
-            if (botState == lfg::LFG_STATE_NONE || botState == lfg::LFG_STATE_DUNGEON
-                || botState == lfg::LFG_STATE_FINISHED_DUNGEON || botState == lfg::LFG_STATE_BOOT)
-                continue;
-
-            sLFGMgr->LeaveLfg(bot->GetGUID());
-            SF_LOG_DEBUG("modules", "[mod-playerbots] Left solo LFG queue for bot '%s' (stay in world).",
-                bot->GetName().c_str());
-            continue;
-        }
-
-        // Bot-only LFG dungeon groups: eject so they return to the open world.
-        if (!group->isLFGGroup())
+        if (!group || !group->isLFGGroup())
             continue;
 
         bool hasRealPlayer = false;
         for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
         {
-            Player* member = itr->GetSource();
-            if (member && member->GetSession() && !member->GetSession()->IsBot())
+            if (isRealPlayer(itr->GetSource()))
             {
                 hasRealPlayer = true;
                 break;
@@ -400,15 +405,227 @@ void PlayerbotMgr::UpdateLfgAutoJoin(uint32 diff)
                 bot->GetSession()->FinalizeBotTeleport();
         }
         bot->RemoveFromGroup(GROUP_REMOVEMETHOD_LEAVE);
-        SF_LOG_DEBUG("modules", "[mod-playerbots] Ejected bot '%s' from bot-only LFG group.",
+        SF_LOG_INFO("modules", "[mod-playerbots] Ejected bot '%s' from bot-only LFG group.",
             bot->GetName().c_str());
     }
 
-    // Legacy RandomBotJoinLfg JoinLfg fill removed: it queued bots independently and
-    // they formed bot-only LFG groups. Invite bots to your party, then queue.
-    (void)_joinLfg;
-    (void)_joinLfgMaxBots;
-    (void)_joinLfgLevelRange;
+    if (!_joinLfg)
+    {
+        // Fill disabled: clear solo bot queues so they stay in the open world.
+        for (auto const& pair : _bots)
+        {
+            Player* bot = pair.second ? pair.second->GetPlayer() : nullptr;
+            if (!bot || !bot->IsInWorld() || bot->GetGroup())
+                continue;
+            lfg::LfgState const botState = sLFGMgr->GetState(bot->GetGUID());
+            if (botState == lfg::LFG_STATE_NONE || botState == lfg::LFG_STATE_DUNGEON
+                || botState == lfg::LFG_STATE_FINISHED_DUNGEON || botState == lfg::LFG_STATE_BOOT)
+                continue;
+            sLFGMgr->LeaveLfg(bot->GetGUID());
+        }
+        return;
+    }
+
+    struct MasterQueue
+    {
+        Player* player = nullptr;
+        lfg::LfgDungeonSet dungeons;
+        uint8 roles = 0;
+        uint8 level = 0;
+        uint32 team = 0;
+    };
+    std::vector<MasterQueue> masters;
+
+    {
+        SF_SHARED_GUARD readGuard(*HashMapHolder<Player>::GetLock());
+        for (auto const& kv : sObjectAccessor->GetPlayers())
+        {
+            Player* player = kv.second;
+            if (!isRealPlayer(player) || !player->IsInWorld())
+                continue;
+
+            Group* group = player->GetGroup();
+            if (group && !group->isLFGGroup() && !group->IsLeader(player->GetGUID()))
+                continue;
+
+            uint64 const stateGuid = group ? group->GetGUID() : player->GetGUID();
+            lfg::LfgState state = sLFGMgr->GetState(stateGuid);
+            if (state != lfg::LFG_STATE_QUEUED && state != lfg::LFG_STATE_ROLECHECK
+                && state != lfg::LFG_STATE_PROPOSAL)
+                state = sLFGMgr->GetState(player->GetGUID());
+            if (state != lfg::LFG_STATE_QUEUED && state != lfg::LFG_STATE_ROLECHECK
+                && state != lfg::LFG_STATE_PROPOSAL)
+                continue;
+
+            lfg::LfgDungeonSet const& dList = sLFGMgr->GetSelectedDungeons(player->GetGUID());
+            if (dList.empty())
+                continue;
+
+            MasterQueue mq;
+            mq.player = player;
+            mq.dungeons = dList;
+            mq.roles = sLFGMgr->GetRoles(player->GetGUID());
+            if (!mq.roles && group)
+                mq.roles = uint8(group->GetMemberRole(player->GetGUID()));
+            mq.level = player->getLevel();
+            mq.team = player->GetTeam();
+            masters.push_back(mq);
+        }
+    }
+
+    if (masters.empty())
+    {
+        // No real players queuing — do not leave bots sitting in solo LFG.
+        for (auto const& pair : _bots)
+        {
+            Player* bot = pair.second ? pair.second->GetPlayer() : nullptr;
+            if (!bot || !bot->IsInWorld() || bot->GetGroup())
+                continue;
+            lfg::LfgState const botState = sLFGMgr->GetState(bot->GetGUID());
+            if (botState == lfg::LFG_STATE_NONE || botState == lfg::LFG_STATE_DUNGEON
+                || botState == lfg::LFG_STATE_FINISHED_DUNGEON || botState == lfg::LFG_STATE_BOOT)
+                continue;
+            sLFGMgr->LeaveLfg(bot->GetGUID());
+            SF_LOG_DEBUG("modules", "[mod-playerbots] Left solo LFG for bot '%s' (no players queued).",
+                bot->GetName().c_str());
+        }
+        return;
+    }
+
+    // Roles already covered by real players (and their party): exclude bot tanks
+    // when a player queued tank, exclude bot healers when a player queued healer.
+    // DPS is never excluded — parties almost always need more damage.
+    uint8 excludedRoles = 0;
+    for (MasterQueue const& mq : masters)
+    {
+        excludedRoles |= (mq.roles & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER));
+        if (Group* group = mq.player->GetGroup())
+        {
+            for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+            {
+                Player* member = itr->GetSource();
+                if (!isRealPlayer(member))
+                    continue;
+                uint8 memberRoles = sLFGMgr->GetRoles(member->GetGUID());
+                if (!memberRoles)
+                    memberRoles = uint8(group->GetMemberRole(member->GetGUID()));
+                excludedRoles |= (memberRoles & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER));
+            }
+        }
+    }
+
+    uint32 botsAlreadyQueued = 0;
+    for (auto const& pair : _bots)
+    {
+        Player* bot = pair.second ? pair.second->GetPlayer() : nullptr;
+        if (!bot || !bot->IsInWorld())
+            continue;
+        lfg::LfgState const st = sLFGMgr->GetState(bot->GetGUID());
+        if (st == lfg::LFG_STATE_QUEUED || st == lfg::LFG_STATE_ROLECHECK || st == lfg::LFG_STATE_PROPOSAL)
+            ++botsAlreadyQueued;
+    }
+
+    uint32 botsJoined = 0;
+    uint32 const slotsLeft = (_joinLfgMaxBots > botsAlreadyQueued)
+        ? (_joinLfgMaxBots - botsAlreadyQueued) : 0;
+    if (!slotsLeft)
+        return;
+
+    for (auto const& pair : _bots)
+    {
+        if (botsJoined >= slotsLeft)
+            break;
+
+        Player* bot = pair.second ? pair.second->GetPlayer() : nullptr;
+        if (!bot || !bot->IsInWorld() || !bot->GetSession())
+            continue;
+        if (bot->GetGroup() || bot->isDead() || bot->IsBeingTeleported())
+            continue;
+        if (bot->InBattleground() || bot->InArena() || bot->InBattlegroundQueue())
+            continue;
+        if (bot->getLevel() < 15)
+            continue;
+
+        lfg::LfgState const botState = sLFGMgr->GetState(bot->GetGUID());
+        if (botState != lfg::LFG_STATE_NONE)
+            continue;
+
+        PlayerbotAI* ai = GetBotAI(bot);
+        if (!ai)
+            continue;
+
+        uint8 const botRole = ai->ComputeLfgRole();
+        // Safeties: player tank → no bot tanks; player healer → no bot healers.
+        if ((botRole & lfg::PLAYER_ROLE_TANK) && (excludedRoles & lfg::PLAYER_ROLE_TANK))
+            continue;
+        if ((botRole & lfg::PLAYER_ROLE_HEALER) && (excludedRoles & lfg::PLAYER_ROLE_HEALER))
+            continue;
+
+        MasterQueue const* matched = nullptr;
+        lfg::LfgDungeonSet botDungeons;
+        for (MasterQueue const& mq : masters)
+        {
+            if (bot->GetTeam() != mq.team)
+                continue;
+            if (std::abs(int(bot->getLevel()) - int(mq.level)) > int(_joinLfgLevelRange))
+                continue;
+
+            for (uint32 dungeonId : mq.dungeons)
+            {
+                lfg::LFGDungeonData const* dungeon = sLFGMgr->GetLFGDungeon(dungeonId);
+                if (!dungeon)
+                    dungeon = sLFGMgr->GetLFGDungeon(dungeonId & 0x00FFFFFFu);
+                if (!dungeon)
+                    continue;
+                if (bot->getLevel() < dungeon->minlevel || bot->getLevel() > dungeon->maxlevel)
+                    continue;
+                botDungeons.insert(dungeonId);
+            }
+            if (!botDungeons.empty())
+            {
+                matched = &mq;
+                break;
+            }
+        }
+        if (!matched || botDungeons.empty())
+            continue;
+
+        if (!bot->GetSession()->HasPermission(rbac::RBAC_PERM_JOIN_DUNGEON_FINDER))
+        {
+            SF_LOG_DEBUG("modules",
+                "[mod-playerbots] Bot '%s' skipped LFG join (missing dungeon finder permission).",
+                bot->GetName().c_str());
+            continue;
+        }
+
+        std::string const comment = "playerbot";
+        sLFGMgr->JoinLfg(bot, botRole, botDungeons, comment);
+        ++botsJoined;
+
+        char const* dungeonName = "dungeon";
+        if (lfg::LFGDungeonData const* first = sLFGMgr->GetLFGDungeon(*botDungeons.begin()))
+            dungeonName = first->name.c_str();
+        else if (lfg::LFGDungeonData const* first = sLFGMgr->GetLFGDungeon(*botDungeons.begin() & 0x00FFFFFFu))
+            dungeonName = first->name.c_str();
+
+        SF_LOG_INFO("modules",
+            "[mod-playerbots] Bot '%s' (lvl %u) joining LFG as %s for %s (%u selected) — filling %s (%s).",
+            bot->GetName().c_str(), bot->getLevel(), lfgRoleName(botRole),
+            dungeonName, uint32(botDungeons.size()),
+            matched->player->GetName().c_str(), lfgRoleName(matched->roles));
+    }
+
+    if (!botsJoined && !botsAlreadyQueued)
+    {
+        MasterQueue const& mq = masters.front();
+        SF_LOG_INFO("modules",
+            "[mod-playerbots] LFG fill: %u player(s) queued (e.g. %s as %s, lvl %u) but no eligible bots joined "
+            "(need level±%u, complementary roles; excluded %s%s).",
+            uint32(masters.size()), mq.player->GetName().c_str(), lfgRoleName(mq.roles), mq.level,
+            _joinLfgLevelRange,
+            (excludedRoles & lfg::PLAYER_ROLE_TANK) ? "tank " : "",
+            (excludedRoles & lfg::PLAYER_ROLE_HEALER) ? "healer" : "");
+    }
 }
 
 bool PlayerbotMgr::AddBot(uint64 characterGuid, std::string* errorOut)
@@ -651,14 +868,7 @@ void PlayerbotMgr::FinishSpawnBot(PendingBotLogin& pending)
 
     if (Player* bot = botSession->GetPlayer())
     {
-        // Deferred create: gear/spells on first world login when still bare.
-        // Already-init'd bots skip this — login is LoadFromDB + AI only.
-        if (BotNeedsGearInit(bot))
-        {
-            uint32 specId = bot->GetTalentSpecialization(bot->GetActiveSpec());
-            InitializeBot(bot, -1, specId, -1, false, _autoTeleportOnInit);
-        }
-
+        // Create AI before gear init so AfterInitRelocate / role strategies apply.
         _ai[characterGuid] = new PlayerbotAI(bot);
         if (isRandom)
         {
@@ -669,6 +879,28 @@ void PlayerbotMgr::FinishSpawnBot(PendingBotLogin& pending)
                 ai->SyncFlagsFromStrategies();
             }
         }
+
+        // Deferred create (InitOnCreate=0): queue gear/spells/teleport so mass
+        // login stays fast (Init.PerTick paces the heavy work).
+        auto deferred = _deferredInits.find(characterGuid);
+        if (deferred != _deferredInits.end())
+        {
+            PendingBotInit const& d = deferred->second;
+            UpsertInitQueueJob(characterGuid, d.role, d.specId, -1, false,
+                _autoTeleportOnInit, false);
+            _deferredInits.erase(deferred);
+            SF_LOG_INFO("modules",
+                "[mod-playerbots] Queued first-login init+teleport for '%s' (GUID %u).",
+                bot->GetName().c_str(), GUID_LOPART(characterGuid));
+        }
+        else if (BotNeedsGearInit(bot))
+        {
+            UpsertInitQueueJob(characterGuid, -1, 0, -1, false, _autoTeleportOnInit, false);
+            SF_LOG_INFO("modules",
+                "[mod-playerbots] Queued ungeared init+teleport for '%s' (GUID %u).",
+                bot->GetName().c_str(), GUID_LOPART(characterGuid));
+        }
+
         char const* raceName = GetRaceName(bot->getRace(), LOCALE_enUS);
         char const* className = GetClassName(bot->getClass(), LOCALE_enUS);
         SF_LOG_INFO("modules",
@@ -919,6 +1151,8 @@ void PlayerbotMgr::LogoutAllBots()
     }
     _pendingLogins.clear();
     _pendingLoginGuids.clear();
+    // Keep _deferredInits — those chars may still need first-login gear after
+    // a logout/restart cycle within the same world session. Wipe clears them.
 
     for (auto& pair : _ai)
         delete pair.second;
@@ -1004,6 +1238,10 @@ uint32 PlayerbotMgr::DeleteBotAccounts(std::string* report)
 
     _candidates.clear();
     _candidatesLoaded = false;
+    _deferredInits.clear();
+    _initQueue.clear();
+    _initQueueBatchTotal = 0;
+    _initQueueBatchDone = 0;
 
     std::ostringstream ss;
     ss << "Deleted " << deleted << " bot account(s) with prefix '" << _accountPrefix
@@ -1646,6 +1884,43 @@ namespace
             TryLearnSpell(bot, 1978);  // Serpent Sting
             TryLearnSpell(bot, 13165); // Aspect of the Hawk
         }
+        if (bot->getClass() == CLASS_PALADIN)
+        {
+            TryLearnSpell(bot, 20154); // Seal of Righteousness
+            TryLearnSpell(bot, 20271); // Judgment
+            TryLearnSpell(bot, 35395); // Crusader Strike
+            TryLearnSpell(bot, 879);   // Exorcism
+            if (level >= 32)
+                TryLearnSpell(bot, 20165); // Seal of Insight
+            if (level >= 44)
+                TryLearnSpell(bot, 31801); // Seal of Truth
+        }
+        if (bot->getClass() == CLASS_WARRIOR)
+        {
+            TryLearnSpell(bot, 78);    // Heroic Strike
+            TryLearnSpell(bot, 71);    // Defensive Stance
+            TryLearnSpell(bot, 355);   // Taunt
+            TryLearnSpell(bot, 6343);  // Thunder Clap
+            TryLearnSpell(bot, 7386);  // Sunder Armor
+            TryLearnSpell(bot, 23922); // Shield Slam
+            if (level >= 20)
+                TryLearnSpell(bot, 6673); // Battle Shout
+            if (level >= 28)
+                TryLearnSpell(bot, 2565); // Shield Block
+            if (level >= 26)
+                TryLearnSpell(bot, 20243); // Devastate
+            if (level >= 40)
+                TryLearnSpell(bot, 6572); // Revenge
+        }
+        if (bot->getClass() == CLASS_WARLOCK)
+        {
+            TryLearnSpell(bot, 686);  // Shadow Bolt
+            TryLearnSpell(bot, 172);  // Corruption
+            TryLearnSpell(bot, 980);  // Agony
+            TryLearnSpell(bot, 689);  // Drain Life
+            TryLearnSpell(bot, 1454); // Life Tap
+            TryLearnSpell(bot, 688);  // Summon Imp
+        }
     }
 
     uint32 PickRandomSpell(uint32 const* list, size_t count)
@@ -2151,6 +2426,14 @@ uint32 PlayerbotMgr::CreateBotPopulation(std::string* report)
                     inited, uint32(pending.size()));
         }
     }
+    else if (!_autoInitOnCreate && !pending.empty())
+    {
+        for (PendingBotInit const& p : pending)
+            _deferredInits[p.guid] = p;
+        SF_LOG_INFO("modules",
+            "[mod-playerbots] Deferred first-login init+teleport for %u character(s).",
+            uint32(pending.size()));
+    }
 
     // Newly created characters are candidates; refresh the pool on the next tick.
     _candidatesLoaded = false;
@@ -2442,6 +2725,56 @@ void PlayerbotMgr::ProcessInitQueue()
     }
 }
 
+void PlayerbotMgr::EnqueueUngearedOnlineBots(uint32 diff)
+{
+    if (_bots.empty())
+        return;
+
+    _ungearedSweepTimer += diff;
+    if (_ungearedSweepTimer < 5000)
+        return;
+    _ungearedSweepTimer = 0;
+
+    auto alreadyQueued = [this](uint64 guid) -> bool
+    {
+        for (QueuedBotInit const& job : _initQueue)
+            if (job.guid == guid)
+                return true;
+        return false;
+    };
+
+    uint32 queued = 0;
+    for (auto const& pair : _bots)
+    {
+        Player* bot = pair.second ? pair.second->GetPlayer() : nullptr;
+        if (!bot || !bot->IsInWorld())
+            continue;
+        if (alreadyQueued(pair.first))
+            continue;
+
+        auto deferred = _deferredInits.find(pair.first);
+        if (deferred != _deferredInits.end())
+        {
+            PendingBotInit const& d = deferred->second;
+            UpsertInitQueueJob(pair.first, d.role, d.specId, -1, false,
+                _autoTeleportOnInit, false);
+            _deferredInits.erase(deferred);
+            ++queued;
+            continue;
+        }
+
+        if (!BotNeedsGearInit(bot))
+            continue;
+
+        UpsertInitQueueJob(pair.first, -1, 0, -1, false, _autoTeleportOnInit, false);
+        ++queued;
+    }
+
+    if (queued)
+        SF_LOG_INFO("modules",
+            "[mod-playerbots] Queued %u online ungeared bot(s) for init+teleport.", queued);
+}
+
 uint32 PlayerbotMgr::PopulateAccount(uint32 accountId, std::vector<PendingBotInit>* pending)
 {
     uint32 existing = AccountMgr::GetCharactersCount(accountId);
@@ -2458,9 +2791,25 @@ bool PlayerbotMgr::BotNeedsGearInit(Player* bot) const
 {
     if (!bot)
         return false;
+    if (_deferredInits.find(bot->GetGUID()) != _deferredInits.end())
+        return true;
+
     // Ungeared after deferred create — chest and main-hand both empty.
-    return !bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_CHEST)
-        && !bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+    if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_CHEST)
+        && !bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND))
+        return true;
+
+    // Starter whites only — still needs a real gear/spec init pass.
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            continue;
+        ItemTemplate const* proto = item->GetTemplate();
+        if (proto && proto->Quality >= ITEM_QUALITY_UNCOMMON)
+            return false;
+    }
+    return true;
 }
 
 void PlayerbotMgr::InitCreatedBot(PendingBotInit const& pending)

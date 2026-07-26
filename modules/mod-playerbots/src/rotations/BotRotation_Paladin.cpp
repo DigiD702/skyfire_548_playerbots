@@ -14,6 +14,8 @@ namespace
     {
         SEAL_OF_TRUTH           = 31801,
         SEAL_OF_RIGHTEOUSNESS   = 20154,
+        SEAL_OF_INSIGHT         = 20165,
+        SEAL_OF_JUSTICE         = 20164,
         INQUISITION             = 84963,
         AVENGING_WRATH          = 31884,
         GUARDIAN_ANCIENT_KINGS  = 86698,
@@ -30,28 +32,49 @@ namespace
         EXORCISM                = 879,
         DIVINE_PURPOSE          = 90174,
     };
+
+    bool HasAnySeal(Player* bot)
+    {
+        return HasAuraUp(bot, SEAL_OF_TRUTH)
+            || HasAuraUp(bot, SEAL_OF_RIGHTEOUSNESS)
+            || HasAuraUp(bot, SEAL_OF_INSIGHT)
+            || HasAuraUp(bot, SEAL_OF_JUSTICE);
+    }
+
+    // Judgment requires an active seal. Prefer Truth, else Righteousness (lvl 3),
+    // else Insight / Justice — never leave ret seal-less at low level.
+    uint32 SelectSealSpell(Player* bot, uint32 enemies)
+    {
+        if (HasAnySeal(bot))
+            return 0;
+
+        if (enemies >= 4 && CanTryCast(bot, SEAL_OF_RIGHTEOUSNESS))
+            return SEAL_OF_RIGHTEOUSNESS;
+        if (CanTryCast(bot, SEAL_OF_TRUTH))
+            return SEAL_OF_TRUTH;
+        if (CanTryCast(bot, SEAL_OF_RIGHTEOUSNESS))
+            return SEAL_OF_RIGHTEOUSNESS;
+        if (CanTryCast(bot, SEAL_OF_INSIGHT))
+            return SEAL_OF_INSIGHT;
+        if (CanTryCast(bot, SEAL_OF_JUSTICE))
+            return SEAL_OF_JUSTICE;
+        return 0;
+    }
 }
 
 uint32 SelectRetribution(Context const& ctx)
 {
     Player* bot = ctx.bot;
-    Unit* target = ctx.target;
     uint32 const hp = bot->GetPower(POWER_HOLY_POWER);
     bool const divinePurpose = HasAuraUp(bot, DIVINE_PURPOSE);
     bool const inquisitionUp = HasAuraUp(bot, INQUISITION);
     float const inqRemains = AuraRemains(bot, INQUISITION);
     bool const awUp = HasAuraUp(bot, AVENGING_WRATH);
 
-    // Maintain Seal of Truth (Righteousness on heavy AoE).
-    if (ctx.enemies >= 4)
-    {
-        if (!HasAuraUp(bot, SEAL_OF_RIGHTEOUSNESS) && CanTryCast(bot, SEAL_OF_RIGHTEOUSNESS))
-            return SEAL_OF_RIGHTEOUSNESS;
-    }
-    else if (!HasAuraUp(bot, SEAL_OF_TRUTH) && CanTryCast(bot, SEAL_OF_TRUTH))
-        return SEAL_OF_TRUTH;
+    if (uint32 seal = SelectSealSpell(bot, ctx.enemies))
+        return seal;
 
-    // Inquisition
+    // Inquisition (81+) — skip silently when unknown.
     if ((!inquisitionUp || inqRemains <= 2.0f) && (hp >= 3 || divinePurpose) && CanTryCast(bot, INQUISITION))
         return INQUISITION;
 
@@ -80,17 +103,17 @@ uint32 SelectRetribution(Context const& ctx)
 
     if (ctx.targetHealthPct <= 20.0f && CanTryCast(bot, HAMMER_OF_WRATH))
         return HAMMER_OF_WRATH;
-    // HoW also usable during Avenging Wrath regardless of HP in MoP.
     if (awUp && CanTryCast(bot, HAMMER_OF_WRATH))
         return HAMMER_OF_WRATH;
 
     if (ctx.enemies >= 4 && CanTryCast(bot, HAMMER_OF_THE_RIGHTEOUS))
         return HAMMER_OF_THE_RIGHTEOUS;
 
+    // Builder priority: CS (melee HP) then Judgment (ranged HP / seal dump).
     if (CanTryCast(bot, CRUSADER_STRIKE))
         return CRUSADER_STRIKE;
 
-    if (CanTryCast(bot, JUDGMENT))
+    if (HasAnySeal(bot) && CanTryCast(bot, JUDGMENT))
         return JUDGMENT;
 
     if (CanTryCast(bot, EXORCISM))
@@ -105,6 +128,10 @@ uint32 SelectRetribution(Context const& ctx)
     if (CanTryCast(bot, HOLY_PRISM))
         return HOLY_PRISM;
 
+    // Last resort: Judgment even if seal check raced; seal cast above should cover.
+    if (CanTryCast(bot, JUDGMENT))
+        return JUDGMENT;
+
     return 0;
 }
 
@@ -116,6 +143,8 @@ uint32 SelectProtectionPaladin(Context const& ctx)
     enum ProtSpells : uint32
     {
         SEAL_OF_INSIGHT             = 20165,
+        SEAL_OF_RIGHTEOUSNESS       = 20154,
+        SEAL_OF_TRUTH               = 31801,
         AVENGERS_SHIELD             = 31935,
         HAMMER_OF_THE_RIGHTEOUS     = 53595,
         CRUSADER_STRIKE             = 35395,
@@ -130,8 +159,19 @@ uint32 SelectProtectionPaladin(Context const& ctx)
 
     if (!HasAuraUp(bot, BLESSING_OF_KINGS) && CanTryCast(bot, BLESSING_OF_KINGS))
         return BLESSING_OF_KINGS;
-    if (!HasAuraUp(bot, SEAL_OF_INSIGHT) && CanTryCast(bot, SEAL_OF_INSIGHT))
-        return SEAL_OF_INSIGHT;
+
+    bool const hasSeal = HasAuraUp(bot, SEAL_OF_INSIGHT)
+        || HasAuraUp(bot, SEAL_OF_RIGHTEOUSNESS)
+        || HasAuraUp(bot, SEAL_OF_TRUTH);
+    if (!hasSeal)
+    {
+        if (CanTryCast(bot, SEAL_OF_INSIGHT))
+            return SEAL_OF_INSIGHT;
+        if (CanTryCast(bot, SEAL_OF_RIGHTEOUSNESS))
+            return SEAL_OF_RIGHTEOUSNESS;
+        if (CanTryCast(bot, SEAL_OF_TRUTH))
+            return SEAL_OF_TRUTH;
+    }
 
     if ((hp >= 3 || HasAuraUp(bot, 90174)) && CanTryCast(bot, SHIELD_OF_THE_RIGHTEOUS))
         return SHIELD_OF_THE_RIGHTEOUS;
@@ -152,7 +192,7 @@ uint32 SelectProtectionPaladin(Context const& ctx)
     else if (CanTryCast(bot, CRUSADER_STRIKE))
         return CRUSADER_STRIKE;
 
-    if (CanTryCast(bot, JUDGMENT))
+    if (hasSeal && CanTryCast(bot, JUDGMENT))
         return JUDGMENT;
     if (CanTryCast(bot, AVENGERS_SHIELD))
         return AVENGERS_SHIELD;
@@ -160,6 +200,8 @@ uint32 SelectProtectionPaladin(Context const& ctx)
         return HOLY_WRATH;
     if (CanTryCast(bot, CONSECRATION))
         return CONSECRATION;
+    if (CanTryCast(bot, JUDGMENT))
+        return JUDGMENT;
 
     return 0;
 }
