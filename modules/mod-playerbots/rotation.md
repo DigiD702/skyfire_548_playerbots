@@ -164,7 +164,9 @@ Protection (Tank)
 
     Stance: Defensive Stance
 
-    Rotation: Shield Slam (on cooldown) > Revenge (on cooldown) > Devastate (filler) > Shield Block or Shield Barrier (spend Rage to survive)
+    Rotation: Shield Slam (on cooldown) > Revenge (on cooldown) > Thunder Clap (2+ NPCs) > Devastate (filler) > Shield Block or Shield Barrier (spend Rage to survive)
+
+    Pull: Charge into 2+ NPCs, then Thunder Clap on landing.
 
 Arms (DPS)
 

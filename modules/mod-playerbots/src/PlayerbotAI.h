@@ -270,6 +270,11 @@ private:
     bool TryWarriorGapClose(Unit* target);
     // Off-GCD taunt when focus is on someone else. Safe to call after Charge.
     bool TryTankTaunt(Unit* target);
+    // After Charge/Leap into a pack, queue one Thunder Clap (or class pack AoE).
+    void ArmPullPackAoeIfNeeded(Unit* target);
+    bool TryConsumePullPackAoe(Unit* target);
+    uint32 GetPullPackAoeSpell() const;
+    uint32 CountEnemiesNear(Unit* center, float range) const;
     bool HandlePullSequence();
     void BeginPullSequence(Unit* target);
     void EndPullSequence(bool keepForcedTarget);
@@ -287,7 +292,8 @@ private:
     // Hunters: arm Auto Shot (75) once; core keeps it firing.
     void StartHunterAutoShot(Unit* target);
     void StopHunterAutoShot();
-    void DoTankExtras(Unit* target, bool closing = false);
+    // Returns true if this call spent the GCD (caller should skip DoRotation).
+    bool DoTankExtras(Unit* target, bool closing = false);
 
     void ReplyTo(Player* from, std::string const& text);
     // Whisper class/spec combat spells the bot actually knows (debug / verify init).
@@ -333,6 +339,8 @@ private:
     time_t _pullStartTime = 0;
     enum class PullPhase : uint8 { None, Reach, Opener };
     PullPhase _pullPhase = PullPhase::None;
+    // Set when Charge/Leap into 2+ mobs; cleared after one pack AoE (e.g. Thunder Clap).
+    bool _pendingPullAoe = false;
 
     TravelDest _travel;
     uint8 _travelFailCount = 0;

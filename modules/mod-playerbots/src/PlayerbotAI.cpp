@@ -1251,7 +1251,10 @@ bool PlayerbotAI::HandleCombat()
             if (!_bot->HasInArc(static_cast<float>(M_PI), target))
                 _bot->SetInFront(target);
             if (GetCombatRole() == CombatRole::Tank && _tankMode)
-                DoTankExtras(target);
+            {
+                if (DoTankExtras(target))
+                    return true; // pull Thunder Clap (etc.) spent the GCD
+            }
             DoRotation(target);
         }
         else
@@ -1467,7 +1470,10 @@ bool PlayerbotAI::HandleCombatCastOnly()
         }
         _bot->Attack(target, true);
         if (GetCombatRole() == CombatRole::Tank && _tankMode)
-            DoTankExtras(target);
+        {
+            if (DoTankExtras(target))
+                return true; // pull pack AoE spent the GCD
+        }
         DoRotation(target);
     }
     return true;
@@ -2479,10 +2485,16 @@ bool PlayerbotAI::TryWarriorGapClose(Unit* target)
 
     // 1) Charge — primary pull / engage. Never follow with Throw this tick.
     if (trySpell(100, 8.0f, 25.0f))
+    {
+        ArmPullPackAoeIfNeeded(target);
         return true;
+    }
     // 2) Heroic Leap if Charge is unavailable (CD / OOR / unknown).
     if (trySpell(6544, 8.0f, 40.0f))
+    {
+        ArmPullPackAoeIfNeeded(target);
         return true;
+    }
     // 3) Heroic Throw only when Charge cannot be used (on CD or out of Charge range).
     bool const chargeReady = _bot->HasSpell(100) && !_bot->HasSpellCooldown(100)
         && BotRotation::CanTryCast(_bot, 100);
@@ -2490,7 +2502,112 @@ bool PlayerbotAI::TryWarriorGapClose(Unit* target)
     if (chargeReady && inChargeRange)
         return false; // Charge should have fired; do not Throw over it.
     if (trySpell(57755, 0.0f, 30.0f))
+    {
+        // Thrown into a pack — still want TC once we close.
+        ArmPullPackAoeIfNeeded(target);
         return true;
+    }
+    return false;
+}
+
+uint32 PlayerbotAI::CountEnemiesNear(Unit* center, float range) const
+{
+    if (!_bot || !center)
+        return 0;
+
+    std::list<Unit*> list;
+    Skyfire::AnyUnfriendlyUnitInObjectRangeCheck check(center, _bot, range);
+    Skyfire::UnitListSearcher<Skyfire::AnyUnfriendlyUnitInObjectRangeCheck> searcher(center, list, check);
+    center->VisitNearbyObject(range, searcher);
+
+    uint32 count = 0;
+    for (Unit* u : list)
+        if (u && u->IsAlive() && _bot->IsValidAttackTarget(u))
+            ++count;
+    return count;
+}
+
+void PlayerbotAI::ArmPullPackAoeIfNeeded(Unit* target)
+{
+    if (!target || !_bot)
+        return;
+    // Only tanks presume pack AoE on pull.
+    if (GetCombatRole() != CombatRole::Tank || !_tankMode)
+        return;
+    // Count around the Charge destination (the pull target), not where we stand.
+    if (CountEnemiesNear(target, 10.0f) >= 2)
+        _pendingPullAoe = true;
+}
+
+uint32 PlayerbotAI::GetPullPackAoeSpell() const
+{
+    if (!_bot)
+        return 0;
+
+    // Prefer instant pack threat on landing — Thunder Clap before Shockwave.
+    uint32 candidates[3] = { 0, 0, 0 };
+    switch (_bot->getClass())
+    {
+        case CLASS_WARRIOR:
+            candidates[0] = 6343;     // Thunder Clap
+            candidates[1] = 46968;    // Shockwave
+            break;
+        case CLASS_PALADIN:
+            candidates[0] = 53595;    // Hammer of the Righteous
+            candidates[1] = 26573;    // Consecration
+            break;
+        case CLASS_DEATH_KNIGHT:
+            candidates[0] = 48721;    // Blood Boil
+            candidates[1] = 43265;    // Death and Decay
+            break;
+        case CLASS_DRUID:
+            candidates[0] = 77758;    // Thrash
+            candidates[1] = 106785;   // Swipe
+            break;
+        case CLASS_MONK:
+            candidates[0] = 121253;   // Keg Smash
+            candidates[1] = 115181;   // Breath of Fire
+            break;
+        default:
+            return 0;
+    }
+
+    for (uint32 id : candidates)
+        if (id && _bot->HasSpell(id) && !_bot->HasSpellCooldown(id)
+            && BotRotation::CanTryCast(_bot, id))
+            return id;
+    return 0;
+}
+
+bool PlayerbotAI::TryConsumePullPackAoe(Unit* target)
+{
+    if (!_pendingPullAoe || !_bot || !target)
+        return false;
+
+    // Wait until Charge has delivered us into the pack.
+    if (!_bot->IsWithinMeleeRange(target) && _bot->GetDistance(target) > 8.0f)
+        return false;
+
+    uint32 const nearbyCount = BotRotation::CountNearbyEnemies(_bot, 10.0f);
+    if (nearbyCount < 2)
+    {
+        _pendingPullAoe = false;
+        return false;
+    }
+
+    uint32 const aoe = GetPullPackAoeSpell();
+    if (!aoe)
+    {
+        _pendingPullAoe = false;
+        return false;
+    }
+
+    if (BotRotation::CastSpell(_bot, target, aoe))
+    {
+        _pendingPullAoe = false;
+        DebugCombat("Pull pack AoE");
+        return true;
+    }
     return false;
 }
 
@@ -2517,10 +2634,10 @@ bool PlayerbotAI::TryTankTaunt(Unit* target)
     return BotRotation::CastSpell(_bot, target, taunt);
 }
 
-void PlayerbotAI::DoTankExtras(Unit* target, bool closing)
+bool PlayerbotAI::DoTankExtras(Unit* target, bool closing)
 {
     if (!target || _bot->HasUnitState(UNIT_STATE_CASTING))
-        return;
+        return false;
 
     // Closing: Charge first, then off-GCD taunt. Never Charge+Throw same tick.
     if (closing)
@@ -2528,14 +2645,21 @@ void PlayerbotAI::DoTankExtras(Unit* target, bool closing)
         if (_bot->getClass() == CLASS_WARRIOR)
             TryWarriorGapClose(target);
         else if (uint32 opener = GetPullOpenerSpell(target))
-            if (BotRotation::CanTryCast(_bot, opener))
-                BotRotation::CastSpell(_bot, target, opener);
+        {
+            if (BotRotation::CanTryCast(_bot, opener)
+                && BotRotation::CastSpell(_bot, target, opener))
+                ArmPullPackAoeIfNeeded(target);
+        }
 
         // Taunt can ride with Charge (no GCD / no StopMoving).
         if (GetCombatRole() == CombatRole::Tank && _tankMode)
             TryTankTaunt(target);
-        return;
+        return false; // Charge/taunt — rotation still blocked while closing
     }
+
+    // First GCD after landing in a pack: Thunder Clap (etc.) before peels/rotation.
+    if (TryConsumePullPackAoe(target))
+        return true;
 
     // In melee: peel with taunt when focus is on someone else.
     if (GetCombatRole() == CombatRole::Tank && _tankMode)
@@ -2544,7 +2668,7 @@ void PlayerbotAI::DoTankExtras(Unit* target, bool closing)
     // AoE threat only when something in the pack is not on us — never spam
     // Thunder Clap every GCD (that starved Shield Slam / Revenge / Devastate).
     if (BotRotation::CountNearbyEnemies(_bot, 10.0f) < 2)
-        return;
+        return false;
 
     bool needPackThreat = false;
     {
@@ -2565,11 +2689,12 @@ void PlayerbotAI::DoTankExtras(Unit* target, bool closing)
         }
     }
     if (!needPackThreat)
-        return;
+        return false;
 
     if (uint32 aoe = GetAoeThreatSpell())
         if (BotRotation::CanTryCast(_bot, aoe) && BotRotation::CastSpell(_bot, target, aoe))
-            return;
+            return true;
+    return false;
 }
 
 Unit* PlayerbotAI::SelectGroupThreatTarget()

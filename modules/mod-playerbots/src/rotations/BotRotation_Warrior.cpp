@@ -136,11 +136,14 @@ uint32 SelectProtectionWarrior(Context const& ctx)
     if (!HasAuraUp(bot, BATTLE_SHOUT) && CanTryCast(bot, BATTLE_SHOUT))
         return BATTLE_SHOUT;
 
-    // Shield Slam > Revenge > Devastate (Sunder if Devastate unknown)
+    // Shield Slam > Revenge; pack pulls Thunder Clap early for Weakened Blows / threat.
     if (hasShield && CanTryCast(bot, SHIELD_SLAM))
         return SHIELD_SLAM;
     if (CanTryCast(bot, REVENGE))
         return REVENGE;
+
+    if (ctx.enemies >= 2 && CanTryCast(bot, THUNDER_CLAP))
+        return THUNDER_CLAP;
 
     if (ctx.targetHealthPct <= 20.0f && CanTryCast(bot, EXECUTE))
         return EXECUTE;
@@ -149,10 +152,6 @@ uint32 SelectProtectionWarrior(Context const& ctx)
         return DEVASTATE;
     if (CanTryCast(bot, SUNDER_ARMOR))
         return SUNDER_ARMOR;
-
-    // AoE filler when packing
-    if (ctx.enemies >= 2 && CanTryCast(bot, THUNDER_CLAP))
-        return THUNDER_CLAP;
 
     // Shield Block or Shield Barrier (spend Rage to survive)
     if (hasShield && inDefensive && rage >= 60 && hpPct < 85.0f)
