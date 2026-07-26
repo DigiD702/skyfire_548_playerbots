@@ -79,6 +79,9 @@ namespace BotRotation
     uint32 CountNearbyEnemies(Player* bot, float range);
     // Nearest valid hostile other than `exclude` (for Havoc / multi-DoT).
     Unit* FindSecondaryEnemy(Player* bot, Unit* exclude, float range);
+    // MoP often applies a different aura ID than the cast spell (e.g. Corruption
+    // 172 → 146739). Pass either cast or aura ID; returns the aura to inspect.
+    uint32 AuraIdForSpell(uint32 castOrAuraId);
     float AuraRemains(Unit* unit, uint32 spellId);
     // Remaining time of OUR aura on the unit (caster-GUID filtered).
     float MyAuraRemains(Player* bot, Unit* unit, uint32 spellId);
@@ -88,6 +91,7 @@ namespace BotRotation
     bool NeedsMyAuraRefresh(Player* bot, Unit* unit, uint32 spellId, float refreshAt);
     uint32 AuraStacks(Unit* unit, uint32 spellId);
     bool SpellReady(Player* bot, uint32 spellId);
+    // Known, off GCD/CD, and affordable (SpellPower.dbc cost).
     bool CanTryCast(Player* bot, uint32 spellId);
     bool IsSelfCastSpell(uint32 spellId);
     // Off-hand is an actual shield (not a held weapon / tome).

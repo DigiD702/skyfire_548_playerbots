@@ -568,8 +568,24 @@ void WorldSession::LogoutPlayer(bool save)
 
         // remove player from the group if he is:
         // a) in group; b) not in raid group; c) logging out normally (not being kicked or disconnected)
+        // Keep party membership when any member is a playerbot — bots stay online and
+        // the real player should remain an offline slot (same as raid logout).
         if (_player->GetGroup() && !_player->GetGroup()->isRaidGroup() && m_Socket)
-            _player->RemoveFromGroup();
+        {
+            bool groupHasBot = false;
+            Group* group = _player->GetGroup();
+            for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+            {
+                Player* member = itr->GetSource();
+                if (member && member->GetSession() && member->GetSession()->IsBot())
+                {
+                    groupHasBot = true;
+                    break;
+                }
+            }
+            if (!groupHasBot)
+                _player->RemoveFromGroup();
+        }
 
         //! Send update to group and reset stored max enchanting level
         if (_player->GetGroup())

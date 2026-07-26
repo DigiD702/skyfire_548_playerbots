@@ -385,11 +385,27 @@ void PlayerbotMgr::UpdateLfgAutoJoin(uint32 diff)
         if (!group || !group->isLFGGroup())
             continue;
 
+        // Do not tear down mid-proposal / mid-dungeon — the real player may be
+        // out-of-world during teleport so GetSource() looks empty (false bot-only).
+        lfg::LfgState const gstate = sLFGMgr->GetState(group->GetGUID());
+        if (gstate == lfg::LFG_STATE_PROPOSAL || gstate == lfg::LFG_STATE_DUNGEON
+            || gstate == lfg::LFG_STATE_ROLECHECK)
+            continue;
+
         bool hasRealPlayer = false;
-        for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+        for (Group::MemberSlot const& slot : group->GetMemberSlots())
         {
-            if (isRealPlayer(itr->GetSource()))
+            if (Player* member = ObjectAccessor::FindPlayerInOrOutOfWorld(slot.guid))
             {
+                if (isRealPlayer(member))
+                {
+                    hasRealPlayer = true;
+                    break;
+                }
+            }
+            else if (!IsBot(slot.guid))
+            {
+                // Offline non-bot GUID — treat as a real player who logged out.
                 hasRealPlayer = true;
                 break;
             }
@@ -525,9 +541,38 @@ void PlayerbotMgr::UpdateLfgAutoJoin(uint32 diff)
             ++botsAlreadyQueued;
     }
 
+    // 5-man fill: only queue enough bots to complete one dungeon group.
+    // Flooding MaxBots (default 10) into one queue spawned bot-only proposals
+    // that raced eject/teleport and crashed worldserver.
+    uint32 realQueued = 0;
+    {
+        std::unordered_set<uint64> counted;
+        for (MasterQueue const& mq : masters)
+        {
+            if (Group* group = mq.player->GetGroup())
+            {
+                for (Group::MemberSlot const& slot : group->GetMemberSlots())
+                {
+                    if (!counted.insert(slot.guid).second)
+                        continue;
+                    if (Player* member = ObjectAccessor::FindPlayerInOrOutOfWorld(slot.guid))
+                    {
+                        if (isRealPlayer(member))
+                            ++realQueued;
+                    }
+                    else if (!IsBot(slot.guid))
+                        ++realQueued;
+                }
+            }
+            else if (counted.insert(mq.player->GetGUID()).second)
+                ++realQueued;
+        }
+    }
+    uint32 const dungeonSize = 5u;
+    uint32 const fillNeed = (realQueued < dungeonSize) ? (dungeonSize - realQueued) : 0u;
+    uint32 const want = std::min(_joinLfgMaxBots, fillNeed);
     uint32 botsJoined = 0;
-    uint32 const slotsLeft = (_joinLfgMaxBots > botsAlreadyQueued)
-        ? (_joinLfgMaxBots - botsAlreadyQueued) : 0;
+    uint32 const slotsLeft = (want > botsAlreadyQueued) ? (want - botsAlreadyQueued) : 0;
     if (!slotsLeft)
         return;
 

@@ -1254,13 +1254,16 @@ bool PlayerbotAI::HandleCombat()
                 DoTankExtras(target);
             DoRotation(target);
         }
-        else if (GetCombatRole() == CombatRole::Tank && _tankMode)
+        else
         {
-            // While closing: only fire a taunt / gap-closer. Do not plant for AoE —
-            // that left tanks standing still throwing threat spells off the healer.
+            // Closing: Charge first (Throw only if Charge unavailable). Tanks may
+            // also fire off-GCD Taunt after Charge — never Charge+Throw same tick.
             if (!_bot->HasInArc(static_cast<float>(M_PI), target))
                 _bot->SetInFront(target);
-            DoTankExtras(target, /*closing=*/true);
+            if (GetCombatRole() == CombatRole::Tank && _tankMode)
+                DoTankExtras(target, /*closing=*/true);
+            else if (_bot->getClass() == CLASS_WARRIOR)
+                TryWarriorGapClose(target);
         }
 
         return true;
@@ -1448,8 +1451,20 @@ bool PlayerbotAI::HandleCombatCastOnly()
     }
     else
     {
+        // Self-bot assist: one engage path only (Charge → optional Taunt → Throw
+        // if Charge unavailable). Do NOT also call GetPullOpenerSpell — that cast
+        // Heroic Throw in the same tick and cancelled Charge via StopMoving.
         if (!_bot->IsWithinMeleeRange(target))
+        {
+            if (_bot->getClass() == CLASS_WARRIOR
+                || (GetCombatRole() == CombatRole::Tank && _tankMode))
+            {
+                if (!_bot->HasInArc(static_cast<float>(M_PI), target))
+                    _bot->SetInFront(target);
+                DoTankExtras(target, /*closing=*/true);
+            }
             return true;
+        }
         _bot->Attack(target, true);
         if (GetCombatRole() == CombatRole::Tank && _tankMode)
             DoTankExtras(target);
@@ -2443,60 +2458,88 @@ bool PlayerbotAI::IsUrgentTankPeel(Unit* target) const
     return ScoreTankPeelMember(ally) > 0;
 }
 
+bool PlayerbotAI::TryWarriorGapClose(Unit* target)
+{
+    if (!_bot || !target || _bot->getClass() != CLASS_WARRIOR)
+        return false;
+    if (_bot->HasUnitState(UNIT_STATE_CASTING))
+        return false;
+
+    float const dist = _bot->GetDistance(target);
+    auto trySpell = [&](uint32 id, float minDist, float maxDist) -> bool
+    {
+        if (dist < minDist || dist > maxDist)
+            return false;
+        if (!_bot->HasSpell(id) || _bot->HasSpellCooldown(id))
+            return false;
+        if (!BotRotation::CanTryCast(_bot, id))
+            return false;
+        return BotRotation::CastSpell(_bot, target, id);
+    };
+
+    // 1) Charge — primary pull / engage. Never follow with Throw this tick.
+    if (trySpell(100, 8.0f, 25.0f))
+        return true;
+    // 2) Heroic Leap if Charge is unavailable (CD / OOR / unknown).
+    if (trySpell(6544, 8.0f, 40.0f))
+        return true;
+    // 3) Heroic Throw only when Charge cannot be used (on CD or out of Charge range).
+    bool const chargeReady = _bot->HasSpell(100) && !_bot->HasSpellCooldown(100)
+        && BotRotation::CanTryCast(_bot, 100);
+    bool const inChargeRange = dist >= 8.0f && dist <= 25.0f;
+    if (chargeReady && inChargeRange)
+        return false; // Charge should have fired; do not Throw over it.
+    if (trySpell(57755, 0.0f, 30.0f))
+        return true;
+    return false;
+}
+
+bool PlayerbotAI::TryTankTaunt(Unit* target)
+{
+    if (!_bot || !target)
+        return false;
+
+    Unit* victim = target->GetVictim();
+    if (!victim || victim == _bot)
+        return false;
+
+    uint32 taunt = GetTauntSpell();
+    if (!taunt || !BotRotation::CanTryCast(_bot, taunt))
+        return false;
+
+    // Righteous Defense is cast on the ally being attacked, not the mob.
+    if (taunt == 31789)
+    {
+        if (Player* ally = victim->ToPlayer())
+            return BotRotation::CastSpell(_bot, ally, taunt);
+        return false;
+    }
+    return BotRotation::CastSpell(_bot, target, taunt);
+}
+
 void PlayerbotAI::DoTankExtras(Unit* target, bool closing)
 {
     if (!target || _bot->HasUnitState(UNIT_STATE_CASTING))
         return;
 
-    // Taunt when the current focus mob is hitting someone else.
-    Unit* victim = target->GetVictim();
-    if (victim && victim != _bot)
-    {
-        uint32 taunt = GetTauntSpell();
-        // Righteous Defense is cast on the ally being attacked, not the mob.
-        if (taunt == 31789)
-        {
-            if (Player* ally = victim->ToPlayer())
-                if (BotRotation::CanTryCast(_bot, taunt) && BotRotation::CastSpell(_bot, ally, taunt))
-                    return;
-        }
-        else if (taunt && BotRotation::CanTryCast(_bot, taunt))
-        {
-            if (BotRotation::CastSpell(_bot, target, taunt))
-                return;
-        }
-    }
-
-    // While running in, do not plant for AoE — chase + auto-attack build threat.
-    // Gap-closer only when actually in range. CanTryCast does not check distance;
-    // CastSpell → PrepareHostileCast StopMoving() then fails OOR, which cancels
-    // MoveChase every tick (stutter-step / look like follow ↔ charge thrash).
+    // Closing: Charge first, then off-GCD taunt. Never Charge+Throw same tick.
     if (closing)
     {
         if (_bot->getClass() == CLASS_WARRIOR)
-        {
-            float const dist = _bot->GetDistance(target);
-            struct GapCloser { uint32 id; float minDist; float maxDist; };
-            // Charge / Heroic Leap only — Heroic Throw also StopMoving and would
-            // stutter the close; pull opener still uses Throw when standing.
-            static GapCloser const gapClosers[] = {
-                { 100, 8.0f, 25.0f },  // Charge
-                { 6544, 8.0f, 40.0f }, // Heroic Leap
-            };
-            for (GapCloser const& gc : gapClosers)
-            {
-                if (dist < gc.minDist || dist > gc.maxDist)
-                    continue;
-                if (!_bot->HasSpell(gc.id) || _bot->HasSpellCooldown(gc.id))
-                    continue;
-                if (!BotRotation::CanTryCast(_bot, gc.id))
-                    continue;
-                if (BotRotation::CastSpell(_bot, target, gc.id))
-                    return;
-            }
-        }
+            TryWarriorGapClose(target);
+        else if (uint32 opener = GetPullOpenerSpell(target))
+            if (BotRotation::CanTryCast(_bot, opener))
+                BotRotation::CastSpell(_bot, target, opener);
+
+        // Taunt can ride with Charge (no GCD / no StopMoving).
+        if (GetCombatRole() == CombatRole::Tank && _tankMode)
+            TryTankTaunt(target);
         return;
     }
+
+    // In melee: peel with taunt when focus is on someone else.
+    if (GetCombatRole() == CombatRole::Tank && _tankMode)
+        TryTankTaunt(target);
 
     // AoE threat only when something in the pack is not on us — never spam
     // Thunder Clap every GCD (that starved Shield Slam / Revenge / Devastate).
@@ -2907,11 +2950,14 @@ uint32 PlayerbotAI::GetPullOpenerSpell(Unit* target) const
     switch (_bot->getClass())
     {
         case CLASS_WARRIOR:
-            if (uint32 charge = pick(100, 8.0f, 25.0f)) // Charge
+            // Pull opener is ONE spell: Charge, else Throw. Taunt is separate (TryTankTaunt).
+            if (uint32 charge = pick(100, 8.0f, 25.0f))
                 return charge;
-            if (uint32 ht = pick(57755, 0.0f, 30.0f)) // Heroic Throw
+            if (uint32 leap = pick(6544, 8.0f, 40.0f))
+                return leap;
+            if (uint32 ht = pick(57755, 0.0f, 30.0f))
                 return ht;
-            break;
+            return 0;
         case CLASS_PALADIN:
             if (uint32 as = pick(31935, 0.0f, 30.0f)) // Avenger's Shield
                 return as;
@@ -2931,6 +2977,7 @@ uint32 PlayerbotAI::GetPullOpenerSpell(Unit* target) const
         default:
             break;
     }
+    // Non-warrior pull fallback only — never bundle taunt into warrior Charge/Throw.
     return GetTauntSpell();
 }
 
@@ -3052,15 +3099,34 @@ bool PlayerbotAI::HandlePullSequence()
 
     if (_pullPhase == PullPhase::Opener)
     {
-        if (_bot->isMoving())
-            BotMovement::StopAndIdle(_bot);
-
         if (!_bot->HasInArc(static_cast<float>(M_PI), target))
             _bot->SetInFront(target);
         _bot->SetSelection(target->GetGUID());
 
         if (IsBusyCasting(_bot))
             return true;
+
+        // Warriors: do not StopAndIdle before Charge (planting + Throw used to cancel it).
+        // One gap-closer only; taunt is separate and off-GCD.
+        if (_bot->getClass() == CLASS_WARRIOR)
+        {
+            bool const charged = TryWarriorGapClose(target);
+            if (GetCombatRole() == CombatRole::Tank && _tankMode)
+                TryTankTaunt(target);
+            if (charged)
+            {
+                EndPullSequence(true);
+                return true;
+            }
+            // Still closing — keep pull active until Charge/Throw lands or melee.
+            if (!_bot->IsWithinMeleeRange(target))
+                return true;
+            EndPullSequence(true);
+            return false;
+        }
+
+        if (_bot->isMoving())
+            BotMovement::StopAndIdle(_bot);
 
         if (uint32 opener = GetPullOpenerSpell(target))
         {

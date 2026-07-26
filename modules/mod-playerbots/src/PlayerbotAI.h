@@ -265,6 +265,11 @@ private:
     uint32 GetAoeThreatSpell() const;
     uint32 GetPullOpenerSpell(Unit* target) const;
     float GetPullOpenerRange(Unit* target) const;
+    // Warrior: Charge (or Leap) first; Heroic Throw only when Charge cannot fire.
+    // Returns true if a gap-closer was cast this tick (do not cast Throw afterward).
+    bool TryWarriorGapClose(Unit* target);
+    // Off-GCD taunt when focus is on someone else. Safe to call after Charge.
+    bool TryTankTaunt(Unit* target);
     bool HandlePullSequence();
     void BeginPullSequence(Unit* target);
     void EndPullSequence(bool keepForcedTarget);

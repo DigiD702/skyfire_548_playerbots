@@ -19,6 +19,7 @@
 #include "SpellAuras.h"
 #include "SpellMgr.h"
 #include "Unit.h"
+#include "Util.h"
 
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -261,13 +262,56 @@ Unit* FindSecondaryEnemy(Player* bot, Unit* exclude, float range)
     return best;
 }
 
+uint32 AuraIdForSpell(uint32 castOrAuraId)
+{
+    if (!castOrAuraId)
+        return 0;
+
+    // Cast spell → applied aura when they differ (Hekili / Spell.dbc).
+    switch (castOrAuraId)
+    {
+        case 172:    return 146739; // Corruption
+        case 1978:   return 118253; // Serpent Sting
+        case 2565:   return 132404; // Shield Block
+        default:
+            break;
+    }
+
+    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(castOrAuraId))
+    {
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            SpellEffectInfo const& eff = info->Effects[i];
+            if (!eff.Effect)
+                continue;
+            // Instant-apply auras use the cast ID as the aura ID.
+            if (eff.IsAura())
+                return castOrAuraId;
+            if (eff.Effect == SPELL_EFFECT_TRIGGER_SPELL
+                || eff.Effect == SPELL_EFFECT_TRIGGER_SPELL_WITH_VALUE)
+            {
+                if (eff.TriggerSpell)
+                    return eff.TriggerSpell;
+            }
+        }
+    }
+    return castOrAuraId;
+}
+
 float AuraRemains(Unit* unit, uint32 spellId)
 {
     if (!unit)
         return 0.0f;
-    Aura* aura = unit->GetAuraOfRankedSpell(spellId);
+    uint32 const auraId = AuraIdForSpell(spellId);
+    Aura* aura = unit->GetAuraOfRankedSpell(auraId);
     if (!aura)
-        aura = unit->GetAura(spellId);
+        aura = unit->GetAura(auraId);
+    if (!aura && auraId != spellId)
+    {
+        aura = unit->GetAuraOfRankedSpell(spellId);
+        if (!aura)
+            aura = unit->GetAura(spellId);
+    }
     if (!aura)
         return 0.0f;
     if (aura->IsPermanent() || aura->GetDuration() < 0)
@@ -279,9 +323,16 @@ float MyAuraRemains(Player* bot, Unit* unit, uint32 spellId)
 {
     if (!bot || !unit)
         return 0.0f;
-    Aura* aura = unit->GetAura(spellId, bot->GetGUID());
+    uint32 const auraId = AuraIdForSpell(spellId);
+    Aura* aura = unit->GetAura(auraId, bot->GetGUID());
     if (!aura)
-        aura = unit->GetAuraOfRankedSpell(spellId, bot->GetGUID());
+        aura = unit->GetAuraOfRankedSpell(auraId, bot->GetGUID());
+    if (!aura && auraId != spellId)
+    {
+        aura = unit->GetAura(spellId, bot->GetGUID());
+        if (!aura)
+            aura = unit->GetAuraOfRankedSpell(spellId, bot->GetGUID());
+    }
     if (!aura)
         return 0.0f;
     if (aura->IsPermanent() || aura->GetDuration() < 0)
@@ -293,18 +344,28 @@ bool HasAuraUp(Unit* unit, uint32 spellId)
 {
     if (!unit)
         return false;
-    if (unit->HasAura(spellId))
+    uint32 const auraId = AuraIdForSpell(spellId);
+    if (unit->HasAura(auraId) || unit->GetAuraOfRankedSpell(auraId))
         return true;
-    return unit->GetAuraOfRankedSpell(spellId) != nullptr;
+    if (auraId != spellId
+        && (unit->HasAura(spellId) || unit->GetAuraOfRankedSpell(spellId)))
+        return true;
+    return false;
 }
 
 bool HasMyAura(Player* bot, Unit* unit, uint32 spellId)
 {
     if (!bot || !unit)
         return false;
-    if (unit->HasAura(spellId, bot->GetGUID()))
+    uint32 const auraId = AuraIdForSpell(spellId);
+    if (unit->HasAura(auraId, bot->GetGUID())
+        || unit->GetAuraOfRankedSpell(auraId, bot->GetGUID()))
         return true;
-    return unit->GetAuraOfRankedSpell(spellId, bot->GetGUID()) != nullptr;
+    if (auraId != spellId
+        && (unit->HasAura(spellId, bot->GetGUID())
+            || unit->GetAuraOfRankedSpell(spellId, bot->GetGUID())))
+        return true;
+    return false;
 }
 
 bool NeedsMyAuraRefresh(Player* bot, Unit* unit, uint32 spellId, float refreshAt)
@@ -331,8 +392,12 @@ uint32 AuraStacks(Unit* unit, uint32 spellId)
 {
     if (!unit)
         return 0;
-    if (Aura* aura = unit->GetAura(spellId))
+    uint32 const auraId = AuraIdForSpell(spellId);
+    if (Aura* aura = unit->GetAura(auraId))
         return aura->GetStackAmount();
+    if (auraId != spellId)
+        if (Aura* aura = unit->GetAura(spellId))
+            return aura->GetStackAmount();
     return 0;
 }
 
@@ -345,6 +410,46 @@ bool SpellReady(Player* bot, uint32 spellId)
     if (bot->HasSpellCooldown(spellId))
         return false;
     return true;
+}
+
+// True when the bot can afford the SpellPower.dbc cost for this spell.
+bool CanAffordSpell(Player* bot, uint32 spellId)
+{
+    if (!bot || !spellId)
+        return false;
+
+    for (uint32 i = 0; i < sSpellPowerStore.GetNumRows(); ++i)
+    {
+        SpellPowerEntry const* power = sSpellPowerStore.LookupEntry(i);
+        if (!power || power->spellId != spellId)
+            continue;
+        if (power->ShapeShiftSpellID && !bot->HasAura(power->ShapeShiftSpellID))
+            continue;
+
+        int32 cost = int32(power->manaCost);
+        // Rage/energy/runic are stored ×10 in DBC; GetPower uses the same scale.
+        if (cost <= 0 && power->ManaCostPercentageFloat <= 0.0f)
+            return true;
+
+        Powers const pt = Powers(power->powerType);
+        if (pt == POWER_HEALTH)
+        {
+            if (bot->GetHealth() <= uint32(cost))
+                return false;
+            return true;
+        }
+        if (pt >= MAX_POWERS)
+            return true;
+
+        if (power->ManaCostPercentageFloat > 0.0f
+            && (pt == POWER_MANA || pt == POWER_DEMONIC_FURY))
+            cost += int32(CalculatePct(bot->GetMaxPower(pt), power->ManaCostPercentageFloat));
+
+        if (cost > 0 && bot->GetPower(pt) < cost)
+            return false;
+        return true;
+    }
+    return true; // no SpellPower row → treat as free
 }
 
 bool CanTryCast(Player* bot, uint32 spellId)
@@ -372,6 +477,8 @@ bool CanTryCast(Player* bot, uint32 spellId)
         return false;
     if (info->StartRecoveryTime > 0 && bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
         return false;
+    if (!CanAffordSpell(bot, spellId))
+        return false;
     return true;
 }
 
@@ -385,9 +492,10 @@ void PrepareHostileCast(Player* bot, Unit* castTarget)
     if (bot->IsNonMeleeSpellCasted(false, false, true))
         return;
 
-    PlayerbotAI* ai = GetAI(bot);
-    bool const selfBot = ai && ai->IsClientControlled();
-    if (!selfBot && !bot->IsStopped())
+    // Plant for cast-time / channeled fillers. Self-bot (player in bot mode)
+    // previously skipped StopMoving, so only instant DoTs landed while fillers
+    // failed every GCD. Brief plant is intentional assist takeover.
+    if (!bot->IsStopped())
         bot->StopMoving();
 
     bot->RemoveUnitMovementFlag(MOVEMENTFLAG_MASK_MOVING);
@@ -437,8 +545,20 @@ bool CastSpell(Player* bot, Unit* enemy, uint32 spellId)
             return false;
     }
 
+    // Off-GCD spells (Taunt, etc.) must not StopMoving — that cancels Charge mid-flight
+    // when we fire taunt in the same tick after a successful Charge.
+    bool const offGcd = info->StartRecoveryTime == 0;
     if (castTarget != bot)
-        PrepareHostileCast(bot, castTarget);
+    {
+        if (offGcd)
+        {
+            bot->SetSelection(castTarget->GetGUID());
+            if (!bot->HasInArc(static_cast<float>(M_PI), castTarget))
+                bot->SetInFront(castTarget);
+        }
+        else
+            PrepareHostileCast(bot, castTarget);
+    }
 
     bool const hadSpellCd = bot->HasSpellCooldown(spellId) || bot->GetSpellCooldownDelay(spellId) > 0;
     bool const hadGcd = info->StartRecoveryTime > 0 && bot->GetGlobalCooldownMgr().HasGlobalCooldown(info);

@@ -1055,9 +1055,10 @@ namespace lfg
                     if (it2->second.lockStatus == LFG_LOCKSTATUS_RAID_LOCKED && isContinue)
                     {
                         LFGDungeonData const* dungeon = GetLFGDungeon(dungeonId);
-                        ASSERT(dungeon);
-                        ASSERT(player);
-                        if (InstancePlayerBind* playerBind = player->GetBoundInstance(dungeon->map, DifficultyID(dungeon->difficulty)))
+                        // Player may be briefly out-of-world during bot teleports — never ASSERT.
+                        if (!dungeon || !player)
+                            eraseDungeon = true;
+                        else if (InstancePlayerBind* playerBind = player->GetBoundInstance(dungeon->map, DifficultyID(dungeon->difficulty)))
                         {
                             if (InstanceSave* playerSave = playerBind->save)
                             {

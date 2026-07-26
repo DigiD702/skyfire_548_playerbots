@@ -98,7 +98,8 @@ Playerbots.RandomBotJoinLfg = 0
 
 #
 #    Playerbots.RandomBotJoinLfg.MaxBots
-#        Description: Max bots kept in LFG fill at once when RandomBotJoinLfg=1.
+#        Description: Cap on bots kept in LFG fill. Actual joins are also limited
+#                     to remaining 5-man slots (e.g. solo tank only needs 4).
 #        Default:     10
 
 Playerbots.RandomBotJoinLfg.MaxBots = 10
