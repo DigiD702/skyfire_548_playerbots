@@ -48,6 +48,9 @@
 #include "WorldSession.h"
 #include "ByteBuffer.h"
 #include "GossipDef.h"
+#include "Config.h"
+#include "Log.h"
+#include "Spell.h"
 
 #include <algorithm>
 #include <cctype>
@@ -55,8 +58,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <fstream>
 #include <limits>
 #include <list>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -66,6 +71,16 @@ namespace
     // How often (ms) the bot re-evaluates its behaviour. Kept coarse to keep the
     // per-tick cost of large bot populations low.
     constexpr uint32 BOT_AI_UPDATE_INTERVAL = 500;
+
+    // Auto Shot / wand stay on CURRENT_AUTOREPEAT forever. Callers that mean
+    // "am I mid cast-bar?" must skip autorepeat or hunters never act again.
+    bool IsBusyCasting(Player const* bot)
+    {
+        if (!bot)
+            return false;
+        return bot->IsNonMeleeSpellCasted(false, false, true)
+            || bot->HasUnitState(UNIT_STATE_CASTING);
+    }
 
     // Conjured Mana Pudding wrapper (item cast). Actual seated regen auras:
     constexpr uint32 BOT_REFRESHMENT_SPELL = 128701;
@@ -256,13 +271,14 @@ namespace
 
 PlayerbotAI::PlayerbotAI(Player* bot, bool clientControlled)
     : _bot(bot), _clientControlled(clientControlled), _updateTimer(0), _chaseGuid(0),
-      _followGuid(0), _lootGuid(0), _wanderTimer(0),
+      _autoShotGuid(0), _debugLastMs(0), _followGuid(0), _lootGuid(0), _wanderTimer(0),
       _stay(false), _food(true), _loot(true), _quests(false),
       _passive(false), _grind(false),
       _tankMode(false), _tankAssist(false), _dpsMode(false), _dpsAssist(false),
       _threat(false), _healerDps(false), _saveMana(false), _offHeal(false), _ncHeal(false),
       _waitForAttack(false),
       _aoe(false), _boost(true), _cc(false), _avoidAoe(true),
+      _debugCombat(false),
       _forceRest(false), _resting(false), _holdAssist(false),
       _forcedTargetGuid(0), _lfgRoleResponded(false), _lfgProposalResponded(false),
       _wasGrouped(false)
@@ -350,6 +366,8 @@ void PlayerbotAI::SyncFlagsFromStrategies()
     _boost = _strategies.Has("boost", BotState::Combat);
     _cc = _strategies.Has("cc", BotState::Combat);
     _avoidAoe = _strategies.Has("avoid aoe", BotState::Combat);
+    _debugCombat = _strategies.Has("debug", BotState::Combat)
+        || _strategies.Has("debug", BotState::NonCombat);
     if (_strategies.Has("heal", BotState::Combat))
         _healerDps = false;
 
@@ -770,7 +788,7 @@ bool PlayerbotAI::NeedsOocHealPublic() const
         return false;
     if (HasEngageTarget())
         return false;
-    if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
+    if (IsBusyCasting(_bot))
         return true; // finish the cast
     // const_cast: SelectHealTarget is logically read-only for this check.
     return const_cast<PlayerbotAI*>(this)->SelectHealTarget(BOT_HEAL_BELOW_PCT) != nullptr;
@@ -817,7 +835,7 @@ void PlayerbotAI::UpdateAI(uint32 diff)
 
     // Keep raid/self buffs topped up out of combat when not mid-cast.
     if (!_bot->IsInCombat() && _bot->getAttackers().empty()
-        && !_bot->HasUnitState(UNIT_STATE_CASTING)
+        && !IsBusyCasting(_bot)
         && BotRotation::TryMaintainBuffs(_bot))
         return;
 
@@ -1159,6 +1177,7 @@ bool PlayerbotAI::HandleCombat()
             if (!selected->IsAlive())
                 _bot->SetSelection(0);
         _chaseGuid = 0;
+        StopHunterAutoShot();
         return false;
     }
 
@@ -1211,8 +1230,7 @@ bool PlayerbotAI::HandleCombat()
         if (!inMelee && !_clientControlled)
         {
             MovementGeneratorType moveType = _bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
-            bool const casting = _bot->HasUnitState(UNIT_STATE_CASTING)
-                || _bot->IsNonMeleeSpellCasted(false);
+            bool const casting = IsBusyCasting(_bot);
             bool reissue = _chaseGuid != target->GetGUID()
                 || moveType != CHASE_MOTION_TYPE
                 || _bot->IsStopped();
@@ -1226,6 +1244,7 @@ bool PlayerbotAI::HandleCombat()
             _chaseGuid = target->GetGUID();
 
         _bot->Attack(target, true);
+        DebugCombat("Melee auto-attack");
 
         if (inMelee)
         {
@@ -1252,8 +1271,18 @@ bool PlayerbotAI::HandleCombat()
     float const dist = _bot->GetDistance(target);
     bool const inRange = dist <= BOT_CAST_DIST;
     bool const hasLos = _bot->IsWithinLOSInMap(target);
-    bool const casting = _bot->IsNonMeleeSpellCasted(false)
+    // Treat Auto Shot / wand as background fire — still plant/face between GCDs.
+    bool const casting = _bot->IsNonMeleeSpellCasted(false, false, true)
         || _bot->HasUnitState(UNIT_STATE_CASTING);
+
+    if (_debugCombat && IsHunterRanged())
+    {
+        char buf[192];
+        std::snprintf(buf, sizeof(buf),
+            "CombatGate dist=%.1f inRange=%d los=%d casting=%d stopped=%d",
+            dist, inRange ? 1 : 0, hasLos ? 1 : 0, casting ? 1 : 0, _bot->IsStopped() ? 1 : 0);
+        HunterDebugLog(buf);
+    }
 
     // Ensure we are not in a melee-attack state (chase _reachTarget can force it).
     if (_bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
@@ -1261,30 +1290,62 @@ bool PlayerbotAI::HandleCombat()
         _bot->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
         _bot->SendMeleeAttackStop(target);
     }
-    _bot->Attack(target, false);
 
-    // Too close for casting: kite only when a tank holds the mob in a dungeon.
-    // Solo / open-world casters stand ground and cast (mob will stick on them).
+    // Hunters: Auto Shot only (never Attack — that stutter-cancels autorepeat).
+    // Pure casters: never weapon-auto; set target and cast.
+    // Others on this path shouldn't happen.
+    if (IsHunterRanged())
+    {
+        _bot->SetSelection(target->GetGUID());
+    }
+    else if (IsPureCaster())
+    {
+        // Target for spells only — never Attack() (weapon swing / wand).
+        _bot->SetSelection(target->GetGUID());
+    }
+    else
+        _bot->Attack(target, false);
+
+    // Too close for casting: hunters always step out — ranged shots fail in melee.
+    // Other casters only kite when a tank holds the mob in a dungeon.
     if (!casting && (_bot->IsWithinMeleeRange(target) || dist < BOT_CAST_DIST * 0.40f))
     {
-        if (WantsRangedKiting() && TryCombatFlee(target))
-            return true;
+        if (IsHunterRanged() || WantsRangedKiting())
+        {
+            if (TryCombatFlee(target))
+            {
+                if (_debugCombat && IsHunterRanged())
+                    HunterDebugLog("CombatGate SKIP DoRotation (flee/kite)");
+                return true;
+            }
+        }
     }
 
     if (inRange && hasLos)
     {
         // Never StopMoving / Clear while casting — that interrupts the spell.
-        if (!casting)
+        // Also skip if already planted: StopAndIdle every tick pauses Auto Shot.
+        if (!casting && !_bot->IsStopped())
         {
             BotMovement::StopAndIdle(_bot);
             _bot->SetSelection(target->GetGUID());
             BotMovement::FaceUnit(_bot, target);
         }
+        else if (!casting)
+        {
+            _bot->SetSelection(target->GetGUID());
+            if (!_bot->HasInArc(static_cast<float>(M_PI), target))
+                BotMovement::FaceUnit(_bot, target);
+        }
 
         _chaseGuid = target->GetGUID();
+        StartHunterAutoShot(target);
         DoRotation(target);
         return true;
     }
+
+    if (_debugCombat && IsHunterRanged())
+        HunterDebugLog("CombatGate SKIP DoRotation (move to cast range)");
 
     // Too far, or in range but LoS blocked: move toward a point at cast range on
     // our current side of the target (not behind it, not into melee).
@@ -1325,7 +1386,7 @@ bool PlayerbotAI::HandleCombatCastOnly()
     // clicked food/drink and wiped eat/drink state every AI tick.
     if (!_bot->IsInCombat() && _bot->getAttackers().empty() && !GroupInCombat())
     {
-        if (_bot->IsSitState() || _bot->IsNonMeleeSpellCasted(false) || HasFoodOrDrinkAura())
+        if (_bot->IsSitState() || IsBusyCasting(_bot) || HasFoodOrDrinkAura())
             return false;
     }
 
@@ -1351,6 +1412,7 @@ bool PlayerbotAI::HandleCombatCastOnly()
     {
         if (_forcedTargetGuid)
             ClearForcedTarget();
+        StopHunterAutoShot();
         return false;
     }
 
@@ -1380,7 +1442,8 @@ bool PlayerbotAI::HandleCombatCastOnly()
             _bot->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
             _bot->SendMeleeAttackStop(target);
         }
-        _bot->Attack(target, false);
+        _bot->SetSelection(target->GetGUID());
+        StartHunterAutoShot(target);
         DoRotation(target);
     }
     else
@@ -1671,6 +1734,139 @@ bool PlayerbotAI::IsRangedClass() const
     }
 }
 
+bool PlayerbotAI::IsHunterRanged() const
+{
+    return _bot && _bot->getClass() == CLASS_HUNTER;
+}
+
+bool PlayerbotAI::IsPureCaster() const
+{
+    // Weapon swings / Attack() are useless — only cast spells.
+    if (!_bot || IsHunterRanged())
+        return false;
+    return IsRangedClass() || GetCombatRole() == CombatRole::Healer;
+}
+
+void PlayerbotAI::DebugCombat(std::string const& action)
+{
+    if (!_debugCombat || !_bot || action.empty())
+        return;
+    // Always mirror chat lines into the hunter file log (no dedup there).
+    if (IsHunterRanged())
+        HunterDebugLog(std::string("CHAT ") + action);
+    uint32 const now = getMSTime();
+    if (action == _debugLastAction && getMSTimeDiff(_debugLastMs, now) < 800)
+        return;
+    _debugLastAction = action;
+    _debugLastMs = now;
+    _bot->Say(std::string("Combat: ") + action, Language::LANG_UNIVERSAL);
+}
+
+namespace
+{
+    char const* HunterSpellStateName(uint32 state)
+    {
+        switch (state)
+        {
+            case SPELL_STATE_NULL: return "NULL";
+            case SPELL_STATE_PREPARING: return "PREPARING";
+            case SPELL_STATE_CASTING: return "CASTING";
+            case SPELL_STATE_FINISHED: return "FINISHED";
+            case SPELL_STATE_IDLE: return "IDLE";
+            case SPELL_STATE_DELAYED: return "DELAYED";
+            default: return "?";
+        }
+    }
+
+    void AppendHunterSpellSlot(std::ostringstream& os, Player* bot, CurrentSpellTypes slot, char const* label)
+    {
+        Spell* spell = bot->GetCurrentSpell(slot);
+        if (!spell)
+        {
+            os << label << "=none ";
+            return;
+        }
+        SpellInfo const* info = spell->GetSpellInfo();
+        os << label << '=' << (info ? info->Id : 0)
+           << ':' << HunterSpellStateName(spell->getState())
+           << ":ct=" << spell->GetCastTime() << ' ';
+    }
+
+    std::mutex s_hunterDebugLogMutex;
+}
+
+std::string PlayerbotAI::BuildHunterStateSnapshot(Unit* target) const
+{
+    std::ostringstream os;
+    if (!_bot)
+        return "no-bot";
+
+    uint32 const focus = _bot->GetPower(POWER_FOCUS);
+    uint32 const focusMax = _bot->GetMaxPower(POWER_FOCUS);
+    SpellInfo const* arcane = sSpellMgr->GetSpellInfo(3044);
+    bool const gcd = arcane && _bot->GetGlobalCooldownMgr().HasGlobalCooldown(arcane);
+
+    os << "focus=" << focus << '/' << focusMax
+       << " gcd=" << (gcd ? 1 : 0)
+       << " cdArcane=" << (_bot->HasSpellCooldown(3044) ? 1 : 0)
+       << " cdSteady=" << (_bot->HasSpellCooldown(56641) ? 1 : 0)
+       << " stopped=" << (_bot->IsStopped() ? 1 : 0)
+       << " castingState=" << (_bot->HasUnitState(UNIT_STATE_CASTING) ? 1 : 0)
+       << " nonMelee=" << (_bot->IsNonMeleeSpellCasted(false, false, true) ? 1 : 0)
+       << " nonMeleeAutoIgnore=" << (_bot->IsNonMeleeSpellCasted(true, false, true) ? 1 : 0)
+       << " autoGuid=" << _autoShotGuid << ' ';
+
+    AppendHunterSpellSlot(os, _bot, CURRENT_GENERIC_SPELL, "GEN");
+    AppendHunterSpellSlot(os, _bot, CURRENT_CHANNELED_SPELL, "CHAN");
+    AppendHunterSpellSlot(os, _bot, CURRENT_AUTOREPEAT_SPELL, "AUTO");
+    AppendHunterSpellSlot(os, _bot, CURRENT_MELEE_SPELL, "MELEE");
+
+    if (target)
+    {
+        os << "tgt=" << target->GetEntry()
+           << " dist=" << _bot->GetDistance(target)
+           << " alive=" << (target->IsAlive() ? 1 : 0)
+           << " inArc=" << (_bot->HasInArc(static_cast<float>(M_PI), target) ? 1 : 0);
+    }
+    else
+        os << "tgt=none";
+
+    return os.str();
+}
+
+void PlayerbotAI::HunterDebugLog(std::string const& line)
+{
+    if (!_debugCombat || !_bot || line.empty())
+        return;
+
+    if (_hunterDebugLogPath.empty())
+    {
+        std::string logsDir = sConfigMgr->GetStringDefault("LogsDir", "");
+        if (!logsDir.empty() && logsDir.back() != '/' && logsDir.back() != '\\')
+            logsDir.push_back('/');
+        _hunterDebugLogPath = logsDir + "playerbot_hunter_" + _bot->GetName() + ".log";
+    }
+
+    uint32 const seq = ++_hunterDebugSeq;
+    uint32 const ms = getMSTime();
+    std::ostringstream out;
+    out << '[' << ms << " #" << seq << "] " << _bot->GetName() << ": " << line;
+
+    std::string const text = out.str();
+    {
+        std::lock_guard<std::mutex> lock(s_hunterDebugLogMutex);
+        std::ofstream file(_hunterDebugLogPath.c_str(), std::ios::app);
+        if (file)
+        {
+            file << text << '\n';
+            file.flush();
+        }
+    }
+
+    // Also mirror into Server.log when misc logging is enabled.
+    sLog->outMessage("misc", LogLevel::LOG_LEVEL_INFO, "%s", text.c_str());
+}
+
 // One iconic, low-level "filler" attack per class. Used when no Wave-1
 // per-spec priority list returns a spell.
 uint32 PlayerbotAI::GetFillerSpell() const
@@ -1678,7 +1874,15 @@ uint32 PlayerbotAI::GetFillerSpell() const
     switch (_bot->getClass())
     {
         case CLASS_PALADIN: return 35395; // Crusader Strike
-        case CLASS_HUNTER:  return 3044;  // Arcane Shot
+        case CLASS_HUNTER:
+            // Prefer Steady when Arcane is unaffordable — otherwise filler idles.
+            if (_bot->GetPower(POWER_FOCUS) < 30 && _bot->HasSpell(56641))
+                return 56641; // Steady Shot
+            if (_bot->HasSpell(77767))
+                return 77767; // Cobra Shot
+            if (_bot->HasSpell(56641))
+                return 56641;
+            return 3044;      // Arcane Shot
         case CLASS_ROGUE:
         {
             // Only prefer Mutilate when both daggers are equipped.
@@ -1706,21 +1910,101 @@ uint32 PlayerbotAI::GetFillerSpell() const
     }
 }
 
+void PlayerbotAI::StopHunterAutoShot()
+{
+    _autoShotGuid = 0;
+    if (!_bot)
+        return;
+    Spell* autoRepeat = _bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL);
+    if (!autoRepeat || autoRepeat->GetSpellInfo()->Id != 75)
+        return;
+    _bot->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, false, true);
+}
+
+// Arm Auto Shot once per target. Core autorepeat keeps it firing — do not
+// re-cast every tick and do not gate the GCD rotation on this.
+void PlayerbotAI::StartHunterAutoShot(Unit* target)
+{
+    if (!_bot || !target || !target->IsAlive())
+        return;
+    if (!IsHunterRanged())
+        return;
+    if (!_bot->HasSpell(75))
+        _bot->learnSpell(75, false);
+    if (!_bot->HasSpell(75))
+    {
+        HunterDebugLog("AutoShot SKIP no spell 75");
+        return;
+    }
+
+    if (Spell* autoRepeat = _bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+    {
+        if (autoRepeat->GetSpellInfo()->Id == 75
+            && autoRepeat->m_targets.GetUnitTargetGUID() == target->GetGUID())
+        {
+            _autoShotGuid = target->GetGUID();
+            return;
+        }
+        HunterDebugLog(std::string("AutoShot REARM wrong channel ") + BuildHunterStateSnapshot(target));
+    }
+
+    // Lost the channel — allow re-arm.
+    if (_autoShotGuid == target->GetGUID())
+        _autoShotGuid = 0;
+
+    // Don't clip a Steady cast bar just to re-arm Auto Shot.
+    if (Spell* generic = _bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        if (generic->getState() == SPELL_STATE_PREPARING && generic->GetCastTime() > 1000)
+        {
+            HunterDebugLog(std::string("AutoShot SKIP rearm during cast ") + BuildHunterStateSnapshot(target));
+            return;
+        }
+
+    _bot->SetSelection(target->GetGUID());
+    _bot->CastSpell(target, 75, false);
+    if (_bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL)
+        && _bot->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL)->GetSpellInfo()->Id == 75)
+    {
+        _autoShotGuid = target->GetGUID();
+        DebugCombat("Auto Shot");
+        HunterDebugLog(std::string("AutoShot ARMED ") + BuildHunterStateSnapshot(target));
+    }
+    else
+        HunterDebugLog(std::string("AutoShot FAIL arm ") + BuildHunterStateSnapshot(target));
+}
+
 void PlayerbotAI::DoRotation(Unit* target)
 {
     if (!target || !target->IsAlive())
         return;
 
-    if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
-        return;
+    if (_bot->HasUnitState(UNIT_STATE_CASTING) && !_bot->IsNonMeleeSpellCasted(false, false, true))
+        _bot->ClearUnitState(UNIT_STATE_CASTING);
 
-    // DPS threat strategy: pause damage if we are about to rip aggro from the tank.
+    // Wait out cast bars (Steady ~2s, Arcane ammo-delay ~500ms). Auto Shot stays on.
+    if (Spell* casting = _bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+    {
+        if (casting->getState() == SPELL_STATE_PREPARING && casting->GetCastTime() > 0)
+        {
+            if (IsHunterRanged())
+                HunterDebugLog(std::string("WAIT preparing ") + BuildHunterStateSnapshot(target));
+            return;
+        }
+    }
+    if (_bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+    {
+        if (IsHunterRanged())
+            HunterDebugLog(std::string("WAIT channeled ") + BuildHunterStateSnapshot(target));
+        return;
+    }
+
     if (ShouldThrottleThreat(target))
+    {
+        if (IsHunterRanged())
+            HunterDebugLog(std::string("SKIP threat-throttle ") + BuildHunterStateSnapshot(target));
         return;
+    }
 
-    // Interrupts first. Keep raid/self buffs up only between pulls — Fortitude/
-    // Kings spam while a party member lacks the buff was eating every GCD and
-    // left shadow priests (etc.) silent except for interrupts.
     if (BotRotation::TryInterrupt(_bot, target))
         return;
     bool const midFight = _bot->IsInCombat() || HasEngageTarget() || GroupInCombat();
@@ -1729,10 +2013,72 @@ void PlayerbotAI::DoRotation(Unit* target)
     if (BotRotation::IsBursting(_bot) && BotRotation::TryTrinkets(_bot))
         return;
 
-    // Full bots must be planted before cast-time spells; movement makes every
-    // cast except instants (SW:P) fail, which looks like "only SW:P".
-    if (!_clientControlled && !_stay)
+    if (!_clientControlled && !_stay && !_bot->IsStopped())
         BotMovement::StopAndIdle(_bot);
+
+    // Hunter: Auto Shot stays armed. GCD shots only:
+    //   focus >= 30 → Arcane Shot (30 focus)
+    //   else         → Steady Shot (builder)
+    if (IsHunterRanged())
+    {
+        if (!_bot->HasSpell(3044))
+            _bot->learnSpell(3044, false);
+        if (!_bot->HasSpell(56641))
+            _bot->learnSpell(56641, false);
+
+        SpellInfo const* gcdInfo = sSpellMgr->GetSpellInfo(3044);
+        if (gcdInfo && _bot->GetGlobalCooldownMgr().HasGlobalCooldown(gcdInfo))
+        {
+            HunterDebugLog(std::string("WAIT gcd ") + BuildHunterStateSnapshot(target));
+            return;
+        }
+
+        uint32 const focus = _bot->GetPower(POWER_FOCUS);
+        HunterDebugLog(std::string("TICK decide ") + BuildHunterStateSnapshot(target));
+
+        if (_bot->HasSpell(1978) && !target->GetAura(118253) && !target->GetAura(1978))
+        {
+            HunterDebugLog("TRY Serpent Sting");
+            if (BotRotation::CastHunterShot(_bot, target, 1978))
+                return;
+        }
+
+        if (focus >= 30)
+        {
+            HunterDebugLog("TRY Arcane Shot (focus>=30)");
+            if (BotRotation::CastHunterShot(_bot, target, 3044))
+                return;
+            HunterDebugLog(std::string("Arcane FAILED fallthrough ") + BuildHunterStateSnapshot(target));
+        }
+        else
+        {
+            HunterDebugLog("TRY Steady Shot (focus<30)");
+            if (BotRotation::CastHunterShot(_bot, target, 56641))
+                return;
+            HunterDebugLog(std::string("Steady FAILED ") + BuildHunterStateSnapshot(target));
+            if (BotRotation::CastHunterShot(_bot, target, 77767))
+                return;
+        }
+
+        // Focus high but Arcane failed — still try Steady rather than idle.
+        if (focus >= 30)
+        {
+            HunterDebugLog("TRY Steady fallback after Arcane fail");
+            if (BotRotation::CastHunterShot(_bot, target, 56641))
+                return;
+            if (BotRotation::CastHunterShot(_bot, target, 77767))
+                return;
+        }
+
+        if (_debugCombat)
+        {
+            char buf[96];
+            std::snprintf(buf, sizeof(buf), "idle focus=%u", focus);
+            DebugCombat(buf);
+            HunterDebugLog(std::string("IDLE ") + BuildHunterStateSnapshot(target));
+        }
+        return;
+    }
 
     uint32 const selected = BotRotation::SelectNextSpell(_bot, target);
     if (selected && BotRotation::CastSpell(_bot, target, selected))
@@ -1746,30 +2092,6 @@ void PlayerbotAI::DoRotation(Unit* target)
     uint32 const filler = GetFillerSpell();
     if (filler && filler != selected && BotRotation::CastSpell(_bot, target, filler))
         return;
-
-    // Selected spell failed to start (often pushback/move). Try other known
-    // caster fillers so we do not sit on a dead GCD after an instant DoT.
-    if (IsRangedClass() || GetCombatRole() == CombatRole::Healer)
-    {
-        uint32 const fallbacks[] = {
-            8092,  // Mind Blast
-            15407, // Mind Flay
-            585,   // Smite
-            133,   // Fireball
-            116,   // Frostbolt
-            686,   // Shadow Bolt
-            403,   // Lightning Bolt
-            5143,  // Arcane Missiles
-            29722, // Incinerate
-        };
-        for (uint32 id : fallbacks)
-        {
-            if (id == selected || id == filler)
-                continue;
-            if (BotRotation::CastSpell(_bot, target, id))
-                return;
-        }
-    }
 }
 
 bool PlayerbotAI::ShouldThrottleThreat(Unit* target) const
@@ -1858,8 +2180,11 @@ bool PlayerbotAI::TryAcceptResurrect()
 
 bool PlayerbotAI::HandleResurrect()
 {
-    if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
-        return true;
+    // Mid cast-bar (Steady, Flash Heal, etc.): do not start a rez, but return
+    // false so combat/movement still run — they already wait on PREPARING.
+    // Returning true here froze hunters for the whole Steady cast.
+    if (IsBusyCasting(_bot))
+        return false;
 
     Player* dead = BotRotation::FindPartyMemberToResurrect(_bot);
     if (!dead)
@@ -1890,7 +2215,7 @@ bool PlayerbotAI::HandleResurrect()
 
 bool PlayerbotAI::HandleHealing(float belowPct)
 {
-    if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
+    if (IsBusyCasting(_bot))
         return true;
 
     Player* ally = SelectHealTarget(belowPct);
@@ -2373,8 +2698,7 @@ void PlayerbotAI::HoldRangedCombatPosition(Unit* focus, float maxRange)
     if (maxRange < 5.0f)
         maxRange = BOT_CAST_DIST;
 
-    bool const casting = _bot->IsNonMeleeSpellCasted(false)
-        || _bot->HasUnitState(UNIT_STATE_CASTING);
+    bool const casting = IsBusyCasting(_bot);
     if (casting)
         return;
 
@@ -2724,7 +3048,7 @@ bool PlayerbotAI::HandlePullSequence()
             _bot->SetInFront(target);
         _bot->SetSelection(target->GetGUID());
 
-        if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
+        if (IsBusyCasting(_bot))
             return true;
 
         if (uint32 opener = GetPullOpenerSpell(target))
@@ -2751,7 +3075,7 @@ bool PlayerbotAI::TryAvoidAoe()
         return false;
     if (GetCombatRole() == CombatRole::Tank && _tankMode)
         return false;
-    if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
+    if (IsBusyCasting(_bot))
         return false;
 
     time_t const now = time(nullptr);
@@ -2890,7 +3214,7 @@ bool PlayerbotAI::TryCombatFlee(Unit* focus)
         return false;
     if (!WantsRangedKiting())
         return false;
-    if (_bot->HasUnitState(UNIT_STATE_CASTING) || _bot->IsNonMeleeSpellCasted(false))
+    if (IsBusyCasting(_bot))
         return false;
 
     time_t const now = time(nullptr);
@@ -4296,7 +4620,7 @@ void PlayerbotAI::SyncMountWithMaster()
     // Allow remount even while a short GCD is rolling; only skip mid-cast.
     if (_bot->getLevel() < 20 || _bot->IsInWater())
         return;
-    if (_bot->IsNonMeleeSpellCasted(false) || _bot->HasUnitState(UNIT_STATE_CASTING))
+    if (IsBusyCasting(_bot))
         return;
 
     Player* leader = nullptr;
@@ -5279,7 +5603,7 @@ bool PlayerbotAI::StrategyAllowed(bool combat, std::string const& name) const
         return true;
     if (!combat)
         return n == "food" || n == "follow" || n == "stay" || n == "loot" || n == "heal";
-    if (n == "aoe" || n == "boost" || n == "cc" || n == "avoid aoe")
+    if (n == "aoe" || n == "boost" || n == "cc" || n == "avoid aoe" || n == "debug")
         return true;
     if (role == CombatRole::Tank)
         return n == "tank" || n == "tank assist" || n == "dps";
@@ -5406,13 +5730,39 @@ bool PlayerbotAI::HandleChatCommand(Player* from, std::string const& text, bool 
 
     if (cmd == "help")
     {
-        ack("Orders: stay, follow, flee, leave, summon, grind, reset, passive, aggressive, attack, tank/dps attack, pull, rti, go, position, sell, sell all, mount, mount prefer, gossip, quests, eat/drink, maintenance, spells. Strategies: co/nc +name,-name,~name or co?/nc?. Filters: @tank/@dps/@heal/@ranged.");
+        ack("Orders: stay, follow, flee, leave, summon, grind, reset, passive, aggressive, attack, tank/dps attack, pull, rti, go, position, sell, sell all, mount, mount prefer, gossip, quests, eat/drink, maintenance, spells, debug. Strategies: co/nc +name,-name,~name or co?/nc?. Filters: @tank/@dps/@heal/@ranged.");
         return true;
     }
 
     if (cmd == "spells" || cmd == "spell")
     {
         ReportClassSpells(from);
+        return true;
+    }
+
+    if (cmd == "debug" || cmd == "debug on")
+    {
+        _debugCombat = true;
+        _strategies.ChangeStrategy("+debug", BotState::Combat);
+        _hunterDebugSeq = 0;
+        _hunterDebugLogPath.clear();
+        if (IsHunterRanged())
+        {
+            HunterDebugLog("=== hunter debug ON ===");
+            std::string msg = std::string("Combat debug ON. Hunter log: ") + _hunterDebugLogPath;
+            ack(msg.c_str());
+        }
+        else
+            ack("Combat debug ON — saying casts in chat.");
+        return true;
+    }
+    if (cmd == "debug off")
+    {
+        if (IsHunterRanged())
+            HunterDebugLog("=== hunter debug OFF ===");
+        _debugCombat = false;
+        _strategies.ChangeStrategy("-debug", BotState::Combat);
+        ack("Combat debug OFF.");
         return true;
     }
 

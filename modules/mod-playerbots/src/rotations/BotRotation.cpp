@@ -24,6 +24,9 @@
 #include "GridNotifiersImpl.h"
 #include "CellImpl.h"
 
+#include <cstdio>
+#include <string>
+
 namespace BotRotation
 {
 namespace
@@ -304,13 +307,26 @@ bool CanTryCast(Player* bot, uint32 spellId)
 {
     if (!SpellReady(bot, spellId))
         return false;
-    if (bot->HasUnitState(UNIT_STATE_CASTING))
+
+    if (bot->HasUnitState(UNIT_STATE_CASTING) && !bot->IsNonMeleeSpellCasted(false, false, true))
+        bot->ClearUnitState(UNIT_STATE_CASTING);
+
+    // Block on a real cast-time bar / channel. Pending GCD-instants are finished
+    // immediately in CastSpell() — do not treat them as busy here.
+    if (Spell* generic = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+    {
+        if (generic->getState() != SPELL_STATE_FINISHED
+            && generic->getState() != SPELL_STATE_DELAYED
+            && generic->GetCastTime() > 0)
+            return false;
+    }
+    if (bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
         return false;
 
     SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
     if (!info)
         return false;
-    if (bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
+    if (info->StartRecoveryTime > 0 && bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
         return false;
     return true;
 }
@@ -321,40 +337,33 @@ void PrepareHostileCast(Player* bot, Unit* castTarget)
 {
     if (!bot || !castTarget || castTarget == bot)
         return;
-    if (bot->IsNonMeleeSpellCasted(false) || bot->HasUnitState(UNIT_STATE_CASTING))
+    // Auto Shot is background — do not block facing for abilities.
+    if (bot->IsNonMeleeSpellCasted(false, false, true))
         return;
 
-    // Self-bot owns WASD — never StopMoving (resets swing and cancels player movement).
     PlayerbotAI* ai = GetAI(bot);
     bool const selfBot = ai && ai->IsClientControlled();
-    if (!selfBot)
-    {
-        if (!bot->IsStopped())
-            bot->StopMoving();
-        // isMoving() uses movement flags; strip leftovers so cast-time spells
-        // are not rejected as SPELL_FAILED_MOVING after a point/face spline.
-        bot->RemoveUnitMovementFlag(MOVEMENTFLAG_MASK_MOVING);
-    }
+    if (!selfBot && !bot->IsStopped())
+        bot->StopMoving();
 
+    bot->RemoveUnitMovementFlag(MOVEMENTFLAG_MASK_MOVING);
     bot->SetSelection(castTarget->GetGUID());
     if (!bot->HasInArc(static_cast<float>(M_PI), castTarget))
         bot->SetInFront(castTarget);
 }
 
-// True only if the cast actually started (GCD / spell CD / cast state).
-// Returning true on CheckCast failure used to stall whole rotations on spells
-// like Garrote (needs stealth) or Unleash Elements (needs weapon imbue).
-bool CastStarted(Player* bot, SpellInfo const* info, uint32 spellId)
+// True only if THIS spell actually started this call (not leftover GCD/CD).
+bool CastStarted(Player* bot, SpellInfo const* info, uint32 spellId,
+    bool hadSpellCd, bool hadGcd)
 {
     if (!bot || !info)
         return false;
     if (bot->FindCurrentSpellBySpellId(spellId))
         return true;
-    if (bot->HasUnitState(UNIT_STATE_CASTING))
+    // Instant finished this frame: spell CD or GCD newly applied by this cast.
+    if (!hadSpellCd && (bot->HasSpellCooldown(spellId) || bot->GetSpellCooldownDelay(spellId) > 0))
         return true;
-    if (bot->HasSpellCooldown(spellId) || bot->GetSpellCooldownDelay(spellId) > 0)
-        return true;
-    if (bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
+    if (!hadGcd && info->StartRecoveryTime > 0 && bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
         return true;
     return false;
 }
@@ -387,8 +396,184 @@ bool CastSpell(Player* bot, Unit* enemy, uint32 spellId)
     if (castTarget != bot)
         PrepareHostileCast(bot, castTarget);
 
+    bool const hadSpellCd = bot->HasSpellCooldown(spellId) || bot->GetSpellCooldownDelay(spellId) > 0;
+    bool const hadGcd = info->StartRecoveryTime > 0 && bot->GetGlobalCooldownMgr().HasGlobalCooldown(info);
+    uint32 const focusBefore = bot->GetPower(POWER_FOCUS);
+
     bot->CastSpell(castTarget, spellId, false);
-    return CastStarted(bot, info, spellId);
+
+    // Instants with a GCD stay in PREPARING until a 1ms spell event fires.
+    // Hunter "instants" also get a 500ms ammo-delay cast time — finish those too.
+    if (Spell* pending = bot->FindCurrentSpellBySpellId(spellId))
+    {
+        bool const hunterInstant = (spellId == 3044 || spellId == 1978);
+        if (pending->getState() == SPELL_STATE_PREPARING
+            && (pending->GetCastTime() <= 0 || hunterInstant))
+            pending->cast(true);
+    }
+
+    bool ok = CastStarted(bot, info, spellId, hadSpellCd, hadGcd);
+
+    // Hunter focus spenders: only reject if the spell already left the cast slot
+    // without spending focus. Arcane/Serpent get a 500ms ammo-delay cast time —
+    // focus is taken on cast(), so a mid-bar check falsely cancelled GCD/Steady.
+    if (ok && (spellId == 3044 || spellId == 1978)
+        && !bot->FindCurrentSpellBySpellId(spellId)
+        && bot->GetPower(POWER_FOCUS) >= focusBefore
+        && info->StartRecoveryTime > 0)
+    {
+        bot->GetGlobalCooldownMgr().CancelGlobalCooldown(info);
+        ok = false;
+    }
+
+    if (ok)
+    {
+        if (PlayerbotAI* ai = GetAI(bot))
+        {
+            char const* name = info->SpellName ? info->SpellName : "spell";
+            ai->DebugCombat(std::string("Casting ") + name);
+        }
+    }
+    else if (PlayerbotAI* ai = GetAI(bot))
+    {
+        if (ai->IsCombatDebug())
+        {
+            char const* name = info->SpellName ? info->SpellName : "spell";
+            ai->DebugCombat(std::string("FAILED ") + name);
+        }
+    }
+    return ok;
+}
+
+// Hunter GCD shot. Auto Shot is separate and stays channeling — we never cancel it.
+// Rotation: Arcane while focus >= 30, else Steady.
+bool CastHunterShot(Player* bot, Unit* target, uint32 spellId)
+{
+    if (!bot || !target || !spellId)
+        return false;
+
+    PlayerbotAI* ai = GetAI(bot);
+    auto log = [ai](std::string const& line)
+    {
+        if (ai)
+            ai->HunterDebugLog(line);
+    };
+
+    if (!bot->HasSpell(spellId))
+    {
+        if (spellId == 3044 || spellId == 56641 || spellId == 1978 || spellId == 77767)
+            bot->learnSpell(spellId, false);
+        if (!bot->HasSpell(spellId))
+        {
+            log(std::string("Cast FAIL no-spell id=") + std::to_string(spellId));
+            return false;
+        }
+    }
+
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    if (!info)
+        return false;
+
+    char const* name = info->SpellName ? info->SpellName : "spell";
+
+    if (bot->HasSpellCooldown(spellId))
+    {
+        log(std::string("Cast SKIP cd ") + name);
+        return false;
+    }
+    if (info->StartRecoveryTime > 0 && bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
+    {
+        log(std::string("Cast SKIP gcd ") + name);
+        return false;
+    }
+
+    // Do not clip Steady. FINISHED leftovers can be interrupted.
+    // DELAYED projectiles (Arcane ammo/travel): do NOT InterruptSpell — that
+    // cancels the missile. CastSpell/SetCurrentCastedSpell detaches DELAYED
+    // without canceling when the next GCD shot prepares.
+    if (Spell* generic = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+    {
+        uint32 const st = generic->getState();
+        if (st == SPELL_STATE_PREPARING && generic->GetCastTime() > 0)
+        {
+            log(std::string("Cast BLOCKED preparing ") + name
+                + " " + (ai ? ai->BuildHunterStateSnapshot(target) : ""));
+            return false;
+        }
+        if (st == SPELL_STATE_FINISHED)
+        {
+            log(std::string("Cast CLEAR leftover GEN FINISHED id=")
+                + std::to_string(generic->GetSpellInfo()->Id));
+            bot->InterruptSpell(CURRENT_GENERIC_SPELL, false, true);
+        }
+        else if (st == SPELL_STATE_DELAYED)
+        {
+            log(std::string("Cast NOTE GEN DELAYED id=")
+                + std::to_string(generic->GetSpellInfo()->Id)
+                + " (leave missile; next prepare detaches)");
+        }
+    }
+
+    if (bot->HasUnitState(UNIT_STATE_CASTING) && !bot->IsNonMeleeSpellCasted(false, false, true))
+        bot->ClearUnitState(UNIT_STATE_CASTING);
+
+    bot->SetSelection(target->GetGUID());
+    if (!bot->HasInArc(static_cast<float>(M_PI), target))
+        bot->SetInFront(target);
+
+    {
+        Spell* probe = new Spell(bot, info, TRIGGERED_NONE);
+        probe->m_targets.SetUnitTarget(target);
+        SpellCastResult const pre = probe->CheckCast(true);
+        delete probe;
+        if (pre != SpellCastResult::SPELL_CAST_OK)
+        {
+            char buf[128];
+            std::snprintf(buf, sizeof(buf), "Cast CheckCast FAIL %s check=%d %s",
+                name, int(pre), ai ? ai->BuildHunterStateSnapshot(target).c_str() : "");
+            log(buf);
+            if (ai && ai->IsCombatDebug())
+            {
+                char chat[96];
+                std::snprintf(chat, sizeof(chat), "FAILED %s check=%d", name, int(pre));
+                ai->DebugCombat(chat);
+            }
+            return false;
+        }
+    }
+
+    uint32 const focusBefore = bot->GetPower(POWER_FOCUS);
+    log(std::string("Cast PREPARE ") + name + " focusBefore=" + std::to_string(focusBefore)
+        + " " + (ai ? ai->BuildHunterStateSnapshot(target) : ""));
+    bot->CastSpell(target, spellId, false);
+
+    // Success: bar started, or Arcane already spent its 30 focus.
+    bool const foundCurrent = bot->FindCurrentSpellBySpellId(spellId) != nullptr;
+    uint32 const focusAfter = bot->GetPower(POWER_FOCUS);
+    bool const focusDropped = (spellId == 3044 || spellId == 1978) && focusAfter < focusBefore;
+    bool const ok = foundCurrent || focusDropped;
+
+    {
+        char buf[192];
+        std::snprintf(buf, sizeof(buf),
+            "Cast %s %s foundCurrent=%d focus %u->%u %s",
+            ok ? "OK" : "FAIL",
+            name,
+            foundCurrent ? 1 : 0,
+            focusBefore,
+            focusAfter,
+            ai ? ai->BuildHunterStateSnapshot(target).c_str() : "");
+        log(buf);
+    }
+
+    if (ai)
+    {
+        if (ok)
+            ai->DebugCombat(std::string("Casting ") + name);
+        else if (ai->IsCombatDebug())
+            ai->DebugCombat(std::string("FAILED ") + name);
+    }
+    return ok;
 }
 
 bool CastHealSpell(Player* bot, Player* ally, uint32 spellId)
@@ -407,7 +592,7 @@ bool CastHealSpell(Player* bot, Player* ally, uint32 spellId)
     if (castTarget != bot)
     {
         // StopMoving interrupts an in-progress cast — only plant when idle.
-        if (!bot->IsNonMeleeSpellCasted(false) && !bot->HasUnitState(UNIT_STATE_CASTING))
+        if (!bot->IsNonMeleeSpellCasted(false, false, true) && !bot->HasUnitState(UNIT_STATE_CASTING))
         {
             if (!bot->IsStopped())
                 bot->StopMoving();
@@ -419,7 +604,9 @@ bool CastHealSpell(Player* bot, Player* ally, uint32 spellId)
     }
 
     bot->CastSpell(castTarget, spellId, false);
-    return CastStarted(bot, info, spellId);
+    bool const hadSpellCd = false; // CanTryCast already required !HasSpellCooldown
+    bool const hadGcd = false;
+    return CastStarted(bot, info, spellId, hadSpellCd, hadGcd);
 }
 
 bool TryInterrupt(Player* bot, Unit* target)
@@ -743,7 +930,8 @@ uint32 SelectResurrectSpell(Player* bot)
 
 bool TryMaintainBuffs(Player* bot)
 {
-    if (!bot || bot->HasUnitState(UNIT_STATE_CASTING) || bot->IsNonMeleeSpellCasted(false))
+    if (!bot || bot->HasUnitState(UNIT_STATE_CASTING)
+        || bot->IsNonMeleeSpellCasted(false, false, true))
         return false;
 
     // Raid buff cast IDs vs applied aura IDs can differ (e.g. Legacy of the
@@ -1195,7 +1383,11 @@ uint32 SelectNextSpell(Player* bot, Unit* target)
         case SPEC_SHAMAN_RESTORATION:    return SelectRestorationShamanDps(ctx);
         case SPEC_DRUID_RESTORATION:     return SelectRestorationDruidDps(ctx);
         case SPEC_MONK_MISTWEAVER:       return SelectMistweaverDps(ctx);
-        default:                         return 0;
+        default:
+            // Low-level / unset spec: still run the class rotation.
+            if (bot->getClass() == CLASS_HUNTER)
+                return SelectBeastMastery(ctx);
+            return 0;
     }
 }
 

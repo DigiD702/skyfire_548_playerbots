@@ -1456,6 +1456,14 @@ namespace
             if (specId == SPEC_PRIEST_SHADOW)
                 TryLearnSpell(bot, 15407); // Mind Flay
         }
+        if (bot->getClass() == CLASS_HUNTER)
+        {
+            TryLearnSpell(bot, 75);    // Auto Shot
+            TryLearnSpell(bot, 56641); // Steady Shot
+            TryLearnSpell(bot, 3044);  // Arcane Shot
+            TryLearnSpell(bot, 1978);  // Serpent Sting
+            TryLearnSpell(bot, 13165); // Aspect of the Hawk
+        }
     }
 
     uint32 PickRandomSpell(uint32 const* list, size_t count)

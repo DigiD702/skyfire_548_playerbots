@@ -1245,6 +1245,20 @@ void Unit::_UpdateSpells(uint32 time)
 
 void Unit::_UpdateAutoRepeatSpell()
 {
+    // Pause Auto Shot / wand while a real cast bar is up (Steady Shot, Aimed,
+    // etc.). SPELL_ATTR2_NOT_RESET_AUTO_ACTIONS only means "do not reset the
+    // ranged swing timer" — IsNonMeleeSpellCasted(isAutoshoot=true) ignores
+    // those spells, which let Auto Shot keep firing and clip the cast bar.
+    // That blocked Steady whenever Auto Shot was channeling.
+    if (Spell* generic = m_currentSpells[CURRENT_GENERIC_SPELL])
+    {
+        if (generic->getState() == SPELL_STATE_PREPARING && generic->GetCastTime() > 0)
+        {
+            m_AutoRepeatFirstCast = true;
+            return;
+        }
+    }
+
     // check "realtime" interrupts
     // don't cancel spells which are affected by a SPELL_AURA_CAST_WHILE_WALKING effect
     if (((GetTypeId() == TypeID::TYPEID_PLAYER && ToPlayer()->isMoving()) || IsNonMeleeSpellCasted(false, false, true, m_currentSpells[CURRENT_AUTOREPEAT_SPELL]->m_spellInfo->Id == 75)) &&
@@ -1265,15 +1279,34 @@ void Unit::_UpdateAutoRepeatSpell()
     // castroutine
     if (isAttackReady(WeaponAttackType::RANGED_ATTACK))
     {
-        // Check if able to cast
-        if (m_currentSpells[CURRENT_AUTOREPEAT_SPELL]->CheckCast(true) != SpellCastResult::SPELL_CAST_OK)
+        SpellCastResult const autoResult = m_currentSpells[CURRENT_AUTOREPEAT_SPELL]->CheckCast(true);
+        if (autoResult != SpellCastResult::SPELL_CAST_OK)
         {
+            // Auto Shot: keep the channel on temporary fails (moving / LoS / OOR).
+            // Cancel only when the target is gone — otherwise it sticks forever and
+            // blocks retargeting after a kill.
+            if (m_currentSpells[CURRENT_AUTOREPEAT_SPELL]->m_spellInfo->Id == 75)
+            {
+                if (autoResult == SpellCastResult::SPELL_FAILED_TARGETS_DEAD
+                    || autoResult == SpellCastResult::SPELL_FAILED_BAD_TARGETS
+                    || autoResult == SpellCastResult::SPELL_FAILED_BAD_IMPLICIT_TARGETS)
+                {
+                    InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
+                    return;
+                }
+                m_AutoRepeatFirstCast = true;
+                return;
+            }
             InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
             return;
         }
 
         // we want to shoot
+        // The swing must NOT be auto-repeat: otherwise GetCurrentContainer() is
+        // AUTOREPEAT and SetCurrentCastedSpell replaces/cancels the channel.
+        // Players re-press Auto Shot from the client; bots arm once and die here.
         Spell* spell = new Spell(this, m_currentSpells[CURRENT_AUTOREPEAT_SPELL]->m_spellInfo, TRIGGERED_FULL_MASK);
+        spell->SetAutoRepeat(false);
         spell->prepare(&(m_currentSpells[CURRENT_AUTOREPEAT_SPELL]->m_targets));
 
         // all went good, reset attack

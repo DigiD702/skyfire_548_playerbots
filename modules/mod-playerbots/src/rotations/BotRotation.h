@@ -49,6 +49,9 @@ namespace BotRotation
     // Cast helper: routes self-buffs to the bot, damage to the enemy.
     bool CastSpell(Player* bot, Unit* enemy, uint32 spellId);
 
+    // Hunter shot cast: clears move flags, finishes GCD-instants, verifies focus spend.
+    bool CastHunterShot(Player* bot, Unit* target, uint32 spellId);
+
     // Cast a heal/buff: self spells on the bot, otherwise on the ally.
     bool CastHealSpell(Player* bot, Player* ally, uint32 spellId);
 

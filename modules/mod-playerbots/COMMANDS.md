@@ -220,6 +220,7 @@ Send these as the message text (case-insensitive).
 | `dps attack` | Damage-role bots attack your target. |
 | `maintenance` | Re-run init (spec + gear) on that bot. |
 | `autogear` | Same as `maintenance`. |
+| `debug` / `debug on` / `debug off` | Bot says combat actions in chat (`Combat: Casting Arcane Shot`). Also `co +debug`. |
 | `eat` / `drink` / `food` | Sit and use bag food/drink (or fallback regen) until nearly full. Self-bots: AI will not stand you up or interrupt clicked food/drink; regen continues past the start threshold. |
 | `heal` | Healer-only shortcut: strict heal mode (same as `co +heal`). |
 | `healer dps` | Healer-only shortcut: `co +healer dps`. |
@@ -249,7 +250,7 @@ Strategies are **role-gated** from the bot's current specialization:
 | **Tank** | `tank` (peel + hold threat), `tank assist`, `dps` (tank plays as DPS / low threat) |
 | **Healer** | `heal` (strict heal), `healer dps`, `save mana`, `wait for attack` (optional) |
 | **DPS** | `dps`, `dps assist` (party assist; default on), `threat`, `wait for attack` (default on — delay open) |
-| **All** | `passive`, `grind` |
+| **All** | `passive`, `grind`, `debug` (say casts in chat) |
 
 | Non-combat (`nc`) | Effect |
 | --- | --- |

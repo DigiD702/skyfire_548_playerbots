@@ -86,6 +86,12 @@ public:
     bool IsBoostEnabled() const { return _boost; }
     bool IsCcEnabled() const { return _cc; }
     bool IsAvoidAoeEnabled() const { return _avoidAoe; }
+    bool IsCombatDebug() const { return _debugCombat; }
+    void DebugCombat(std::string const& action);
+    // File log (no chat dedup) — use with `debug` while diagnosing hunter rotation.
+    void HunterDebugLog(std::string const& line);
+    std::string BuildHunterStateSnapshot(Unit* target) const;
+    std::string const& GetHunterDebugLogPath() const { return _hunterDebugLogPath; }
 
     // --- Public hooks for BotAiEngine / Values / Formation ---
     bool RunCombat();
@@ -242,6 +248,10 @@ private:
     void ClearForcedTarget();
     CombatRole GetCombatRole() const;
     bool IsRangedClass() const;
+    // Mage / Warlock / Elemental / Balance / Priest: cast only — never weapon swing.
+    bool IsPureCaster() const;
+    // Hunter ranged Auto Shot (spell 75), not melee Attack().
+    bool IsHunterRanged() const;
     bool GroupInCombat() const;
     // True when this hostile is currently beating on a non-tank group ally.
     bool IsUrgentTankPeel(Unit* target) const;
@@ -269,6 +279,9 @@ private:
     bool CanOffHealClass() const;
     uint32 GetHealSpell() const;
     void DoRotation(Unit* target);
+    // Hunters: arm Auto Shot (75) once; core keeps it firing.
+    void StartHunterAutoShot(Unit* target);
+    void StopHunterAutoShot();
     void DoTankExtras(Unit* target, bool closing = false);
 
     void ReplyTo(Player* from, std::string const& text);
@@ -292,6 +305,13 @@ private:
     uint32 _updateTimer;
 
     uint64 _chaseGuid;
+    // Hunter Auto Shot: GUID we already armed; do not re-cast every tick.
+    uint64 _autoShotGuid;
+    // Last combat-debug line (avoid spamming the same "Casting: X" every tick).
+    std::string _debugLastAction;
+    uint32 _debugLastMs;
+    std::string _hunterDebugLogPath;
+    uint32 _hunterDebugSeq = 0;
     uint64 _followGuid;
     uint64 _lootGuid;
     uint32 _wanderTimer;
@@ -341,6 +361,7 @@ private:
     bool _boost;         // trinkets + offensive racials
     bool _cc;            // crowd control utilities
     bool _avoidAoe;      // step out of damaging ground effects
+    bool _debugCombat;   // say casting / combat actions in chat
 
     bool _forceRest;
     bool _resting;

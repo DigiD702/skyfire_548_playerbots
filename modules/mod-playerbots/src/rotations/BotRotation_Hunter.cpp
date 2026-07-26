@@ -1,45 +1,62 @@
 /*
- * Beast Mastery Hunter - simplified from Hekili HunterBeastMastery.simc
+ * Hunter rotations — priority lists; unknown / not-ready spells are skipped.
+ * Auto Shot is started once by PlayerbotAI; the core keeps it firing.
  */
 
 #include "BotRotationLists.h"
 #include "Pet.h"
 #include "Player.h"
+#include "SpellMgr.h"
 #include "Unit.h"
 
 namespace BotRotation
 {
 namespace
 {
-    enum BmSpells : uint32
+    bool NeedsDot(Unit* target, uint32 castSpellId, uint32 auraId)
     {
-        ASPECT_HAWK         = 13165,
-        ASPECT_IRON_HAWK    = 109260,
-        CALL_PET            = 883,
-        MEND_PET            = 136,
-        BESTIAL_WRATH       = 19574,
-        KILL_COMMAND        = 34026,
-        KILL_SHOT           = 53351,
-        ARCANE_SHOT         = 3044,
-        COBRA_SHOT          = 77767,
-        MULTI_SHOT          = 2643,
-        SERPENT_STING       = 1978,
-        SERPENT_STING_DOT   = 118253,
-        FOCUS_FIRE          = 82692,
-        RAPID_FIRE          = 3045,
-        STAMPEDE            = 121818,
-        DIRE_BEAST          = 120679,
-        MURDER_OF_CROWS     = 131894,
-        GLAIVE_TOSS         = 117050,
-        BARRAGE             = 120360,
-        FERVOR              = 82726,
-        FRENZY              = 19615,
-    };
+        if (!target || HasAuraUp(target, auraId))
+            return false;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(castSpellId);
+        if (!info)
+            return false;
+        if (target->IsImmunedToSpell(info) || target->IsImmunedToDamage(info))
+            return false;
+        return true;
+    }
 
     bool PetAlive(Player* bot)
     {
         Pet* pet = bot->GetPet();
         return pet && pet->IsAlive();
+    }
+
+    bool PetInKillCommandRange(Player* bot, Unit* target)
+    {
+        Pet* pet = bot ? bot->GetPet() : nullptr;
+        return pet && pet->IsAlive() && target && pet->IsWithinDist(target, 25.0f);
+    }
+
+    // Core hunter shot priority (AC BM/MM default order, MoP focus):
+    //   Serpent → Arcane (focus >= 30) → Cobra/Steady
+    uint32 SelectHunterShots(Context const& ctx)
+    {
+        Player* bot = ctx.bot;
+        Unit* target = ctx.target;
+        uint32 const focus = bot->GetPower(POWER_FOCUS);
+
+        if (NeedsDot(target, 1978, 118253) && CanTryCast(bot, 1978))
+            return 1978;
+
+        if (focus >= 30 && CanTryCast(bot, 3044))
+            return 3044;
+
+        if (CanTryCast(bot, 77767)) // Cobra Shot
+            return 77767;
+        if (CanTryCast(bot, 56641)) // Steady Shot
+            return 56641;
+
+        return 0;
     }
 }
 
@@ -48,146 +65,93 @@ uint32 SelectBeastMastery(Context const& ctx)
     Player* bot = ctx.bot;
     Unit* target = ctx.target;
     uint32 const focus = bot->GetPower(POWER_FOCUS);
-    bool const bw = HasAuraUp(bot, BESTIAL_WRATH);
+    bool const bw = HasAuraUp(bot, 19574);
     bool const petOk = PetAlive(bot);
 
-    if (!HasAuraUp(bot, ASPECT_IRON_HAWK) && !HasAuraUp(bot, ASPECT_HAWK))
+    // Low level / no spec: shots only (CanTryCast already skips unknowns).
+    if (bot->getLevel() < 10)
+        return SelectHunterShots(ctx);
+
+    if (!HasAuraUp(bot, 109260) && !HasAuraUp(bot, 13165))
     {
-        if (CanTryCast(bot, ASPECT_IRON_HAWK))
-            return ASPECT_IRON_HAWK;
-        if (CanTryCast(bot, ASPECT_HAWK))
-            return ASPECT_HAWK;
+        if (CanTryCast(bot, 109260))
+            return 109260;
+        if (CanTryCast(bot, 13165))
+            return 13165;
     }
 
-    if (!petOk && CanTryCast(bot, CALL_PET))
-        return CALL_PET;
+    if (ctx.targetHealthPct <= 20.0f && CanTryCast(bot, 53351)) // Kill Shot
+        return 53351;
 
     if (petOk)
-    {
         if (Pet* pet = bot->GetPet())
-            if (pet->GetHealthPct() <= 50.0f && CanTryCast(bot, MEND_PET))
-                return MEND_PET;
-    }
+            if (pet->GetHealthPct() <= 50.0f && CanTryCast(bot, 136))
+                return 136; // Mend Pet
 
-    if (petOk && focus >= 50 && CanTryCast(bot, BESTIAL_WRATH))
-        return BESTIAL_WRATH;
+    if (petOk && focus >= 50 && CanTryCast(bot, 19574)) // Bestial Wrath
+        return 19574;
+    if (CanTryCast(bot, 3045)) // Rapid Fire
+        return 3045;
+    if (bw && CanTryCast(bot, 121818)) // Stampede
+        return 121818;
+    if (CanTryCast(bot, 131894)) // Murder of Crows
+        return 131894;
+    if (CanTryCast(bot, 120679)) // Dire Beast
+        return 120679;
+    if (petOk && AuraStacks(bot->GetPet(), 19615) >= 5 && !bw && CanTryCast(bot, 82692))
+        return 82692; // Focus Fire
+    if (ctx.enemies >= 3 && focus >= 40 && CanTryCast(bot, 2643))
+        return 2643; // Multi-Shot
+    if (petOk && PetInKillCommandRange(bot, target) && CanTryCast(bot, 34026))
+        return 34026; // Kill Command
+    if (focus <= 40 && CanTryCast(bot, 82726))
+        return 82726; // Fervor
+    if (focus >= 15 && CanTryCast(bot, 117050))
+        return 117050; // Glaive Toss
+    if (focus >= 40 && CanTryCast(bot, 120360))
+        return 120360; // Barrage
 
-    if ((bw || !SpellReady(bot, BESTIAL_WRATH)) && CanTryCast(bot, RAPID_FIRE))
-        return RAPID_FIRE;
-
-    if ((bw || ctx.targetHealthPct <= 20.0f) && CanTryCast(bot, STAMPEDE))
-        return STAMPEDE;
-
-    if (CanTryCast(bot, MURDER_OF_CROWS))
-        return MURDER_OF_CROWS;
-
-    if (CanTryCast(bot, DIRE_BEAST))
-        return DIRE_BEAST;
-
-    if (petOk && AuraStacks(bot->GetPet(), FRENZY) >= 5 && !bw && CanTryCast(bot, FOCUS_FIRE))
-        return FOCUS_FIRE;
-
-    if (ctx.targetHealthPct <= 20.0f && CanTryCast(bot, KILL_SHOT))
-        return KILL_SHOT;
-
-    if (ctx.enemies >= 3 && focus >= 40 && CanTryCast(bot, MULTI_SHOT))
-        return MULTI_SHOT;
-
-    if (petOk && CanTryCast(bot, KILL_COMMAND))
-        return KILL_COMMAND;
-
-    if (focus <= 40 && CanTryCast(bot, FERVOR))
-        return FERVOR;
-
-    if (CanTryCast(bot, GLAIVE_TOSS) && focus >= 15)
-        return GLAIVE_TOSS;
-
-    if (CanTryCast(bot, BARRAGE) && focus >= 40)
-        return BARRAGE;
-
-    if (!HasAuraUp(target, SERPENT_STING_DOT) && CanTryCast(bot, SERPENT_STING))
-        return SERPENT_STING;
-
-    if (AuraRemains(target, SERPENT_STING_DOT) <= 6.0f && CanTryCast(bot, COBRA_SHOT))
-        return COBRA_SHOT;
-
-    if ((bw && focus >= 35) || focus >= 79)
-        if (CanTryCast(bot, ARCANE_SHOT))
-            return ARCANE_SHOT;
-
-    if (CanTryCast(bot, COBRA_SHOT))
-        return COBRA_SHOT;
-
-    return 0;
+    return SelectHunterShots(ctx);
 }
 
 uint32 SelectMarksmanship(Context const& ctx)
 {
     Player* bot = ctx.bot;
-    Unit* target = ctx.target;
     uint32 const focus = bot->GetPower(POWER_FOCUS);
 
-    enum MmSpells : uint32
+    if (bot->getLevel() < 10)
+        return SelectHunterShots(ctx);
+
+    if (!HasAuraUp(bot, 109260) && !HasAuraUp(bot, 13165))
     {
-        ASPECT_HAWK         = 13165,
-        CHIMERA_SHOT        = 53209,
-        AIMED_SHOT          = 19434,
-        STEADY_SHOT         = 56641,
-        KILL_SHOT           = 53351,
-        ARCANE_SHOT         = 3044,
-        MULTI_SHOT          = 2643,
-        SERPENT_STING       = 1978,
-        SERPENT_STING_DOT   = 118253,
-        RAPID_FIRE          = 3045,
-        STAMPEDE            = 121818,
-        DIRE_BEAST          = 120679,
-        MURDER_OF_CROWS     = 131894,
-        GLAIVE_TOSS         = 117050,
-        BARRAGE             = 120360,
-    };
+        if (CanTryCast(bot, 109260))
+            return 109260;
+        if (CanTryCast(bot, 13165))
+            return 13165;
+    }
 
-    if (!HasAuraUp(bot, ASPECT_HAWK) && CanTryCast(bot, ASPECT_HAWK))
-        return ASPECT_HAWK;
+    if (ctx.targetHealthPct <= 20.0f && CanTryCast(bot, 53351))
+        return 53351;
+    if (CanTryCast(bot, 3045))
+        return 3045;
+    if (CanTryCast(bot, 121818))
+        return 121818;
+    if (CanTryCast(bot, 120679))
+        return 120679;
+    if (CanTryCast(bot, 131894))
+        return 131894;
+    if (ctx.enemies >= 3 && focus >= 40 && CanTryCast(bot, 2643))
+        return 2643;
+    if (focus >= 40 && CanTryCast(bot, 120360))
+        return 120360;
+    if (focus >= 15 && CanTryCast(bot, 117050))
+        return 117050;
+    if (CanTryCast(bot, 53209)) // Chimera
+        return 53209;
+    if (focus >= 50 && CanTryCast(bot, 19434)) // Aimed
+        return 19434;
 
-    if (CanTryCast(bot, RAPID_FIRE))
-        return RAPID_FIRE;
-    if (CanTryCast(bot, STAMPEDE))
-        return STAMPEDE;
-    if (CanTryCast(bot, DIRE_BEAST))
-        return DIRE_BEAST;
-    if (CanTryCast(bot, MURDER_OF_CROWS))
-        return MURDER_OF_CROWS;
-
-    if (ctx.targetHealthPct <= 20.0f && CanTryCast(bot, KILL_SHOT))
-        return KILL_SHOT;
-
-    if (ctx.enemies >= 3 && focus >= 40 && CanTryCast(bot, MULTI_SHOT))
-        return MULTI_SHOT;
-    if (CanTryCast(bot, BARRAGE) && focus >= 40)
-        return BARRAGE;
-    if (CanTryCast(bot, GLAIVE_TOSS) && focus >= 15)
-        return GLAIVE_TOSS;
-
-    if (!HasAuraUp(target, SERPENT_STING_DOT) && CanTryCast(bot, SERPENT_STING))
-        return SERPENT_STING;
-
-    if (CanTryCast(bot, CHIMERA_SHOT))
-        return CHIMERA_SHOT;
-
-    // Careful Aim window (target above 80%): dump Aimed Shot.
-    if (ctx.targetHealthPct >= 80.0f && focus >= 50 && CanTryCast(bot, AIMED_SHOT))
-        return AIMED_SHOT;
-
-    if (focus >= 50 && CanTryCast(bot, AIMED_SHOT))
-        return AIMED_SHOT;
-
-    if (focus >= 70 && CanTryCast(bot, ARCANE_SHOT))
-        return ARCANE_SHOT;
-
-    if (CanTryCast(bot, STEADY_SHOT))
-        return STEADY_SHOT;
-
-    return 0;
+    return SelectHunterShots(ctx);
 }
 
 uint32 SelectSurvival(Context const& ctx)
@@ -196,66 +160,41 @@ uint32 SelectSurvival(Context const& ctx)
     Unit* target = ctx.target;
     uint32 const focus = bot->GetPower(POWER_FOCUS);
 
-    enum SurvSpells : uint32
+    if (bot->getLevel() < 10)
+        return SelectHunterShots(ctx);
+
+    if (!HasAuraUp(bot, 109260) && !HasAuraUp(bot, 13165))
     {
-        ASPECT_HAWK         = 13165,
-        EXPLOSIVE_SHOT      = 53301,
-        BLACK_ARROW         = 3674,
-        LOCK_AND_LOAD       = 56453,
-        SERPENT_STING       = 1978,
-        SERPENT_STING_DOT   = 118253,
-        ARCANE_SHOT         = 3044,
-        COBRA_SHOT          = 77767,
-        MULTI_SHOT          = 2643,
-        KILL_SHOT           = 53351,
-        RAPID_FIRE          = 3045,
-        EXPLOSIVE_TRAP      = 13813,
-        GLAIVE_TOSS         = 117050,
-        BARRAGE             = 120360,
-        DIRE_BEAST          = 120679,
-        A_MURDER_OF_CROWS   = 131894,
-    };
+        if (CanTryCast(bot, 109260))
+            return 109260;
+        if (CanTryCast(bot, 13165))
+            return 13165;
+    }
 
-    if (!HasAuraUp(bot, ASPECT_HAWK) && CanTryCast(bot, ASPECT_HAWK))
-        return ASPECT_HAWK;
+    if (ctx.targetHealthPct <= 20.0f && CanTryCast(bot, 53351))
+        return 53351;
+    if (CanTryCast(bot, 3045))
+        return 3045;
+    if (CanTryCast(bot, 131894))
+        return 131894;
+    if (CanTryCast(bot, 120679))
+        return 120679;
+    if (NeedsDot(target, 3674, 3674) && CanTryCast(bot, 3674))
+        return 3674; // Black Arrow
+    if (HasAuraUp(bot, 56453) && CanTryCast(bot, 53301))
+        return 53301; // Explosive (LnL)
+    if (CanTryCast(bot, 53301))
+        return 53301;
+    if (ctx.enemies >= 2 && focus >= 40 && CanTryCast(bot, 2643))
+        return 2643;
+    if (ctx.enemies >= 3 && CanTryCast(bot, 13813))
+        return 13813;
+    if (focus >= 40 && CanTryCast(bot, 120360))
+        return 120360;
+    if (focus >= 15 && CanTryCast(bot, 117050))
+        return 117050;
 
-    if (CanTryCast(bot, RAPID_FIRE))
-        return RAPID_FIRE;
-    if (CanTryCast(bot, A_MURDER_OF_CROWS))
-        return A_MURDER_OF_CROWS;
-    if (CanTryCast(bot, DIRE_BEAST))
-        return DIRE_BEAST;
-
-    if (ctx.targetHealthPct <= 20.0f && CanTryCast(bot, KILL_SHOT))
-        return KILL_SHOT;
-
-    if (!HasAuraUp(target, BLACK_ARROW) && CanTryCast(bot, BLACK_ARROW))
-        return BLACK_ARROW;
-
-    if (!HasAuraUp(target, SERPENT_STING_DOT) && CanTryCast(bot, SERPENT_STING))
-        return SERPENT_STING;
-
-    if (HasAuraUp(bot, LOCK_AND_LOAD) && CanTryCast(bot, EXPLOSIVE_SHOT))
-        return EXPLOSIVE_SHOT;
-    if (CanTryCast(bot, EXPLOSIVE_SHOT))
-        return EXPLOSIVE_SHOT;
-
-    if (ctx.enemies >= 2 && focus >= 40 && CanTryCast(bot, MULTI_SHOT))
-        return MULTI_SHOT;
-    if (ctx.enemies >= 3 && CanTryCast(bot, EXPLOSIVE_TRAP))
-        return EXPLOSIVE_TRAP;
-    if (CanTryCast(bot, BARRAGE) && focus >= 40)
-        return BARRAGE;
-    if (CanTryCast(bot, GLAIVE_TOSS) && focus >= 15)
-        return GLAIVE_TOSS;
-
-    if (focus >= 70 && CanTryCast(bot, ARCANE_SHOT))
-        return ARCANE_SHOT;
-
-    if (CanTryCast(bot, COBRA_SHOT))
-        return COBRA_SHOT;
-
-    return 0;
+    return SelectHunterShots(ctx);
 }
 
 } // namespace BotRotation

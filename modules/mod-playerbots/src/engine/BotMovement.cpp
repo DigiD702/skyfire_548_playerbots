@@ -20,10 +20,13 @@
 
 namespace BotMovement
 {
-    bool IsCasting(Player* bot)
-    {
-        return bot && (bot->IsNonMeleeSpellCasted(false) || bot->HasUnitState(UNIT_STATE_CASTING));
-    }
+bool IsCasting(Player* bot)
+{
+    // Skip Auto Shot / wand autorepeat — those are background fire, not a cast.
+    // Include pending instants (skipInstant=false). Do not treat bare CASTING
+    // state alone — that stuck true and blocked facing / move-flag cleanup.
+    return bot && bot->IsNonMeleeSpellCasted(false, false, true, false, false);
+}
 
     bool CanMove(Player* bot)
     {
