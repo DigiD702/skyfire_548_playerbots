@@ -1619,12 +1619,13 @@ Unit* PlayerbotAI::SelectQuestObjectiveTarget()
     if (needEntries.empty())
         return nullptr;
 
+    // Prefer objective mobs out to hunt radius before generic grind (25y).
     Unit* best = nullptr;
-    float bestDist = BOT_LOOT_SEEK_DIST;
+    float bestDist = BOT_QUEST_HUNT_RADIUS;
     std::list<Unit*> units;
-    Skyfire::AnyUnfriendlyUnitInObjectRangeCheck check(_bot, _bot, BOT_LOOT_SEEK_DIST);
+    Skyfire::AnyUnfriendlyUnitInObjectRangeCheck check(_bot, _bot, BOT_QUEST_HUNT_RADIUS);
     Skyfire::UnitListSearcher<Skyfire::AnyUnfriendlyUnitInObjectRangeCheck> searcher(_bot, units, check);
-    _bot->VisitNearbyObject(BOT_LOOT_SEEK_DIST, searcher);
+    _bot->VisitNearbyObject(BOT_QUEST_HUNT_RADIUS, searcher);
 
     for (Unit* unit : units)
     {
@@ -4881,6 +4882,10 @@ bool PlayerbotAI::TravelToNearbyQuestgiver()
 bool PlayerbotAI::TravelToQuestObjective()
 {
     if (!_bot || HasTravelDestination())
+        return false;
+
+    // Objective already in combat/hunt range — let SelectTarget pull it.
+    if (SelectQuestObjectiveTarget())
         return false;
 
     for (auto const& qs : _bot->getQuestStatusMap())

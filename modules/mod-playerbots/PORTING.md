@@ -222,6 +222,10 @@ Remaining for later phases:
 * [DONE] **Open-world auto-quest** (`nc +quests`): walk to questgivers, turn-in /
   accept, same-map objective travel. Default on for ungrouped random bots;
   off when `follow` pack is applied. Bag pressure routes to vendor hubs.
+* [DONE] **Party quest-log sync**: when a real player accepts a quest, grouped
+  bots with AI mirror it via `PlayerScript::OnQuestAdd` (`CanTake`/`CanAdd` →
+  `AddQuest`) and stay on follow — no independent quest travel. TravelNode /
+  quest graph still deferred.
 
 ## Reference tree
 
@@ -255,8 +259,8 @@ for future updates.
   (LFG). Corpse loot peels briefly when OOC with `nc +loot`.
 * [TODO] LFR: bots fill raid finder queues (auto-accept the LFR prompt/roles).
 * [TODO] Random battlegrounds / rated battlegrounds and arenas.
-* [TODO] Open-world grinding population polish (quest graph / TravelNode still thin;
-  `nc +quests` covers same-map accept/turn-in/objectives).
+* [TODO] Open-world grinding population polish (TravelNode / full quest graph still
+  deferred; same-map `nc +quests` + party quest-log sync while following are in).
 
 ## Phase 5 - Content data
 

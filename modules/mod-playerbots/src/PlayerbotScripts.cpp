@@ -18,6 +18,7 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "QuestDef.h"
 #include "RBAC.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
@@ -78,6 +79,36 @@ public:
             return;
 
         sPlayerbotMgr->HandleBotGroupChat(player, group, msg);
+    }
+
+    // When a real player (or self-bot) accepts a quest, mirror it into grouped
+    // bots' logs so they share kill credit while staying on follow (no travel).
+    void OnQuestAdd(Player* player, Quest const* quest) override
+    {
+        if (!sPlayerbotMgr->IsEnabled() || !player || !quest)
+            return;
+        // Socket-bot AddQuest echoes this hook — skip to avoid loops.
+        if (!player->GetSession() || player->GetSession()->IsBot())
+            return;
+
+        Group* group = player->GetGroup();
+        if (!group)
+            return;
+
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* member = itr->GetSource();
+            if (!member || member == player || !member->IsInWorld())
+                continue;
+            if (!sPlayerbotMgr->HasBotAI(member->GetGUID()))
+                continue;
+            if (member->GetMapId() != player->GetMapId())
+                continue;
+            if (!member->CanTakeQuest(quest, false) || !member->CanAddQuest(quest, false))
+                continue;
+
+            member->AddQuest(quest, nullptr);
+        }
     }
 };
 

@@ -239,6 +239,8 @@ Send these as the message text (case-insensitive).
 | `gossip` / `gossip <n>` | List or select a gossip menu option on a nearby NPC. |
 | `quests` / `accept` / `turn in` | Accept/turn-in nearby (walks in), with reward-choice AI. With `nc +quests`, also travels to same-map objectives. |
 
+Grouped bots on the `follow` pack (`-quests,-grind`) do **not** path to givers/objectives alone. When the master accepts a quest, eligible bots on the same map auto-add it to their quest log so they share progress while staying in formation. Auto turn-in while following is not enabled.
+
 Travel is cancelled by combat, `follow`, `stay`, `flee`, `summon`, or `reset`. Arrival resumes follow when `nc +follow` is on. Same-map only (no TravelNode / portals yet).
 
 ### Combat / non-combat strategies (`co` / `nc`)
@@ -257,7 +259,7 @@ Strategies are **role-gated** from the bot's current specialization:
 | `food` | Auto sit + regen HP/mana when low (default on) |
 | `follow` / `stay` | Follow leader or hold position |
 | `loot` | Loot corpses |
-| `quests` | Open-world accept/turn-in + same-map objective travel (default on for ungrouped random bots with `+grind`; cleared by `follow` pack) |
+| `quests` | Open-world accept/turn-in + same-map objective travel (default on for ungrouped random bots with `+grind`; cleared by `follow` pack). Grouped bots still mirror the master’s accepts into their logs while following. |
 | `passive` / `grind` | Same shared flags |
 
 Chat shortcuts rewrite strategy packs like AzerothCore (not just one bool):
