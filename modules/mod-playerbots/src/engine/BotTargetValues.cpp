@@ -127,23 +127,19 @@ Unit* BotTargetValues::GetRtiTarget(PlayerbotAI* ai) const
 
 Unit* BotTargetValues::GetDpsTarget(PlayerbotAI* ai) const
 {
-    // Prefer master's pull / current if still valid.
+    // Prefer master's pull if still valid (explicit pull command).
     if (Unit* pull = GetPullTarget(ai))
         return pull;
-    if (Unit* cur = GetCurrentTarget(ai))
-        return cur;
     if (!ai)
         return nullptr;
 
-    // In dungeons/raids stick to the tank's victim before least-HP assist so the
-    // party focuses the same pack instead of peeling random low-HP adds.
-    if (Player* bot = ai->GetBot())
-    {
-        Map* map = bot->GetMap();
-        if (map && map->IsInstance())
-            if (Unit* tankVic = GetAssistTankTarget(ai))
-                return tankVic;
-    }
+    // Stick to the tank's victim before sticky current / least-HP so melee DPS
+    // (e.g. ret) do not peel onto chain-pull adds or random low-HP ranged mobs.
+    if (Unit* tankVic = GetAssistTankTarget(ai))
+        return tankVic;
+
+    if (Unit* cur = GetCurrentTarget(ai))
+        return cur;
 
     return ai->SelectLowestHpGroupEnemyPublic();
 }

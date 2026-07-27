@@ -1060,24 +1060,9 @@ uint32 SelectResurrectSpell(Player* bot)
     if (!bot)
         return 0;
 
-    // Combat: battle rez only (long CD). OOC: standard class resurrection.
+    // Out of combat only — no combat battle-rez (Rebirth / Raise Ally).
     if (bot->IsInCombat())
-    {
-        switch (bot->getClass())
-        {
-            case CLASS_DRUID:
-                if (CanTryCast(bot, 20484)) // Rebirth
-                    return 20484;
-                break;
-            case CLASS_DEATH_KNIGHT:
-                if (CanTryCast(bot, 61999)) // Raise Ally
-                    return 61999;
-                break;
-            default:
-                break;
-        }
         return 0;
-    }
 
     uint32 spellId = 0;
     switch (bot->getClass())

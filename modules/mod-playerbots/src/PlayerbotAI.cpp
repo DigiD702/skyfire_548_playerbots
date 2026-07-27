@@ -829,10 +829,6 @@ void PlayerbotAI::UpdateAI(uint32 diff)
 
     HandleInteractions();
 
-    // Rez dead party members before buffs / combat (OOC rez or battle-rez).
-    if (HandleResurrect())
-        return;
-
     // Keep raid/self buffs topped up out of combat when not mid-cast.
     if (!_bot->IsInCombat() && _bot->getAttackers().empty()
         && !IsBusyCasting(_bot)
@@ -870,6 +866,11 @@ void PlayerbotAI::UpdateAI(uint32 diff)
     if (HandleCombat())
         return;
     if (NeedsOocHealPublic() && RunHeal())
+        return;
+    // Resurrect only when the fight is fully over — never steal GCDs from heals
+    // or open with a combat battle-rez while the group still needs healing.
+    if (!_bot->IsInCombat() && !GroupInCombat() && _bot->getAttackers().empty()
+        && HandleResurrect())
         return;
     if (HandleRest())
         return;
@@ -1353,12 +1354,13 @@ bool PlayerbotAI::HandleCombat()
     if (_debugCombat && IsHunterRanged())
         HunterDebugLog("CombatGate SKIP DoRotation (move to cast range)");
 
-    // Too far, or in range but LoS blocked: move toward a point at cast range on
-    // our current side of the target (not behind it, not into melee).
+    // Too far, or in range but LoS blocked: keep closing until LoS opens.
+    // Parking at cast-range on the wrong side of a corner never clears LoS —
+    // step toward the focus instead of reissuing the same stand-off point.
     {
         float destX, destY, destZ;
-        float const standDist = BOT_CAST_DIST * 0.85f;
-        // Absolute angle from target toward the bot - keeps them on their side.
+        float const standDist = hasLos ? (BOT_CAST_DIST * 0.85f)
+                                       : std::max(5.0f, dist * 0.55f);
         float const absAngle = target->GetAngle(_bot);
         target->GetNearPoint(_bot, destX, destY, destZ, _bot->GetObjectSize(), standDist, absAngle);
         _bot->UpdateAllowedPositionZ(destX, destY, destZ);
@@ -1366,7 +1368,8 @@ bool PlayerbotAI::HandleCombat()
         MovementGeneratorType moveType = _bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
         bool reissue = _chaseGuid != target->GetGUID()
             || moveType != POINT_MOTION_TYPE
-            || _bot->IsStopped();
+            || _bot->IsStopped()
+            || !hasLos;
         if (reissue)
         {
             MoveToPosition(destX, destY, destZ);
@@ -1483,9 +1486,10 @@ bool PlayerbotAI::HandleCombatCastOnly()
 //   1) Tanks: urgent peels (mob on healer/DPS) — beats pull/forced/RTI
 //   2) Pull / forced command target
 //   3) Tanks: hold pack / remaining peels
-//   4) Own attackers
-//   5) Group combat: RTI mark → least-HP dps assist → tank victim
-//   6) Grind (explicit) / self-bot selected unit
+//   4) DPS assist: main tank's victim (before own-attacker peels / least-HP)
+//   5) Own attackers
+//   6) Group combat: RTI mark → dps assist → tank victim fallback
+//   7) Grind (explicit) / self-bot selected unit
 Unit* PlayerbotAI::SelectTarget()
 {
     // Healer/DPS under attack always outranks skull / pull focus.
@@ -1513,6 +1517,31 @@ Unit* PlayerbotAI::SelectTarget()
             return tankTarget;
         }
 
+    // Passive bots only fight back; they do not assist or pull.
+    if (_passive)
+    {
+        for (Unit* attacker : _bot->getAttackers())
+            if (attacker && attacker->IsAlive() && _bot->IsValidAttackTarget(attacker))
+            {
+                _targets.SetCurrentTarget(attacker);
+                return attacker;
+            }
+        return nullptr;
+    }
+
+    // With dps assist, lock onto the tank's focus before peeling onto whatever
+    // just hit us (fresh chain-pull / ranged add). Own attackers still win if
+    // the tank has no victim yet.
+    bool const preferTankFocus = _dpsAssist && GetCombatRole() != CombatRole::Tank;
+    if (preferTankFocus)
+    {
+        if (Unit* tankAssist = _targets.GetAssistTankTarget(this))
+        {
+            _targets.SetCurrentTarget(tankAssist);
+            return tankAssist;
+        }
+    }
+
     for (Unit* attacker : _bot->getAttackers())
         if (attacker && attacker->IsAlive() && _bot->IsValidAttackTarget(attacker))
         {
@@ -1520,10 +1549,6 @@ Unit* PlayerbotAI::SelectTarget()
             _targets.SetCurrentTarget(attacker);
             return attacker;
         }
-
-    // Passive bots only fight back; they do not assist or pull.
-    if (_passive)
-        return nullptr;
 
     // @tank attack: non-tanks hold until a mob is actually swinging on the party.
     if (_holdAssist)
@@ -2218,6 +2243,10 @@ bool PlayerbotAI::HandleResurrect()
     if (IsBusyCasting(_bot))
         return false;
 
+    // Never rez in combat — keep heals / DPS on the living group first.
+    if (_bot->IsInCombat() || GroupInCombat() || !_bot->getAttackers().empty())
+        return false;
+
     Player* dead = BotRotation::FindPartyMemberToResurrect(_bot);
     if (!dead)
         return false;
@@ -2739,36 +2768,72 @@ Unit* PlayerbotAI::SelectAssistTankTarget()
     if (!group)
         return nullptr;
 
+    auto isTankSpec = [](Player* member) -> bool
+    {
+        if (!member)
+            return false;
+        uint32 specId = member->GetTalentSpecialization(member->GetActiveSpec());
+        uint8 cls = member->getClass();
+        uint32 const* specs = GetClassSpecializations(cls);
+        if (!specs)
+            return false;
+        switch (cls)
+        {
+            case CLASS_WARRIOR: return specId == specs[2];
+            case CLASS_PALADIN: return specId == specs[1];
+            case CLASS_DEATH_KNIGHT: return specId == specs[0];
+            case CLASS_DRUID: return specId == specs[2];
+            case CLASS_MONK: return specId == specs[0];
+            default: return false;
+        }
+    };
+
+    auto usableFocus = [this](Unit* victim) -> Unit*
+    {
+        if (!victim || !victim->IsAlive() || !_bot->IsValidAttackTarget(victim))
+            return nullptr;
+        if (!_bot->IsWithinDistInMap(victim, 60.0f))
+            return nullptr;
+        return victim;
+    };
+
+    // Prefer the group's marked main tank when present.
+    Player* preferredTank = nullptr;
+    for (Group::MemberSlot const& slot : group->GetMemberSlots())
+    {
+        if (!(slot.flags & uint8(GroupMemberFlags::MEMBER_FLAG_MAINTANK)))
+            continue;
+        if (Player* tank = ObjectAccessor::FindPlayer(slot.guid))
+            if (tank->IsAlive() && tank != _bot && _bot->IsInMap(tank))
+            {
+                preferredTank = tank;
+                break;
+            }
+    }
+
+    auto focusFromTank = [&](Player* tank) -> Unit*
+    {
+        if (!tank)
+            return nullptr;
+        if (Unit* victim = usableFocus(tank->GetVictim()))
+            return victim;
+        if (Unit* selected = usableFocus(ObjectAccessor::GetUnit(*_bot, tank->GetTarget())))
+            return selected;
+        return nullptr;
+    };
+
+    if (Unit* focus = focusFromTank(preferredTank))
+        return focus;
+
     for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
     {
         Player* member = itr->GetSource();
         if (!member || !member->IsAlive() || member == _bot || !_bot->IsInMap(member))
             continue;
-
-        // Detect tank the same way GetCombatRole does for us.
-        uint32 specId = member->GetTalentSpecialization(member->GetActiveSpec());
-        uint8 cls = member->getClass();
-        uint32 const* specs = GetClassSpecializations(cls);
-        bool isTank = false;
-        if (specs)
-        {
-            switch (cls)
-            {
-                case CLASS_WARRIOR: isTank = (specId == specs[2]); break;
-                case CLASS_PALADIN: isTank = (specId == specs[1]); break;
-                case CLASS_DEATH_KNIGHT: isTank = (specId == specs[0]); break;
-                case CLASS_DRUID: isTank = (specId == specs[2]); break;
-                case CLASS_MONK: isTank = (specId == specs[0]); break;
-                default: break;
-            }
-        }
-        if (!isTank)
+        if (!isTankSpec(member))
             continue;
-
-        Unit* victim = member->GetVictim();
-        if (victim && victim->IsAlive() && _bot->IsValidAttackTarget(victim) &&
-            _bot->IsWithinDistInMap(victim, 60.0f))
-            return victim;
+        if (Unit* focus = focusFromTank(member))
+            return focus;
     }
 
     return nullptr;
@@ -2883,7 +2948,6 @@ void PlayerbotAI::HoldRangedCombatPosition(Unit* focus, float maxRange)
 
     float const dist = _bot->GetDistance(focus);
     bool const hasLos = _bot->IsWithinLOSInMap(focus);
-    float const standDist = maxRange * 0.85f;
 
     // Too close — step out only when dungeon kiting is enabled.
     if (_bot->IsWithinMeleeRange(focus) || dist < maxRange * 0.40f)
@@ -2902,6 +2966,8 @@ void PlayerbotAI::HoldRangedCombatPosition(Unit* focus, float maxRange)
     }
 
     float destX, destY, destZ;
+    // Without LoS, keep closing on the focus instead of parking at max range.
+    float const standDist = hasLos ? (maxRange * 0.85f) : std::max(5.0f, dist * 0.55f);
     float const absAngle = focus->GetAngle(_bot);
     focus->GetNearPoint(_bot, destX, destY, destZ, _bot->GetObjectSize(), standDist, absAngle);
     _bot->UpdateAllowedPositionZ(destX, destY, destZ);
@@ -2909,7 +2975,8 @@ void PlayerbotAI::HoldRangedCombatPosition(Unit* focus, float maxRange)
     MovementGeneratorType moveType = _bot->GetMotionMaster()->GetCurrentMovementGeneratorType();
     bool const reissue = _chaseGuid != focus->GetGUID()
         || moveType != POINT_MOTION_TYPE
-        || _bot->IsStopped();
+        || _bot->IsStopped()
+        || !hasLos;
     if (reissue)
     {
         MoveToPosition(destX, destY, destZ);
