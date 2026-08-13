@@ -51,6 +51,27 @@ For further information on the SkyFire project, please visit our project website
   + On Ubuntu, install the distro client development package such as `default-libmysqlclient-dev`.
 + Ninja is recommended for Linux builds.
 
+## Playerbots
+
+This repository includes SkyFire core changes for playerbots plus a modules system.
+The playerbots module lives in a separate repository and is checked out as a submodule:
+
+- Module: [DigiD702/mod-playerbots](https://github.com/DigiD702/mod-playerbots)
+
+Clone with submodules:
+
+```bash
+git clone --recurse-submodules https://github.com/DigiD702/skyfire_548_playerbots.git
+```
+
+If you already cloned without submodules:
+
+```bash
+git submodule update --init --recursive
+```
+
+Enable modules at configure time with `-DMODULES=1` (default).
+
 ## Install
 Detailed installation guides are available in the wiki for
 
