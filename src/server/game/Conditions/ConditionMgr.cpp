@@ -8,6 +8,7 @@
 #include "GameEventMgr.h"
 #include "InstanceScript.h"
 #include "ObjectMgr.h"
+#include "Pet.h"
 #include "Player.h"
 #include "ReputationMgr.h"
 #include "ScriptedCreature.h"
@@ -135,6 +136,22 @@ bool Condition::Meets(ConditionSourceInfo& sourceInfo)
             {
                 QuestStatus status = player->GetQuestStatus(ConditionValue1);
                 condMeets = (status == QUEST_STATUS_NONE);
+            }
+            break;
+        }
+        case CONDITION_QUEST_OBJECTIVE_PROGRESS:
+        {
+            if (Player* player = object->ToPlayer())
+            {
+                uint32 questId = sObjectMgr->GetQuestObjectiveQuestId(ConditionValue1);
+                if (!questId)
+                    break;
+
+                // Quest must be in the player's log
+                if (player->FindQuestSlot(questId) >= MAX_QUEST_LOG_SIZE)
+                    break;
+
+                condMeets = player->GetQuestObjectiveCounter(ConditionValue1) == ConditionValue3;
             }
             break;
         }
@@ -315,6 +332,59 @@ bool Condition::Meets(ConditionSourceInfo& sourceInfo)
             condMeets = object->IsTerrainSwaped(ConditionValue1);
             break;
         }
+        case CONDITION_IN_WATER:
+        {
+            if (Unit* unit = object->ToUnit())
+                condMeets = unit->IsInWater();
+            break;
+        }
+        case CONDITION_STAND_STATE:
+        {
+            if (Unit* unit = object->ToUnit())
+            {
+                if (ConditionValue1 == 0)
+                    condMeets = (unit->getStandState() == ConditionValue2);
+                else if (ConditionValue2 == 0)
+                    condMeets = unit->IsStandState();
+                else if (ConditionValue2 == 1)
+                    condMeets = unit->IsSitState();
+            }
+            break;
+        }
+        case CONDITION_CHARMED:
+        {
+            if (Unit* unit = object->ToUnit())
+                condMeets = unit->IsCharmed();
+            break;
+        }
+        case CONDITION_PET_TYPE:
+        {
+            if (Player* player = object->ToPlayer())
+                if (Pet* pet = player->GetPet())
+                    condMeets = (((1 << uint32(pet->getPetType())) & ConditionValue1) != 0);
+            break;
+        }
+        case CONDITION_TAXI:
+        {
+            if (Player* player = object->ToPlayer())
+                condMeets = player->IsInFlight();
+            break;
+        }
+        case CONDITION_QUESTSTATE:
+        {
+            if (Player* player = object->ToPlayer())
+            {
+                if (
+                    ((ConditionValue2 & (1 << QUEST_STATUS_NONE)) && (player->GetQuestStatus(ConditionValue1) == QUEST_STATUS_NONE)) ||
+                    ((ConditionValue2 & (1 << QUEST_STATUS_COMPLETE)) && (player->GetQuestStatus(ConditionValue1) == QUEST_STATUS_COMPLETE)) ||
+                    ((ConditionValue2 & (1 << QUEST_STATUS_INCOMPLETE)) && (player->GetQuestStatus(ConditionValue1) == QUEST_STATUS_INCOMPLETE)) ||
+                    ((ConditionValue2 & (1 << QUEST_STATUS_FAILED)) && (player->GetQuestStatus(ConditionValue1) == QUEST_STATUS_FAILED)) ||
+                    ((ConditionValue2 & (1 << QUEST_STATUS_REWARDED)) && player->GetQuestRewardStatus(ConditionValue1))
+                    )
+                    condMeets = true;
+            }
+            break;
+        }
         default:
             condMeets = false;
             break;
@@ -382,6 +452,9 @@ uint32 Condition::GetSearcherTypeMaskForCondition()
             mask |= GRID_MAP_TYPE_MASK_PLAYER;
             break;
         case CONDITION_QUEST_NONE:
+            mask |= GRID_MAP_TYPE_MASK_PLAYER;
+            break;
+        case CONDITION_QUEST_OBJECTIVE_PROGRESS:
             mask |= GRID_MAP_TYPE_MASK_PLAYER;
             break;
         case CONDITION_ACTIVE_EVENT:
@@ -486,6 +559,24 @@ uint32 Condition::GetSearcherTypeMaskForCondition()
             break;
         case CONDITION_TERRAIN_SWAP:
             mask |= GRID_MAP_TYPE_MASK_ALL;
+            break;
+        case CONDITION_IN_WATER:
+            mask |= GRID_MAP_TYPE_MASK_CREATURE | GRID_MAP_TYPE_MASK_PLAYER;
+            break;
+        case CONDITION_STAND_STATE:
+            mask |= GRID_MAP_TYPE_MASK_CREATURE | GRID_MAP_TYPE_MASK_PLAYER;
+            break;
+        case CONDITION_CHARMED:
+            mask |= GRID_MAP_TYPE_MASK_CREATURE | GRID_MAP_TYPE_MASK_PLAYER;
+            break;
+        case CONDITION_PET_TYPE:
+            mask |= GRID_MAP_TYPE_MASK_PLAYER;
+            break;
+        case CONDITION_TAXI:
+            mask |= GRID_MAP_TYPE_MASK_PLAYER;
+            break;
+        case CONDITION_QUESTSTATE:
+            mask |= GRID_MAP_TYPE_MASK_PLAYER;
             break;
         default:
             ASSERT(false && "Condition::GetSearcherTypeMaskForCondition - missing condition handling!");
@@ -1617,6 +1708,18 @@ bool ConditionMgr::isConditionTypeValid(Condition* cond)
         return false;
     }
 
+    if (cond->ConditionType == CONDITION_UNUSED_41)
+    {
+        SF_LOG_ERROR("sql.sql", "ConditionType 41 (TC TERRAIN_SWAP) is unused; use CONDITION_TERRAIN_SWAP (39). SourceEntry %u ignored.", cond->SourceEntry);
+        return false;
+    }
+
+    if (cond->ConditionType == CONDITION_UNUSED_43)
+    {
+        SF_LOG_ERROR("sql.sql", "ConditionType 43 (DAILY_QUEST_DONE) is not implemented yet (daily quest cooldown storage incomplete). SourceEntry %u ignored.", cond->SourceEntry);
+        return false;
+    }
+
     if (cond->ConditionTarget >= cond->GetMaxAvailableConditionTargets())
     {
         SF_LOG_ERROR("sql.sql", "SourceType %u, SourceEntry %u, SourceGroup %u in `condition` table, has incorrect ConditionTarget set, ignoring.", cond->SourceType, cond->SourceEntry, cond->SourceGroup);
@@ -1754,6 +1857,34 @@ bool ConditionMgr::isConditionTypeValid(Condition* cond)
                 SF_LOG_ERROR("sql.sql", "Quest condition has useless data in value2 (%u)!", cond->ConditionValue2);
             if (cond->ConditionValue3)
                 SF_LOG_ERROR("sql.sql", "Quest condition has useless data in value3 (%u)!", cond->ConditionValue3);
+            break;
+        }
+        case CONDITION_QUEST_OBJECTIVE_PROGRESS:
+        {
+            if (!sObjectMgr->QuestObjectiveExists(cond->ConditionValue1))
+            {
+                SF_LOG_ERROR("sql.sql", "QuestObjectiveProgress condition points to non-existing quest objective (%u), skipped.", cond->ConditionValue1);
+                return false;
+            }
+
+            uint32 questId = sObjectMgr->GetQuestObjectiveQuestId(cond->ConditionValue1);
+            Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+            QuestObjective const* objective = quest ? quest->GetQuestObjective(cond->ConditionValue1) : NULL;
+            if (!objective)
+            {
+                SF_LOG_ERROR("sql.sql", "QuestObjectiveProgress condition points to quest objective (%u) not attached to quest (%u), skipped.", cond->ConditionValue1, questId);
+                return false;
+            }
+
+            if (int32(cond->ConditionValue3) > objective->Amount)
+            {
+                SF_LOG_ERROR("sql.sql", "QuestObjectiveProgress condition has quest objective count %u in value3, but quest objective %u has a maximum of %d, skipped.",
+                    cond->ConditionValue3, cond->ConditionValue1, objective->Amount);
+                return false;
+            }
+
+            if (cond->ConditionValue2)
+                SF_LOG_ERROR("sql.sql", "QuestObjectiveProgress condition has useless data in value2 (%u)!", cond->ConditionValue2);
             break;
         }
         case CONDITION_ACTIVE_EVENT:
@@ -2079,6 +2210,55 @@ bool ConditionMgr::isConditionTypeValid(Condition* cond)
                 SF_LOG_ERROR("sql.sql", "Terrain swap condition has useless data in value2 (%u)!", cond->ConditionValue2);
             if (cond->ConditionValue3)
                 SF_LOG_ERROR("sql.sql", "Terrain swap condition has useless data in value3 (%u)!", cond->ConditionValue3);
+            break;
+        }
+        case CONDITION_IN_WATER:
+        case CONDITION_CHARMED:
+        case CONDITION_TAXI:
+            break;
+        case CONDITION_STAND_STATE:
+        {
+            bool valid = false;
+            switch (cond->ConditionValue1)
+            {
+                case 0:
+                    valid = cond->ConditionValue2 <= UNIT_STAND_STATE_SUBMERGED;
+                    break;
+                case 1:
+                    valid = cond->ConditionValue2 <= 1;
+                    break;
+                default:
+                    break;
+            }
+            if (!valid)
+            {
+                SF_LOG_ERROR("sql.sql", "StandState condition has non-existing stand state (%u,%u), skipped.", cond->ConditionValue1, cond->ConditionValue2);
+                return false;
+            }
+            break;
+        }
+        case CONDITION_PET_TYPE:
+            if (cond->ConditionValue1 >= (1u << uint32(PetType::MAX_PET_TYPE)))
+            {
+                SF_LOG_ERROR("sql.sql", "PetType condition has non-existing pet type %u, skipped.", cond->ConditionValue1);
+                return false;
+            }
+            break;
+        case CONDITION_QUESTSTATE:
+        {
+            if (cond->ConditionValue2 >= (1u << MAX_QUEST_STATUS))
+            {
+                SF_LOG_ERROR("sql.sql", "QuestState condition has invalid state mask (%u), skipped.", cond->ConditionValue2);
+                return false;
+            }
+            if (!sObjectMgr->GetQuestTemplate(cond->ConditionValue1))
+            {
+                SF_LOG_ERROR("sql.sql", "QuestState condition points to non-existing quest (%u) for Source Entry %u. SourceGroup: %u, SourceTypeOrReferenceId: %u",
+                    cond->ConditionValue1, cond->SourceEntry, cond->SourceGroup, cond->SourceType);
+                return false;
+            }
+            if (cond->ConditionValue3)
+                SF_LOG_ERROR("sql.sql", "QuestState condition has useless data in value3 (%u)!", cond->ConditionValue3);
             break;
         }
         case CONDITION_TITLE:

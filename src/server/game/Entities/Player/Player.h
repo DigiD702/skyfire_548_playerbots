@@ -46,6 +46,7 @@ class PlayerSocial;
 class SpellCastTargets;
 class UpdateMask;
 class BattlePetMgr;
+struct SpellResearchData;
 
 typedef std::deque<Mail*> PlayerMails;
 
@@ -301,7 +302,16 @@ struct SpellCooldown
     uint16 itemid;
 };
 
+struct SpellChargeData
+{
+    SpellChargeData() : ConsumedCharges(0), CurrentResetTime(0), BaseRegenTime(0) { }
+    uint8 ConsumedCharges;
+    uint32 CurrentResetTime; // getMSTime() when next charge restores
+    uint32 BaseRegenTime;    // ms
+};
+
 typedef std::map<uint32, SpellCooldown> SpellCooldowns;
+typedef UNORDERED_MAP<uint32, SpellChargeData> SpellChargeMap;
 typedef UNORDERED_MAP<uint32 /*instanceId*/, time_t/*releaseTime*/> InstanceTimeMap;
 
 enum TrainerSpellState
@@ -645,7 +655,11 @@ enum QuestSlotStateMask
 {
     QUEST_STATE_NONE = 0x0000,
     QUEST_STATE_COMPLETE = 0x0001,
-    QUEST_STATE_FAIL = 0x0002
+    QUEST_STATE_FAIL = 0x0002,
+    // 18414 client: DUMMY / pet-battle objectives use state bits 8+index
+    // (see CGPlayer_C objective complete check: (0x100 << index) & state).
+    // Counters in QUEST_COUNTS_OFFSET are used for kill/collect-style types.
+    QUEST_STATE_OBJECTIVE_0 = 0x0100
 };
 
 enum class SkillUpdateState
@@ -882,7 +896,7 @@ enum PlayerLoginQueryIndex
     PLAYER_LOGIN_QUERY_LOAD_SPELL_COOLDOWNS = 14,
     PLAYER_LOGIN_QUERY_LOAD_DECLINED_NAMES = 15,
     PLAYER_LOGIN_QUERY_LOAD_GUILD = 16,
-    // 17 free
+    PLAYER_LOGIN_QUERY_LOAD_SPELL_CHARGES = 17,
     PLAYER_LOGIN_QUERY_LOAD_ACHIEVEMENTS = 18,
     PLAYER_LOGIN_QUERY_LOAD_CRITERIA_PROGRESS = 19,
     PLAYER_LOGIN_QUERY_LOAD_EQUIPMENT_SETS = 20,
@@ -904,6 +918,9 @@ enum PlayerLoginQueryIndex
     PLAYER_LOGIN_QUERY_LOAD_BATTLE_PETS = 36,
     PLAYER_LOGIN_QUERY_LOAD_BATTLE_PET_SLOTS = 37,
     PLAYER_LOGIN_QUERY_LOAD_QUEST_OBJECTIVE_STATUS = 38,
+    PLAYER_LOGIN_QUERY_LOAD_RESEARCH_DIGSITES = 39,
+    PLAYER_LOGIN_QUERY_LOAD_RESEARCH_HISTORY = 40,
+    PLAYER_LOGIN_QUERY_LOAD_RESEARCH_PROJECTS = 41,
     MAX_PLAYER_LOGIN_QUERY
 };
 
@@ -1218,17 +1235,17 @@ private:
     PlayerTalentInfo(PlayerTalentInfo const&);
 };
 
-/*
 #define RESEARCH_CONTINENT_COUNT    5
-#define RESEARCH_BRANCH_COUNT       10
+#define RESEARCH_BRANCH_COUNT       12
 #define MAX_DIGSITES_PER_CONTINENT  4
 #define MAX_FINDS_PER_DIGSITE       6
 
-const uint32 ResearchContinents [RESEARCH_CONTINENT_COUNT] = { 0, 1, 530, 571, 870 }; // Eastern Kingdoms, Kalimdor, Outland, Northrend, Pandaria
+const uint32 ResearchContinents[RESEARCH_CONTINENT_COUNT] = { 0, 1, 530, 571, 870 }; // Eastern Kingdoms, Kalimdor, Outland, Northrend, Pandaria
 
 struct ResearchDigsite
 {
-    ResearchDigsite(ResearchDigsiteInfo const* digsiteInfo, uint8 remainingFindCount) : _digsiteInfo(digsiteInfo), _archaeologyFind(NULL), _remainingFindCount(remainingFindCount)
+    ResearchDigsite(ResearchDigsiteInfo const* digsiteInfo, uint8 remainingFindCount)
+        : _digsiteInfo(digsiteInfo), _archaeologyFind(NULL), _remainingFindCount(remainingFindCount)
     { }
 
     void SelectNewArchaeologyFind(bool onInit);
@@ -1236,29 +1253,29 @@ struct ResearchDigsite
     {
         _archaeologyFind = find;
     }
-    ArchaeologyFindInfo const* GetArchaeologyFind()
+    ArchaeologyFindInfo const* GetArchaeologyFind() const
     {
         return _archaeologyFind;
     }
-    bool IsEmptyDigsite()
+    bool IsEmptyDigsite() const
     {
         return !_remainingFindCount;
     }
 
-    uint32 GetDigsiteId()
+    uint32 GetDigsiteId() const
     {
         return _digsiteInfo->digsiteId;
     }
-    ResearchDigsiteInfo const* GetDigsiteInfo()
+    ResearchDigsiteInfo const* GetDigsiteInfo() const
     {
         return _digsiteInfo;
     }
-    uint8 GetRemainingFindCount()
+    uint8 GetRemainingFindCount() const
     {
         return _remainingFindCount;
     }
 
-    private:
+private:
     ResearchDigsiteInfo const* _digsiteInfo;
     ArchaeologyFindInfo const* _archaeologyFind;
     uint8 _remainingFindCount;
@@ -1269,10 +1286,9 @@ struct ResearchProjectHistory
     uint32 researchCount;
     uint32 firstResearchTimestamp;
 };
-*/
 
-//typedef UNORDERED_MAP<uint32 /*projectId*/, ResearchProjectHistory> ResearchHistoryMap;
-//typedef UNORDERED_MAP<uint32 /*branchId*/, uint32 /*projectId*/> ResearchProjectMap;
+typedef UNORDERED_MAP<uint32 /*projectId*/, ResearchProjectHistory> ResearchHistoryMap;
+typedef UNORDERED_MAP<uint32 /*branchId*/, uint32 /*projectId*/> ResearchProjectMap;
 
 enum AttackSwingError
 {
@@ -1803,6 +1819,7 @@ public:
     void SwapQuestSlot(uint16 slot1, uint16 slot2);
 
     uint16 GetReqKillOrCastCurrentCount(uint32 quest_id, int32 entry);
+    void ResetQuestObjectiveCounter(uint32 questId, uint8 type, uint32 objectId);
     void AreaExploredOrEventHappens(uint32 questId);
     void GroupEventHappens(uint32 questId, WorldObject const* pEventObject);
     void ItemAddedQuestCheck(uint32 entry, uint32 count);
@@ -1823,6 +1840,7 @@ public:
     void QuestObjectiveSatisfy(uint32 objectId, uint32 amount, uint8 type = 0u, uint64 guid = 0u);
 
     void SendQuestComplete(Quest const* quest);
+    void SendQuestCompletionNPCs(uint32 questId);
     void SendQuestReward(Quest const* quest, uint32 XP);
     void SendQuestFailed(uint32 questId, InventoryResult reason = EQUIP_ERR_OK);
     void SendQuestTimerFailed(uint32 questId);
@@ -2046,6 +2064,8 @@ public:
     void SendInitialSpells();
     bool addSpell(uint32 spellId, bool active, bool learning, bool dependent, bool disabled, bool loading = false);
     void learnSpell(uint32 spell_id, bool dependent);
+    void SetSuppressSpellLearnMessages(bool suppress) { m_suppressSpellLearnMessages = suppress; }
+    bool IsSuppressSpellLearnMessages() const { return m_suppressSpellLearnMessages; }
     void removeSpell(uint32 spell_id, bool disabled = false, bool learn_low_rank = true);
     void resetSpells(bool myClassOnly = false);
     void learnDefaultSpells();
@@ -2080,6 +2100,7 @@ public:
 
     bool ResetTalents(bool noCost = false, bool resetTalents = true, bool resetSpecialization = true);
     bool RemoveTalent(uint32 talentId);
+    bool HasTalentSpellCooldown(SpellInfo const* talentSpellInfo) const;
 
     uint32 GetNextResetTalentsCost() const;
     uint32 GetNextResetSpecializationCost() const;
@@ -2170,13 +2191,20 @@ public:
     void AddSpellCooldown(uint32 spell_id, uint32 itemid, time_t end_time);
     void ModifySpellCooldown(uint32 spellId, int32 cooldown);
     void SendSpellCooldown(uint32 spellId, uint32 cooldown);
-    void SendSpellCooldowns();
+    void SendSpellCooldowns(); // SMSG_SEND_SPELL_HISTORY (login sync)
+    void SendSpellCharges();   // SMSG_SEND_SPELL_CHARGES (login / consume sync)
     void SendCooldownEvent(SpellInfo const* spellInfo, uint32 itemId = 0, Spell* spell = NULL, bool setCooldown = true);
     void ProhibitSpellSchool(SpellSchoolMask idSchoolMask, uint32 unTimeMs) override;
     void RemoveSpellCooldown(uint32 spell_id, bool update = false);
     void RemoveSpellCategoryCooldown(uint32 cat, bool update = false);
     void SendClearCooldown(uint32 spell_id, Unit* target);
     void SendClearAllCooldowns(Unit* target);
+
+    bool HasSpellCharge(uint32 categoryId) const;
+    bool ConsumeSpellCharge(SpellInfo const* spellInfo);
+    void UpdateSpellCharges();
+    void ClearSpellCharges(uint32 categoryId);
+    void ClearAllSpellCharges();
 
     GlobalCooldownMgr& GetGlobalCooldownMgr()
     {
@@ -2188,6 +2216,8 @@ public:
     void RemoveAllSpellCooldown();
     void _LoadSpellCooldowns(PreparedQueryResult result);
     void _SaveSpellCooldowns(SQLTransaction& trans);
+    void _LoadSpellCharges(PreparedQueryResult result);
+    void _SaveSpellCharges(SQLTransaction& trans);
     void SetLastPotionId(uint32 item_id)
     {
         m_lastPotionId = item_id;
@@ -2663,7 +2693,7 @@ public:
     void ApplyEquipSpell(SpellInfo const* spellInfo, Item* item, bool apply, bool form_change = false);
     void UpdateEquipSpellsAtFormChange();
     void CastItemCombatSpell(Unit* target, WeaponAttackType attType, uint32 procVictim, uint32 procEx);
-    void CastItemUseSpell(Item* item, SpellCastTargets const& targets, uint8 cast_count, uint32 glyphIndex);
+    void CastItemUseSpell(Item* item, SpellCastTargets const& targets, uint8 cast_count, uint32 glyphIndex, SpellResearchData const* researchData = NULL);
     void CastItemCombatSpell(Unit* target, WeaponAttackType attType, uint32 procVictim, uint32 procEx, Item* item, ItemTemplate const* proto);
 
     void SendEquipmentSetList();
@@ -2873,6 +2903,7 @@ public:
     void UpdateVisibilityOf(T* target, UpdateData& data, std::set<Unit*>& visibleNow);
     void UpdatePhasing();
     uint8 m_forced_speed_changes[MAX_MOVE_TYPE];
+    bool hasForcedMovement_;
 
     bool HasAtLoginFlag(AtLoginFlags f) const
     {
@@ -3162,7 +3193,10 @@ public:
         These methods are only sent to the current unit.
         */
     void SendMovementSetCanTransitionBetweenSwimAndFly(bool apply);
+    void SendMovementSetCanTurnWhileFalling(bool apply);
     void SendMovementSetCollisionHeight(float height);
+    void SendApplyMovementForce(bool apply, Position const& source, float force = 0.0f);
+    bool HasForcedMovement() const { return hasForcedMovement_; }
 
     bool CanFly() const override { return m_movementInfo.HasMovementFlag(MOVEMENTFLAG_CAN_FLY); }
 
@@ -3201,24 +3235,32 @@ public:
     uint32 GetQuestObjectiveCounter(uint32 objectiveId) const;
 
     // Archaeology
-    /*
     void SaveResearchDigsiteToDB(ResearchDigsite* digsite);
     void DeleteResearchDigsite(ResearchDigsite* digsite);
     void UpdateResearchDigsites();
-    bool IsWithinResearchDigsite(ResearchDigsite* digsite);
+    bool IsWithinResearchDigsite(ResearchDigsite* digsite) const;
     ResearchDigsite* GetCurrentResearchDigsite();
+    ResearchDigsite* GetResearchDigsiteForFind(GameObject const* go) const;
     ResearchDigsite* TryToSpawnResearchDigsiteOnContinent(uint32 mapId);
     ResearchDigsiteInfo const* GetRandomResearchDigsiteForContinent(uint32 mapId);
-    bool IsResearchDigsiteAvailable(ResearchDigsiteInfo const* digsiteInfo);
+    bool IsResearchDigsiteAvailable(ResearchDigsiteInfo const* digsiteInfo) const;
     void SendResearchHistory();
     void SolveResearchProject(Spell* spell);
-    bool HasCompletedResearchProject(uint32 projectId) { return _researchHistory.end() != _researchHistory.find(projectId); }
-    bool HasCompletedAllRareProjectsForRace(uint32 researchBranchId);
-    bool HasCompletedAllCommonProjectsForRace(uint32 researchBranchId, bool onlyAvailable);
+    bool HasCompletedResearchProject(uint32 projectId) const { return _researchHistory.find(projectId) != _researchHistory.end(); }
+    bool HasResearchingProject(uint32 projectId) const
+    {
+        for (ResearchProjectMap::const_iterator itr = _researchProjects.begin(); itr != _researchProjects.end(); ++itr)
+            if (itr->second == projectId)
+                return true;
+        return false;
+    }
+    bool HasCompletedAllRareProjectsForRace(uint32 researchBranchId) const;
+    bool HasCompletedAllCommonProjectsForRace(uint32 researchBranchId, bool onlyAvailable) const;
+    bool IsResearchBranchUnlocked(uint32 researchBranchId) const;
     uint32 GetRandomResearchProjectForRace(uint32 researchBranchId);
     void UpdateResearchProjects();
-    void SendSurveryCastInfo(ResearchDigsite* digsite, bool success);
-    */
+    void SendSurveyCastInfo(ResearchDigsite* digsite, bool success);
+    bool OnArchaeologyFindUsed(GameObject* go);
 
 protected:
     // Gamemaster whisper whitelist
@@ -3297,9 +3339,9 @@ protected:
     void _LoadInstanceTimeRestrictions(PreparedQueryResult result);
     void _LoadCurrency(PreparedQueryResult result);
     void _LoadCUFProfiles(PreparedQueryResult result);
-    //void _LoadResearchHistory(PreparedQueryResult result);
-    //void _LoadResearchProjects(PreparedQueryResult result);
-    //void _LoadResearchDigsites(PreparedQueryResult result);
+    void _LoadResearchHistory(PreparedQueryResult result);
+    void _LoadResearchProjects(PreparedQueryResult result);
+    void _LoadResearchDigsites(PreparedQueryResult result);
 
     /*********************************************************/
     /***                   SAVE SYSTEM                     ***/
@@ -3326,8 +3368,8 @@ protected:
     void _SaveInstanceTimeRestrictions(SQLTransaction& trans);
     void _SaveCurrency(SQLTransaction& trans);
     void _SaveCUFProfiles(SQLTransaction& trans);
-    //void _SaveResearchHistory(SQLTransaction& trans);
-    //void _SaveResearchProjects(SQLTransaction& trans);
+    void _SaveResearchHistory(SQLTransaction& trans);
+    void _SaveResearchProjects(SQLTransaction& trans);
 
     /*********************************************************/
     /***              ENVIRONMENTAL SYSTEM                 ***/
@@ -3401,6 +3443,7 @@ protected:
     PlayerTalentInfo* _talentMgr;
 
     ActionButtonList m_actionButtons;
+    bool m_suppressSpellLearnMessages = false;
 
     float m_auraBaseMod[BASEMOD_END][MOD_END];
     int16 m_baseRatingValue[MAX_COMBAT_RATING];
@@ -3504,12 +3547,11 @@ protected:
 
     CUFProfile* _CUFProfiles[MAX_CUF_PROFILES];
 
-    /*
     // Archaeology
-    ResearchDigsite* _researchDigsites [RESEARCH_CONTINENT_COUNT] [MAX_DIGSITES_PER_CONTINENT];
+    ResearchDigsite* _researchDigsites[RESEARCH_CONTINENT_COUNT][MAX_DIGSITES_PER_CONTINENT];
     ResearchProjectMap _researchProjects;
     ResearchHistoryMap _researchHistory;
-    */
+
 private:
     // internal common parts for CanStore/StoreItem functions
     InventoryResult CanStoreItem_InSpecificSlot(uint8 bag, uint8 slot, ItemPosCountVec& dest, ItemTemplate const* pProto, uint32& count, bool swap, Item* pSrcItem) const;
@@ -3582,6 +3624,7 @@ private:
     ReputationMgr* m_reputationMgr;
 
     SpellCooldowns m_spellCooldowns;
+    SpellChargeMap m_spellCharges;
 
     uint32 m_ChampioningFaction;
     uint8 m_ChampioningType;

@@ -3,14 +3,9 @@
 * See LICENSE.md file for Copyright information
 */
 
-#ifndef SF_TOTP_H
-#define SF_TOTP_H
+#include "Config.h"
 
-#include <string>
-
-namespace TOTP
+std::string ConfigMgr::GetStringDefault(const char*, const std::string& def)
 {
-    unsigned int GenerateToken(std::string& b32key);
+    return def;
 }
-
-#endif

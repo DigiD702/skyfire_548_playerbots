@@ -15,6 +15,7 @@
 #include "GroupMgr.h"
 #include "ObjectMgr.h"
 #include "OutdoorPvPMgr.h"
+#include "Player.h"
 #include "PoolMgr.h"
 #include "ScriptMgr.h"
 #include "SpellMgr.h"
@@ -63,6 +64,12 @@ GameObject::~GameObject()
     //    CleanupsBeforeDelete();
 }
 
+bool ForcedGoDespawnDelayEvent::Execute(uint64 /*e_time*/, uint32 /*p_time*/)
+{
+    m_owner.ForcedDespawn();
+    return true;
+}
+
 bool GameObject::AIM_Initialize()
 {
     if (m_AI)
@@ -87,6 +94,8 @@ std::string GameObject::GetAIName() const
 
 void GameObject::CleanupsBeforeDelete(bool /*finalCleanup*/)
 {
+    m_Events.KillAllEvents(false);
+
     if (IsInWorld())
         RemoveFromWorld();
 
@@ -286,6 +295,8 @@ bool GameObject::Create(uint32 guidlow, uint32 name_id, Map* map, float x, float
 
 void GameObject::Update(uint32 diff)
 {
+    m_Events.Update(diff);
+
     if (AI())
         AI()->UpdateAI(diff);
     else if (!AIM_Initialize())
@@ -1268,6 +1279,19 @@ void GameObject::Respawn()
     }
 }
 
+void GameObject::ForcedDespawn(uint32 msTimeToDespawn /*= 0*/)
+{
+    if (msTimeToDespawn)
+    {
+        ForcedGoDespawnDelayEvent* pEvent = new ForcedGoDespawnDelayEvent(*this);
+        m_Events.AddEvent(pEvent, m_Events.CalculateTime(msTimeToDespawn));
+        return;
+    }
+
+    SetRespawnTime(GetGOData() ? GetGOData()->spawntimesecs : 1);
+    UpdateObjectVisibility();
+}
+
 bool GameObject::ActivateToQuest(Player* target) const
 {
     if (target->HasQuestForGO(GetEntry()))
@@ -1427,6 +1451,9 @@ void GameObject::Use(Unit* user)
 
     if (Player* playerUser = user->ToPlayer())
     {
+        if (playerUser->OnArchaeologyFindUsed(this))
+            return;
+
         if (sScriptMgr->OnGossipHello(playerUser, this))
             return;
 
@@ -1459,6 +1486,15 @@ void GameObject::Use(Unit* user)
 
             player->PrepareGossipMenu(this, GetGOInfo()->questgiver.gossipID, true);
             player->SendPreparedGossip(this);
+            return;
+        }
+        case GAMEOBJECT_TYPE_CHEST:                         //3
+        {
+            if (user->GetTypeId() != TypeID::TYPEID_PLAYER)
+                return;
+
+            // Archaeology finds are handled at the start of Use(); remaining chests open as loot.
+            user->ToPlayer()->SendLoot(GetGUID(), LootType::LOOT_CORPSE);
             return;
         }
         case GAMEOBJECT_TYPE_TRAP:                          //6

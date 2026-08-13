@@ -45,6 +45,7 @@
 #include "Vehicle.h"
 #include "WaypointManager.h"
 #include "World.h"
+#include "DBCStores.h"
 
 ScriptMapMap sSpellScripts;
 ScriptMapMap sEventScripts;
@@ -1796,7 +1797,7 @@ uint32 ObjectMgr::AddGOData(uint32 entry, uint32 mapId, float x, float y, float 
     data.animprogress = 100;
     data.spawnMask = 1;
     data.go_state = GOState::GO_STATE_READY;
-    data.phaseid = 169;
+    data.phaseid = 0;
     data.phaseGroup = 0;
     data.artKit = goinfo->type == GAMEOBJECT_TYPE_CAPTURE_POINT ? 21 : 0;
     data.dbData = false;
@@ -2058,17 +2059,20 @@ void ObjectMgr::LoadGameobjects()
 
         if (gInfo->type == GAMEOBJECT_TYPE_TRANSPORT)
         {
-            uint32 const transportEntry = sTransportMgr->GetLocalTransportEntry(gInfo->entry);
-            uint32 const allowedSpawnMask = LegacyTransport::GetAllowedSpawnMask(data.id, data.mapid, data.spawnMask);
-            if (allowedSpawnMask)
+            if (gameEvent == 0 && PoolId == 0)
             {
-                if (TransportAnimation const* animationInfo = sTransportMgr->GetTransportAnimInfo(transportEntry))
+                uint32 const transportEntry = sTransportMgr->GetLocalTransportEntry(gInfo->entry);
+                uint32 const allowedSpawnMask = LegacyTransport::GetAllowedSpawnMask(data.id, data.mapid, data.spawnMask);
+                if (allowedSpawnMask)
                 {
-                    LegacyTransport::LogRegisteredSpawn({ guid, data.id, transportEntry, data.mapid, allowedSpawnMask, data.posX, data.posY, data.posZ, data.orientation, animationInfo->TotalTime, uint32(animationInfo->Path.size()) });
-                    sTransportMgr->AddLocalTransportSpawn(data.mapid, allowedSpawnMask, guid);
+                    if (TransportAnimation const* animationInfo = sTransportMgr->GetTransportAnimInfo(transportEntry))
+                    {
+                        LegacyTransport::LogRegisteredSpawn({ guid, data.id, transportEntry, data.mapid, allowedSpawnMask, data.posX, data.posY, data.posZ, data.orientation, animationInfo->TotalTime, uint32(animationInfo->Path.size()) });
+                        sTransportMgr->AddLocalTransportSpawn(data.mapid, allowedSpawnMask, guid);
+                    }
+                    else
+                        LegacyTransport::LogMissingAnimationData(guid, data.id, transportEntry);
                 }
-                else
-                    LegacyTransport::LogMissingAnimationData(guid, data.id, transportEntry);
             }
         }
         else if (gameEvent == 0 && PoolId == 0)                      // if not this is to be managed by GameEvent System or Pool system
@@ -7270,6 +7274,7 @@ void ObjectMgr::LoadGameobjectQuestStarters()
 
 void ObjectMgr::LoadGameobjectQuestEnders()
 {
+    _goQuestInvolvedRelationsReverse.clear();
     LoadQuestRelationsHelper(_goQuestInvolvedRelations, "gameobject_questender", false, true);
 
     for (QuestRelations::iterator itr = _goQuestInvolvedRelations.begin(); itr != _goQuestInvolvedRelations.end(); ++itr)
@@ -7279,6 +7284,9 @@ void ObjectMgr::LoadGameobjectQuestEnders()
             SF_LOG_ERROR("sql.sql", "Table `gameobject_questender` have data for not existed gameobject entry (%u) and existed quest %u", itr->first, itr->second);
         else if (goInfo->type != GAMEOBJECT_TYPE_QUESTGIVER)
             SF_LOG_ERROR("sql.sql", "Table `gameobject_questender` have data gameobject entry (%u) for quest %u, but GO is not GAMEOBJECT_TYPE_QUESTGIVER", itr->first, itr->second);
+
+        // questId -> GO entry (required by CMSG_QUEST_NPC_QUERY / autocomplete UI)
+        _goQuestInvolvedRelationsReverse.insert(QuestRelationsReverse::value_type(itr->second, itr->first));
     }
 }
 
@@ -7298,6 +7306,7 @@ void ObjectMgr::LoadCreatureQuestStarters()
 
 void ObjectMgr::LoadCreatureQuestEnders()
 {
+    _creatureQuestInvolvedRelationsReverse.clear();
     LoadQuestRelationsHelper(_creatureQuestInvolvedRelations, "creature_questender", false, false);
 
     for (QuestRelations::iterator itr = _creatureQuestInvolvedRelations.begin(); itr != _creatureQuestInvolvedRelations.end(); ++itr)
@@ -7307,6 +7316,9 @@ void ObjectMgr::LoadCreatureQuestEnders()
             SF_LOG_ERROR("sql.sql", "Table `creature_questender` have data for not existed creature entry (%u) and existed quest %u", itr->first, itr->second);
         else if (!(cInfo->npcflag & UNIT_NPC_FLAG_QUESTGIVER))
             SF_LOG_ERROR("sql.sql", "Table `creature_questender` has creature entry (%u) for quest %u, but npcflag does not include UNIT_NPC_FLAG_QUESTGIVER", itr->first, itr->second);
+
+        // questId -> creature entry (required by CMSG_QUEST_NPC_QUERY / autocomplete UI)
+        _creatureQuestInvolvedRelationsReverse.insert(QuestRelationsReverse::value_type(itr->second, itr->first));
     }
 }
 
@@ -9129,14 +9141,13 @@ PlayerInfo const* ObjectMgr::GetPlayerInfo(uint32 race, uint32 class_) const
     return info;
 }
 
-/*
 void ObjectMgr::LoadResearchDigsiteInfo()
 {
     _researchDigsiteStore.clear();
 
     uint32 oldMSTime = getMSTime();
 
-    //                                                   0       1                 3                      4
+    //                                                   0       1                 2                      3
     QueryResult result = WorldDatabase.Query("SELECT digsiteId, branchId, requiredSkillValue, requiredLevel FROM `research_digsite_data`");
 
     if (!result)
@@ -9151,19 +9162,19 @@ void ObjectMgr::LoadResearchDigsiteInfo()
         Field* fields = result->Fetch();
 
         ResearchDigsiteInfo digsiteInfo;
-        digsiteInfo.digsiteId = fields [0].GetUInt32();
+        digsiteInfo.digsiteId = fields[0].GetUInt32();
 
         ResearchSiteEntry const* siteEntry = sResearchSiteStore.LookupEntry(digsiteInfo.digsiteId);
         if (!siteEntry)
         {
-            sLog->outError("sql.sql", "Digsite %u defined in `research_digsite_data` does not exists in DBC, skipped.", digsiteInfo.digsiteId);
+            SF_LOG_ERROR("sql.sql", "Digsite %u defined in `research_digsite_data` does not exist in DBC, skipped.", digsiteInfo.digsiteId);
             continue;
         }
 
-        digsiteInfo.branchId = fields [1].GetUInt32();
-        digsiteInfo.requiredSkillValue = fields [2].GetUInt32();
-        digsiteInfo.requiredLevel = fields [3].GetUInt32();
-        _researchDigsiteStore [siteEntry->MapId].push_back(digsiteInfo);
+        digsiteInfo.branchId = fields[1].GetUInt32();
+        digsiteInfo.requiredSkillValue = fields[2].GetUInt32();
+        digsiteInfo.requiredLevel = fields[3].GetUInt32();
+        _researchDigsiteStore[siteEntry->MapId].push_back(digsiteInfo);
 
         ++count;
     }
@@ -9192,27 +9203,27 @@ void ObjectMgr::LoadArchaeologyFindInfo()
         Field* fields = result->Fetch();
 
         ArchaeologyFindInfo findInfo;
-        findInfo.guid = fields [0].GetUInt32();
-        uint32 digsiteId = fields [1].GetUInt32();
+        findInfo.guid = fields[0].GetUInt32();
+        uint32 digsiteId = fields[1].GetUInt32();
 
         if (!sResearchSiteStore.LookupEntry(digsiteId))
         {
-            sLog->outError("sql.sql", "Digsite %u referenced in `research_digsite_finds` does not exists in DBC, skipped.", digsiteId);
+            SF_LOG_ERROR("sql.sql", "Digsite %u referenced in `research_digsite_finds` does not exist in DBC, skipped.", digsiteId);
             continue;
         }
 
-        findInfo.goEntry = fields [2].GetUInt32();
+        findInfo.goEntry = fields[2].GetUInt32();
         if (!GetGameObjectTemplate(findInfo.goEntry))
         {
-            sLog->outError("sql.sql", "Table `research_digsite_finds` has archaeology find with non existing gameobject entry %u (Digsite Id: %u), skipped.", findInfo.goEntry, digsiteId);
+            SF_LOG_ERROR("sql.sql", "Table `research_digsite_finds` has archaeology find with non existing gameobject entry %u (Digsite Id: %u), skipped.", findInfo.goEntry, digsiteId);
             continue;
         }
 
-        findInfo.x = fields [3].GetFloat();
-        findInfo.y = fields [4].GetFloat();
-        findInfo.z = fields [5].GetFloat();
+        findInfo.x = fields[3].GetFloat();
+        findInfo.y = fields[4].GetFloat();
+        findInfo.z = fields[5].GetFloat();
 
-        _archaeologyFindStore [digsiteId].push_back(findInfo);
+        _archaeologyFindStore[digsiteId].push_back(findInfo);
 
         ++count;
     }
@@ -9240,25 +9251,24 @@ void ObjectMgr::LoadResearchProjectRequirements()
     {
         Field* fields = result->Fetch();
 
-        uint32 projectId = fields [0].GetUInt32();
+        uint32 projectId = fields[0].GetUInt32();
         if (!sResearchProjectStore.LookupEntry(projectId))
         {
-            SF_LOG_ERROR("sql.sql", "Research project %u referenced in `research_project_requirements` does not exists in DBC, skipped.", projectId);
+            SF_LOG_ERROR("sql.sql", "Research project %u referenced in `research_project_requirements` does not exist in DBC, skipped.", projectId);
             continue;
         }
 
         ResearchProjectRequirements requirements;
-        requirements.requiredSkillValue = fields [1].GetUInt32();
-        requirements.chance = fields [2].GetFloat();
+        requirements.requiredSkillValue = fields[1].GetUInt32();
+        requirements.chance = fields[2].GetFloat();
 
-        _researchProjectRequirementStore [projectId] = requirements;
+        _researchProjectRequirementStore[projectId] = requirements;
 
         ++count;
     }
     while (result->NextRow());
     SF_LOG_INFO("server.loading", ">> Loaded %u research project requirements in %u ms.", count, GetMSTimeDiffToNow(oldMSTime));
 }
-*/
 void ObjectMgr::LoadBattlePetBreedData()
 {
     uint32 oldMSTime = getMSTime();

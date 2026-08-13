@@ -144,20 +144,27 @@ void Unit::_AddAura(UnitAura* aura, Unit* caster)
          *        but may be created as a result of aura links (player mounts with passengers)
          */
 
-         // register single target aura
+        // register single target / LIMIT_N aura
         caster->GetSingleCastAuras().push_back(aura);
-        // remove other single target auras
+
+        // MoP SPELL_ATTR5_LIMIT_N: keep up to MaxAffectedTargets matching auras (default 1).
+        // Living Bomb uses MaxAffectedTargets = 3 so it can sit on multiple enemies.
+        uint32 const limit = std::max<uint32>(1, aura->GetSpellInfo()->MaxAffectedTargets);
         Unit::AuraList& scAuras = caster->GetSingleCastAuras();
-        for (Unit::AuraList::iterator itr = scAuras.begin(); itr != scAuras.end();)
+
+        std::vector<Aura*> matching;
+        matching.reserve(scAuras.size());
+        for (Unit::AuraList::iterator itr = scAuras.begin(); itr != scAuras.end(); ++itr)
+            if ((*itr)->IsSingleTargetWith(aura))
+                matching.push_back(*itr);
+
+        // List order is oldest -> newest; drop oldest extras beyond the limit.
+        while (matching.size() > limit)
         {
-            if ((*itr) != aura &&
-                (*itr)->IsSingleTargetWith(aura))
-            {
-                (*itr)->Remove();
-                itr = scAuras.begin();
-            }
-            else
-                ++itr;
+            Aura* oldest = matching.front();
+            matching.erase(matching.begin());
+            if (oldest != aura)
+                oldest->Remove();
         }
     }
 }
@@ -751,7 +758,7 @@ void Unit::RemoveNotOwnSingleTargetAuras(uint32 newPhase, bool phaseid)
     }
 }
 
-void Unit::RemoveAurasWithInterruptFlags(uint32 flag, uint32 except)
+void Unit::RemoveAurasWithInterruptFlags(uint32 flag, uint32 except, Unit const* attacker)
 {
     if (!(m_interruptMask & flag))
         return;
@@ -764,6 +771,24 @@ void Unit::RemoveAurasWithInterruptFlags(uint32 flag, uint32 except)
         if ((aura->GetSpellInfo()->AuraInterruptFlags & flag) && (!except || aura->GetId() != except)
             && !(flag & AURA_INTERRUPT_FLAG_MOVE && HasAuraTypeWithAffectMask(SPELL_AURA_CAST_WHILE_WALKING, aura->GetSpellInfo())))
         {
+            // Subterfuge Stealth / Vanish: do not strip here — spell scripts convert into Subterfuge (115192)
+            uint32 const auraId = aura->GetId();
+            if (auraId == 115191 || auraId == 115193)
+            {
+                if (flag & (AURA_INTERRUPT_FLAG_CAST | AURA_INTERRUPT_FLAG_MELEE_ATTACK |
+                    AURA_INTERRUPT_FLAG_SPELL_ATTACK | AURA_INTERRUPT_FLAG_TAKE_DAMAGE |
+                    AURA_INTERRUPT_FLAG_DIRECT_DAMAGE))
+                    continue;
+            }
+
+            // Dirty Tricks: Blind / Gouge ignore the caster's Poison and Bleed damage
+            if (except && attacker && (auraId == 2094 || auraId == 1776) &&
+                (flag & (AURA_INTERRUPT_FLAG_TAKE_DAMAGE | AURA_INTERRUPT_FLAG_DIRECT_DAMAGE | AURA_INTERRUPT_FLAG_HITBYSPELL)))
+            {
+                if (ShouldDirtyTricksIgnoreCrowdControlBreak(auraId, aura->GetCasterGUID(), attacker, sSpellMgr->GetSpellInfo(except)))
+                    continue;
+            }
+
             uint32 removedAuras = m_removedAurasCount;
             RemoveAura(aura);
             if (m_removedAurasCount > removedAuras + 1)

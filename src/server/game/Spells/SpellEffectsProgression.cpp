@@ -114,6 +114,9 @@ void Spell::EffectLearnSpell(SpellEffIndex effIndex)
 
     uint32 spellToLearn = Skyfire::Spells::ShouldLearnSpellFromEffectDamage(m_spellInfo->Id) ?
         damage : m_spellInfo->Effects[effIndex].TriggerSpell;
+    if (!spellToLearn)
+        return;
+
     player->learnSpell(spellToLearn, false);
 
     SF_LOG_DEBUG("spells", "Spell: Player %u has learned spell %u from NpcGUID=%u", player->GetGUIDLow(), spellToLearn, m_caster->GetGUIDLow());
@@ -267,5 +270,8 @@ void Spell::EffectRemoveTalent(SpellEffIndex /*effIndex*/)
 
     // Blizz sends talentId as glyphIndex
     if (player)
-        player->RemoveTalent(m_glyphIndex);
+    {
+        if (!player->RemoveTalent(m_glyphIndex))
+            player->SendTalentsInfoData();
+    }
 }

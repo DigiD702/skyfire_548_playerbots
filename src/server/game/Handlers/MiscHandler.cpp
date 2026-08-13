@@ -5,6 +5,7 @@
 
 #include "AccountMgr.h"
 #include "AccountMgr.h"
+#include "AccountDataUtils.h"
 #include "Battlefield.h"
 #include "BattlefieldMgr.h"
 #include "Battleground.h"
@@ -44,6 +45,8 @@
 #include "WorldSession.h"
 #include "zlib.h"
 #include <vector>
+
+#include <cstddef>
 
 namespace
 {
@@ -1122,8 +1125,17 @@ void WorldSession::HandleSetPvP(WorldPacket& recvData)
     SetPvPRequest request = ReadSetPvPRequest(recvData);
     if (request.hasStatus)
     {
-        GetPlayer()->ApplyModFlag(PLAYER_FIELD_PLAYER_FLAGS, PLAYER_FLAGS_IN_PVP, request.newPvPStatus);
-        GetPlayer()->ApplyModFlag(PLAYER_FIELD_PLAYER_FLAGS, PLAYER_FLAGS_PVP_TIMER, !request.newPvPStatus);
+        Player* player = GetPlayer();
+        player->ApplyModFlag(PLAYER_FIELD_PLAYER_FLAGS, PLAYER_FLAGS_IN_PVP, request.newPvPStatus);
+        player->ApplyModFlag(PLAYER_FIELD_PLAYER_FLAGS, PLAYER_FLAGS_PVP_TIMER, !request.newPvPStatus);
+
+        if (request.newPvPStatus)
+        {
+            if (!player->IsPvP() || player->pvpInfo.EndTimer)
+                player->UpdatePvP(true, true);
+        }
+        else if (!player->pvpInfo.IsHostile && player->IsPvP() && !player->pvpInfo.EndTimer)
+            player->pvpInfo.EndTimer = time(NULL);
     }
 }
 void WorldSession::HandleTogglePvP(WorldPacket& /*recvData*/)
@@ -1539,13 +1551,15 @@ void WorldSession::HandleAreaTriggerOpcode(WorldPacket& recvData)
         }
     }
 
-    if (player->isDebugAreaTriggers)
+    // unk2 is enter/leave (set on enter). Debug + exploration credit only on enter,
+    // otherwise .debug areatriggers prints twice (enter and leave).
+    if (request.unk2 && player->isDebugAreaTriggers)
         ChatHandler(player->GetSession()).PSendSysMessage(LANG_DEBUG_AREATRIGGER_REACHED, request.triggerId);
 
     if (sScriptMgr->OnAreaTrigger(player, atEntry))
         return;
 
-    if (player->IsAlive())
+    if (request.unk2 && player->IsAlive())
         if (uint32 questId = sObjectMgr->GetQuestForAreaTrigger(request.triggerId))
             if (player->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE)
                 player->AreaExploredOrEventHappens(questId);
@@ -1622,19 +1636,37 @@ void WorldSession::HandleUpdateAccountData(WorldPacket& recvData)
     SF_LOG_DEBUG("network", "WORLD: Received CMSG_UPDATE_ACCOUNT_DATA");
 
     uint32 timestamp = 0, decompressedSize = 0, compCount = 0;
-    uint8 type = 0;
     recvData >> decompressedSize >> timestamp >> compCount;
+
+    auto readAccountDataType = [&recvData](AccountDataType& dataType) -> bool
+    {
+        if (recvData.rpos() >= recvData.size())
+        {
+            recvData.rfinish();
+            SF_LOG_DEBUG("network", "UAD: Account data packet missing type bits");
+            return false;
+        }
+
+        uint8 const type = uint8(recvData.ReadBits(3));
+        dataType = AccountDataType(type);
+        if (dataType >= AccountDataType::NUM_ACCOUNT_DATA_TYPES)
+        {
+            recvData.rfinish();
+            SF_LOG_DEBUG("network", "UAD: Unknown account data type: %u", type);
+            return false;
+        }
+
+        return true;
+    };
+
+    AccountDataType UADType = AccountDataType::NUM_ACCOUNT_DATA_TYPES;
 
     if (decompressedSize == 0)                               // erase
     {
-        SetAccountData(AccountDataType(type), 0, "");
+        if (!readAccountDataType(UADType))
+            return;
 
-        WorldPacket data(SMSG_UPDATE_ACCOUNT_DATA_COMPLETE, 4 + 4);
-        type = recvData.ReadBits(3);
-        data << uint32(type);
-        data << uint32(0);
-        SendPacket(&data);
-
+        SetAccountData(UADType, 0, "");
         return;
     }
 
@@ -1642,6 +1674,13 @@ void WorldSession::HandleUpdateAccountData(WorldPacket& recvData)
     {
         recvData.rfinish();                   // unneeded warning spam in this case
         SF_LOG_DEBUG("network", "UAD: Account data packet too big, size %u", decompressedSize);
+        return;
+    }
+
+    if (compCount > recvData.size() - recvData.rpos())
+    {
+        recvData.rfinish();
+        SF_LOG_DEBUG("network", "UAD: Account data packet too short, compressed size %u", compCount);
         return;
     }
 
@@ -1656,26 +1695,14 @@ void WorldSession::HandleUpdateAccountData(WorldPacket& recvData)
         return;
     }
 
-    recvData.rpos(recvData.rpos() + compCount);
+    std::string adata = dest.ReadString(decompressedSize);
 
-    type = recvData.ReadBits(3);
+    recvData.read_skip(compCount);
 
-    AccountDataType UADType = AccountDataType(type);
-    if (UADType >= AccountDataType::NUM_ACCOUNT_DATA_TYPES)
-    {
-        SF_LOG_DEBUG("network", "UAD: Unknown account data type: %u", type);
+    if (!readAccountDataType(UADType))
         return;
-    }
-
-    std::string adata;
-    dest >> adata;
 
     SetAccountData(UADType, timestamp, adata);
-
-    WorldPacket data(SMSG_UPDATE_ACCOUNT_DATA_COMPLETE, 4 + 4);
-    data << uint32(UADType);
-    data << uint32(0);
-    SendPacket(&data);
 }
 
 void WorldSession::HandleRequestAccountData(WorldPacket& recvData)
@@ -1694,10 +1721,16 @@ void WorldSession::HandleRequestAccountData(WorldPacket& recvData)
     }
 
     AccountData* adata = GetAccountData(RADType);
+    if (RADType == AccountDataType::PER_CHARACTER_CHAT_CACHE && Skyfire::AccountData::HasEmptyCharacterChatChannels(adata->Data))
+    {
+        SF_LOG_DEBUG("network", "RAD: Clearing empty per-character chat cache for account %u player %u", GetAccountId(), GetGuidLow());
+        SetAccountData(RADType, 0, "");
+        adata = GetAccountData(RADType);
+    }
 
     uint32 size = adata->Data.size();
 
-    uLongf destSize = compressBound(size);
+    uLongf destSize = size ? compressBound(size) : 0;
 
     ByteBuffer dest;
     dest.resize(destSize);
@@ -1712,7 +1745,7 @@ void WorldSession::HandleRequestAccountData(WorldPacket& recvData)
 
     WorldPacket data(SMSG_UPDATE_ACCOUNT_DATA, 8 + 4 + 4 + 4 + destSize);
 
-    ObjectGuid guid;
+    ObjectGuid guid = GetPlayer() ? GetPlayer()->GetGUID() : 0;
 
     data.WriteBits(request.value, 3); // type (0-7)
     data.WriteGuidMask(guid, 5, 1, 3, 7, 0, 4, 2, 6);

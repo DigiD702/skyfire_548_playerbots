@@ -53,6 +53,8 @@ add_test(NAME database_setup_tests COMMAND database_setup_tests)
 
 add_executable(realm_socket_tests
   ${CMAKE_SOURCE_DIR}/src/server/authserver/Server/RealmSocket.cpp
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Packets/PacketLogServer.cpp
+  PacketLogServerConfigStub.cpp
   RealmSocketLogStub.cpp
   RealmSocketTests.cpp
 )
@@ -100,6 +102,77 @@ target_include_directories(auth_patch_transfer_tests PRIVATE
 )
 
 add_test(NAME auth_patch_transfer_tests COMMAND auth_patch_transfer_tests)
+
+add_executable(login_identity_tests
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Auth/LoginIdentity.cpp
+  LoginIdentityTests.cpp
+)
+
+target_include_directories(login_identity_tests PRIVATE
+  ${CMAKE_BINARY_DIR}
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Auth
+)
+
+add_test(NAME login_identity_tests COMMAND login_identity_tests)
+
+add_executable(totp_tests
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Auth/TOTP.cpp
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Cryptography/CryptoRandom.cpp
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Debugging/Errors.cpp
+  TOTPTests.cpp
+)
+
+target_include_directories(totp_tests PRIVATE
+  ${CMAKE_BINARY_DIR}
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Auth
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Cryptography
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Debugging
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Platform
+  ${OPENSSL_INCLUDE_DIR}
+)
+
+target_link_libraries(totp_tests
+  ${OPENSSL_LIBRARIES}
+)
+
+add_test(NAME totp_tests COMMAND totp_tests)
+
+add_executable(account_data_utils_tests
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Utilities/AccountDataUtils.cpp
+  AccountDataUtilsTests.cpp
+)
+
+target_include_directories(account_data_utils_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Utilities
+)
+
+add_test(NAME account_data_utils_tests COMMAND account_data_utils_tests)
+
+add_executable(account_data_update_handler_tests
+  AccountDataUpdateHandlerTests.cpp
+)
+
+target_compile_definitions(account_data_update_handler_tests PRIVATE SKYFIRE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\")
+
+add_test(NAME account_data_update_handler_tests COMMAND account_data_update_handler_tests)
+
+add_executable(world_auth_identity_tests
+  WorldAuthIdentityTests.cpp
+)
+
+target_compile_definitions(world_auth_identity_tests PRIVATE SKYFIRE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\")
+
+add_test(NAME world_auth_identity_tests COMMAND world_auth_identity_tests)
+
+add_executable(account_email_conversion_tests
+  AccountEmailConversionTests.cpp
+)
+
+target_compile_definitions(account_email_conversion_tests PRIVATE SKYFIRE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\")
+
+add_test(NAME account_email_conversion_tests COMMAND account_email_conversion_tests)
 
 add_executable(network_address_tests
   ${CMAKE_SOURCE_DIR}/src/server/shared/Utilities/NetworkAddress.cpp
@@ -415,6 +488,135 @@ target_include_directories(spell_book_packet_tests PRIVATE
 
 add_test(NAME spell_book_packet_tests COMMAND spell_book_packet_tests)
 
+add_executable(movement_opcode_table_tests
+  MovementOpcodeTableTests.cpp
+)
+
+target_compile_definitions(movement_opcode_table_tests PRIVATE SKYFIRE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+add_test(NAME movement_opcode_table_tests COMMAND movement_opcode_table_tests)
+
+add_executable(spell_charge_persistence_tests
+  SpellChargePersistenceTests.cpp
+)
+
+target_include_directories(spell_charge_persistence_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/game/Spells
+)
+
+add_test(NAME spell_charge_persistence_tests COMMAND spell_charge_persistence_tests)
+
+add_executable(allow_only_ability_cast_tests
+  AllowOnlyAbilityCastTests.cpp
+)
+
+target_include_directories(allow_only_ability_cast_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/game/Spells
+)
+
+add_test(NAME allow_only_ability_cast_tests COMMAND allow_only_ability_cast_tests)
+
+add_executable(paladin_spell_calculation_tests
+  PaladinSpellCalculationTests.cpp
+)
+
+target_include_directories(paladin_spell_calculation_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Utilities
+  ${CMAKE_SOURCE_DIR}/src/server/scripts/Spells
+)
+
+add_test(NAME paladin_spell_calculation_tests COMMAND paladin_spell_calculation_tests)
+
+add_executable(pvp_resilience_tests
+  PvpResilienceTests.cpp
+)
+
+target_include_directories(pvp_resilience_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/game/Combat
+)
+
+add_test(NAME pvp_resilience_tests COMMAND pvp_resilience_tests)
+
+add_executable(pvp_toggle_handler_tests
+  PvpToggleHandlerTests.cpp
+)
+
+target_compile_definitions(pvp_toggle_handler_tests PRIVATE SKYFIRE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\")
+
+add_test(NAME pvp_toggle_handler_tests COMMAND pvp_toggle_handler_tests)
+
+add_executable(pvp_power_tests
+  PvpPowerTests.cpp
+)
+
+target_include_directories(pvp_power_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/game/Combat
+  ${CMAKE_SOURCE_DIR}/src/server/game/Miscellaneous
+)
+
+add_test(NAME pvp_power_tests COMMAND pvp_power_tests)
+
+add_executable(paladin_script_registration_tests
+  PaladinScriptRegistrationTests.cpp
+)
+
+target_include_directories(paladin_script_registration_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+)
+
+target_compile_definitions(paladin_script_registration_tests PRIVATE SKYFIRE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\")
+
+add_test(NAME paladin_script_registration_tests COMMAND paladin_script_registration_tests)
+
+add_executable(hunter_improved_serpent_sting_tests
+  HunterImprovedSerpentStingTests.cpp
+)
+
+target_include_directories(hunter_improved_serpent_sting_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+)
+
+target_compile_definitions(hunter_improved_serpent_sting_tests PRIVATE SKYFIRE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\")
+
+add_test(NAME hunter_improved_serpent_sting_tests COMMAND hunter_improved_serpent_sting_tests)
+
+add_executable(talent_cooldown_removal_tests
+  TalentCooldownRemovalTests.cpp
+)
+
+target_compile_definitions(talent_cooldown_removal_tests PRIVATE SKYFIRE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\")
+
+add_test(NAME talent_cooldown_removal_tests COMMAND talent_cooldown_removal_tests)
+
+add_executable(death_knight_anti_magic_zone_tests
+  DeathKnightAntiMagicZoneTests.cpp
+)
+
+target_include_directories(death_knight_anti_magic_zone_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+)
+
+target_compile_definitions(death_knight_anti_magic_zone_tests PRIVATE SKYFIRE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\")
+
+add_test(NAME death_knight_anti_magic_zone_tests COMMAND death_knight_anti_magic_zone_tests)
+
+add_executable(death_knight_scent_of_blood_tests
+  DeathKnightScentOfBloodTests.cpp
+)
+
+target_include_directories(death_knight_scent_of_blood_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+)
+
+target_compile_definitions(death_knight_scent_of_blood_tests PRIVATE SKYFIRE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\")
+
+add_test(NAME death_knight_scent_of_blood_tests COMMAND death_knight_scent_of_blood_tests)
+
 add_executable(battle_pet_packet_tests
   ${CMAKE_SOURCE_DIR}/src/server/game/BattlePet/BattlePet.cpp
   ${CMAKE_SOURCE_DIR}/src/server/game/BattlePet/BattlePetPackets.cpp
@@ -450,6 +652,95 @@ target_include_directories(gossip_schema_tests PRIVATE
 )
 
 add_test(NAME gossip_schema_tests COMMAND gossip_schema_tests)
+
+add_executable(legacy_transport_support_tests
+  ${CMAKE_SOURCE_DIR}/src/server/game/Maps/LegacyTransportSupport.cpp
+  LegacyTransportSupportTests.cpp
+)
+
+target_include_directories(legacy_transport_support_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/game/Maps
+)
+
+add_test(NAME legacy_transport_support_tests COMMAND legacy_transport_support_tests)
+
+add_executable(pet_transport_support_tests
+  ${CMAKE_SOURCE_DIR}/src/server/game/Entities/Transport/PetTransportSupport.cpp
+  PetTransportSupportTests.cpp
+)
+
+target_include_directories(pet_transport_support_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/game/Entities/Transport
+)
+
+add_test(NAME pet_transport_support_tests COMMAND pet_transport_support_tests)
+
+add_executable(loot_count_tests
+  LootCountTests.cpp
+)
+
+target_include_directories(loot_count_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/game/Loot
+)
+
+add_test(NAME loot_count_tests COMMAND loot_count_tests)
+
+add_executable(darkmoon_shooting_gallery_tests
+  DarkmoonShootingGalleryTests.cpp
+)
+
+target_include_directories(darkmoon_shooting_gallery_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/scripts/Events/darkmoonfaire
+)
+
+add_test(NAME darkmoon_shooting_gallery_tests COMMAND darkmoon_shooting_gallery_tests)
+
+add_executable(darkmoon_ring_toss_tests
+  DarkmoonRingTossTests.cpp
+)
+
+target_include_directories(darkmoon_ring_toss_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/scripts/Events/darkmoonfaire
+)
+
+add_test(NAME darkmoon_ring_toss_tests COMMAND darkmoon_ring_toss_tests)
+
+add_executable(darkmoon_tonk_challenge_tests
+  DarkmoonTonkChallengeTests.cpp
+)
+
+target_include_directories(darkmoon_tonk_challenge_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/scripts/Events/darkmoonfaire
+)
+
+add_test(NAME darkmoon_tonk_challenge_tests COMMAND darkmoon_tonk_challenge_tests)
+
+add_executable(darkmoon_cannon_tests
+  DarkmoonCannonTests.cpp
+)
+
+target_include_directories(darkmoon_cannon_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/scripts/Events/darkmoonfaire
+)
+
+add_test(NAME darkmoon_cannon_tests COMMAND darkmoon_cannon_tests)
+
+add_executable(darkmoon_faire_tests
+  DarkmoonFaireTests.cpp
+)
+
+target_include_directories(darkmoon_faire_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/scripts/Events/darkmoonfaire
+)
+
+add_test(NAME darkmoon_faire_tests COMMAND darkmoon_faire_tests)
 
 add_executable(game_domain_tests
   ${CMAKE_SOURCE_DIR}/src/server/game/Entities/Player/PlayerRestState.cpp

@@ -28,9 +28,12 @@ enum HunterSpells
 
     SPELL_HUNTER_BESTIAL_WRATH                      = 19574,
     SPELL_HUNTER_CHIMERA_SHOT_HEAL                  = 53353,
+    SPELL_HUNTER_DIRE_BEAST_SUMMON                  = 132764,
     SPELL_HUNTER_FIRE                               = 82926,
     SPELL_HUNTER_GENERIC_ENERGIZE_FOCUS             = 91954,
 
+    SPELL_HUNTER_IMPROVED_SERPENT_STING             = 82834,
+    SPELL_HUNTER_IMPROVED_SERPENT_STING_DAMAGE      = 83077,
     SPELL_HUNTER_INVIGORATION_TRIGGERED             = 53398,
     SPELL_HUNTER_LOCK_AND_LOAD                      = 56453,
     SPELL_HUNTER_MASTERS_CALL_TRIGGERED             = 62305,
@@ -42,9 +45,14 @@ enum HunterSpells
     SPELL_HUNTER_PET_CARRION_FEEDER_TRIGGERED       = 54045,
 
     SPELL_HUNTER_SERPENT_STING                      = 1978,
+    SPELL_HUNTER_SERPENT_STING_AURA                 = 118253,
 
     SPELL_HUNTER_STEADY_SHOT_FOCUS                  = 77443,
-    SPELL_HUNTER_THRILL_OF_THE_HUNT                 = 34720,
+};
+
+enum HunterCreatures
+{
+    NPC_HUNTER_DIRE_BEAST                           = 62005
 };
 
 class spell_hun_a_murder_of_crows : public SpellScriptLoader
@@ -180,6 +188,56 @@ public:
     }
 };
 
+// 120679 - Dire Beast
+class spell_hun_dire_beast : public SpellScriptLoader
+{
+public:
+    spell_hun_dire_beast() : SpellScriptLoader("spell_hun_dire_beast") { }
+
+    class spell_hun_dire_beast_SpellScript : public SpellScript
+    {
+        PrepareSpellScript(spell_hun_dire_beast_SpellScript);
+
+        bool Validate(SpellInfo const* /*spellInfo*/) OVERRIDE
+        {
+            if (!sSpellMgr->GetSpellInfo(SPELL_HUNTER_DIRE_BEAST_SUMMON))
+                return false;
+            return true;
+        }
+
+        bool Load() OVERRIDE
+        {
+            return GetCaster()->GetTypeId() == TypeID::TYPEID_PLAYER;
+        }
+
+        void HandleEffect(SpellEffIndex /*effIndex*/)
+        {
+            Unit* caster = GetCaster();
+            Unit* target = GetHitUnit();
+            if (!target)
+                return;
+
+            caster->CastSpell(target, SPELL_HUNTER_DIRE_BEAST_SUMMON, true);
+
+            std::list<Creature*> minions;
+            caster->GetAllMinionsByEntry(minions, NPC_HUNTER_DIRE_BEAST);
+            for (std::list<Creature*>::iterator itr = minions.begin(); itr != minions.end(); ++itr)
+                if ((*itr)->IsAlive() && (*itr)->AI())
+                    (*itr)->AI()->AttackStart(target);
+        }
+
+        void Register() OVERRIDE
+        {
+            OnEffectHitTarget += SpellEffectFn(spell_hun_dire_beast_SpellScript::HandleEffect, EFFECT_0, SPELL_EFFECT_APPLY_AURA);
+        }
+    };
+
+    SpellScript* GetSpellScript() const OVERRIDE
+    {
+        return new spell_hun_dire_beast_SpellScript();
+    }
+};
+
 // 82926 - Fire!
 class spell_hun_fire : public SpellScriptLoader
 {
@@ -216,7 +274,7 @@ public:
     }
 };
 
-// -19464 Improved Serpent Sting
+// 82834 - Improved Serpent Sting
 class spell_hun_improved_serpent_sting : public SpellScriptLoader
 {
 public:
@@ -225,6 +283,13 @@ public:
     class spell_hun_improved_serpent_sting_AuraScript : public AuraScript
     {
         PrepareAuraScript(spell_hun_improved_serpent_sting_AuraScript);
+
+        bool Validate(SpellInfo const* /*spellInfo*/) OVERRIDE
+        {
+            if (!sSpellMgr->GetSpellInfo(SPELL_HUNTER_IMPROVED_SERPENT_STING))
+                return false;
+            return true;
+        }
 
         void HandleEffectCalcSpellMod(AuraEffect const* aurEff, SpellModifier*& spellMod)
         {
@@ -242,13 +307,63 @@ public:
 
         void Register() OVERRIDE
         {
-            DoEffectCalcSpellMod += AuraEffectCalcSpellModFn(spell_hun_improved_serpent_sting_AuraScript::HandleEffectCalcSpellMod, EFFECT_0, SPELL_AURA_DUMMY);
+            DoEffectCalcSpellMod += AuraEffectCalcSpellModFn(spell_hun_improved_serpent_sting_AuraScript::HandleEffectCalcSpellMod, EFFECT_1, SPELL_AURA_ADD_PCT_MODIFIER);
         }
     };
 
     AuraScript* GetAuraScript() const OVERRIDE
     {
         return new spell_hun_improved_serpent_sting_AuraScript();
+    }
+};
+
+// 118253 - Serpent Sting
+class spell_hun_serpent_sting : public SpellScriptLoader
+{
+public:
+    spell_hun_serpent_sting() : SpellScriptLoader("spell_hun_serpent_sting") { }
+
+    class spell_hun_serpent_sting_AuraScript : public AuraScript
+    {
+        PrepareAuraScript(spell_hun_serpent_sting_AuraScript);
+
+        bool Validate(SpellInfo const* /*spellInfo*/) OVERRIDE
+        {
+            if (!sSpellMgr->GetSpellInfo(SPELL_HUNTER_SERPENT_STING_AURA) ||
+                !sSpellMgr->GetSpellInfo(SPELL_HUNTER_IMPROVED_SERPENT_STING) ||
+                !sSpellMgr->GetSpellInfo(SPELL_HUNTER_IMPROVED_SERPENT_STING_DAMAGE))
+                return false;
+            return true;
+        }
+
+        void HandleEffectApply(AuraEffect const* aurEff, AuraEffectHandleModes /*mode*/)
+        {
+            Unit* caster = GetCaster();
+            Unit* target = GetTarget();
+            if (!caster || !target)
+                return;
+
+            AuraEffect const* improvedSerpentSting = caster->GetAuraEffect(SPELL_HUNTER_IMPROVED_SERPENT_STING, EFFECT_0);
+            if (!improvedSerpentSting)
+                return;
+
+            int32 const periodicTotal = aurEff->GetAmount() * int32(aurEff->GetTotalTicks());
+            int32 const instantDamage = periodicTotal * improvedSerpentSting->GetAmount() / 100;
+            if (instantDamage <= 0)
+                return;
+
+            caster->CastCustomSpell(target, SPELL_HUNTER_IMPROVED_SERPENT_STING_DAMAGE, &instantDamage, NULL, NULL, true);
+        }
+
+        void Register() OVERRIDE
+        {
+            AfterEffectApply += AuraEffectApplyFn(spell_hun_serpent_sting_AuraScript::HandleEffectApply, EFFECT_0, SPELL_AURA_PERIODIC_DAMAGE, AURA_EFFECT_HANDLE_REAL);
+        }
+    };
+
+    AuraScript* GetAuraScript() const OVERRIDE
+    {
+        return new spell_hun_serpent_sting_AuraScript();
     }
 };
 
@@ -721,53 +836,15 @@ public:
     }
 };
 
-// 34497 - Thrill of the Hunt
-class spell_hun_thrill_of_the_hunt : public SpellScriptLoader
-{
-public:
-    spell_hun_thrill_of_the_hunt() : SpellScriptLoader("spell_hun_thrill_of_the_hunt") { }
-
-    class spell_hun_thrill_of_the_hunt_AuraScript : public AuraScript
-    {
-        PrepareAuraScript(spell_hun_thrill_of_the_hunt_AuraScript);
-
-        bool Validate(SpellInfo const* /*spellInfo*/) OVERRIDE
-        {
-            if (!sSpellMgr->GetSpellInfo(SPELL_HUNTER_THRILL_OF_THE_HUNT))
-                return false;
-            return true;
-        }
-
-        void HandleEffectProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
-        {
-            PreventDefaultAction();
-            //int32 focus = eventInfo.GetDamageInfo()->GetSpellInfo()->CalcPowerCost(GetTarget(), SpellSchoolMask(eventInfo.GetDamageInfo()->GetSchoolMask()));
-            //focus = CalculatePct(focus, aurEff->GetAmount());
-
-            //GetTarget()->CastCustomSpell(GetTarget(), SPELL_HUNTER_THRILL_OF_THE_HUNT, &focus, NULL, NULL, true, NULL, aurEff);
-        }
-
-        void Register() OVERRIDE
-        {
-            OnEffectProc += AuraEffectProcFn(spell_hun_thrill_of_the_hunt_AuraScript::HandleEffectProc, EFFECT_0, SPELL_AURA_DUMMY);
-        }
-    };
-
-    AuraScript* GetAuraScript() const OVERRIDE
-    {
-        return new spell_hun_thrill_of_the_hunt_AuraScript();
-    }
-};
-
 void AddSC_hunter_spell_scripts()
 {
     new spell_hun_a_murder_of_crows();
     new spell_hun_chimera_shot();
     new spell_hun_cobra_shot();
+    new spell_hun_dire_beast();
     new spell_hun_fire();
 
     new spell_hun_improved_serpent_sting();
-    new spell_hun_invigoration();
     new spell_hun_last_stand_pet();
     new spell_hun_masters_call();
     new spell_hun_misdirection();
@@ -777,8 +854,8 @@ void AddSC_hunter_spell_scripts()
 
     new spell_hun_ready_set_aim();
     new spell_hun_scatter_shot();
+    new spell_hun_serpent_sting();
 
     new spell_hun_steady_shot();
     new spell_hun_tame_beast();
-    new spell_hun_thrill_of_the_hunt();
 }

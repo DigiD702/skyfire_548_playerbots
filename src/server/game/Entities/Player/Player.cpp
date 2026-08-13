@@ -49,8 +49,11 @@
 #include "OutdoorPvP.h"
 #include "OutdoorPvPMgr.h"
 #include "Pet.h"
+#include "PetTransportController.h"
+#include "PetTransportSupport.h"
 #include "QuestDef.h"
 #include "ReputationMgr.h"
+#include "PlayerPackets.h"
 #include "PlayerRestState.h"
 #include "SkillDiscovery.h"
 #include "SocialMgr.h"
@@ -58,6 +61,7 @@
 #include "SpellAuraEffects.h"
 #include "SpellAuras.h"
 #include "SpellBookPackets.h"
+#include "SpellChargePersistence.h"
 #include "SpellMgr.h"
 #include "Transport.h"
 #include "UpdateData.h"
@@ -515,6 +519,14 @@ Player::Player(WorldSession* session) : Unit(true)
 
     m_valuesCount = PLAYER_END;
 
+    m_dynamicTab.resize(PLAYER_DYNAMIC_END);
+    m_dynamicChange.resize(PLAYER_DYNAMIC_END);
+    for (int i = 0; i < PLAYER_DYNAMIC_END; ++i)
+    {
+        m_dynamicTab[i] = new uint32[32];
+        m_dynamicChange[i] = new bool[32];
+    }
+
     m_session = session;
 
     m_divider = 0;
@@ -645,6 +657,8 @@ Player::Player(WorldSession* session) : Unit(true)
     for (uint8 i = 0; i < MAX_MOVE_TYPE; ++i)
         m_forced_speed_changes[i] = 0;
 
+    hasForcedMovement_ = false;
+
     m_stableSlots = 0;
 
     /////////////////// Instance System /////////////////////
@@ -732,6 +746,7 @@ Player::Player(WorldSession* session) : Unit(true)
 
     memset(_voidStorageItems, 0, VOID_STORAGE_MAX_SLOT * sizeof(VoidStorageItem*));
     memset(_CUFProfiles, 0, MAX_CUF_PROFILES * sizeof(CUFProfile*));
+    memset(_researchDigsites, 0, sizeof(_researchDigsites));
 
     m_achievementMgr = new AchievementMgr<Player>(this);
     m_reputationMgr = new ReputationMgr(this);
@@ -777,6 +792,10 @@ Player::~Player()
 
     for (uint8 i = 0; i < MAX_CUF_PROFILES; ++i)
         delete _CUFProfiles[i];
+
+    for (uint8 i = 0; i < RESEARCH_CONTINENT_COUNT; ++i)
+        for (uint8 j = 0; j < MAX_DIGSITES_PER_CONTINENT; ++j)
+            delete _researchDigsites[i][j];
 
     ClearResurrectRequestData();
 
@@ -1405,6 +1424,8 @@ void Player::Update(uint32 p_time)
         m_nextMailDelivereTime = 0;
     }
 
+    UpdateSpellCharges();
+
     // If this is set during update SetSpellModTakingSpell call is missing somewhere in the code
     // Having this would prevent more aura charges to be dropped, so let's crash
     //ASSERT (!m_spellModTakingSpell);
@@ -1711,9 +1732,19 @@ void Player::Update(uint32 p_time)
     }
 
     Pet* pet = GetPet();
-    if (pet && !pet->IsWithinDistInMap(this, GetMap()->GetVisibilityRange()) && !pet->isPossessed())
-        //if (pet && !pet->IsWithinDistInMap(this, GetMap()->GetVisibilityDistance()) && (GetCharmGUID() && (pet->GetGUID() != GetCharmGUID())))
-        RemovePet(pet, PET_SAVE_NOT_IN_SLOT, true);
+    if (pet)
+    {
+        Transport* transport = GetTransport();
+        if (Skyfire::PetTransport::ShouldTryBoardPetBeforeOwnerRangeRemoval(transport != NULL, true, pet->GetTransport() == transport))
+            Skyfire::PetTransport::BoardOwnerHunterPet(this, transport);
+
+        bool const petOnOwnerTransport = transport && pet->GetTransport() == transport;
+        bool const petInVisibilityRange = pet->IsWithinDistInMap(this, GetMap()->GetVisibilityRange());
+        if (Skyfire::PetTransport::ShouldRemovePetForOwnerRange(true, pet->isPossessed(), petOnOwnerTransport,
+                petInVisibilityRange, pet->HasTransportExitGrace()))
+            //if (pet && !pet->IsWithinDistInMap(this, GetMap()->GetVisibilityDistance()) && (GetCharmGUID() && (pet->GetGUID() != GetCharmGUID())))
+            RemovePet(pet, PET_SAVE_NOT_IN_SLOT, true);
+    }
 
     //we should execute delayed teleports only for alive(!) players
     //because we don't want player's ghost teleported from graveyard
@@ -2181,7 +2212,15 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
             Position oldPos;
             GetPosition(&oldPos);
             Relocate(x, y, z, orientation);
-            SendTeleportPacket(oldPos); // this automatically relocates to oldPos in order to broadcast the packet in the right place
+            SendTeleportPacket(oldPos); // broadcasts from oldPos, then restores destination coords
+
+            // SendTeleportPacket leaves us at the destination coords, but grid membership is
+            // still the departure cell. PlayerRelocation only loads/moves grids when old and
+            // new cells differ, so call it from the departure position or nearby objects never
+            // get created (empty world until the player walks into a loaded cell / relogs).
+            Relocate(oldPos);
+            UpdatePosition(x, y, z, orientation, true);
+            UpdateObjectVisibility(true);
         }
     }
     else
@@ -2245,7 +2284,7 @@ bool Player::TeleportTo(uint32 mapid, float x, float y, float z, float orientati
             }
 
             // remove pet on map change
-            if (pet)
+            if (pet && !(options & TELE_TO_NOT_UNSUMMON_PET))
                 UnsummonPetTemporaryIfAny();
 
             GetBattlePetMgr()->UnSummonCurrentBattlePet(true);
@@ -2584,12 +2623,15 @@ void Player::Regenerate(Powers power)
         }
         case POWER_FOCUS:
         {
-            addvalue += (6.0f + CalculatePct(6.0f, rangedHaste)) * sWorld->getRate(Rates::RATE_POWER_FOCUS);
+            float flatMod = GetFloatValue(UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER + powerIndex);
+            addvalue += (6.0f + CalculatePct(6.0f, rangedHaste) + flatMod) * sWorld->getRate(Rates::RATE_POWER_FOCUS);
             break;
         }
         case POWER_ENERGY:                                              // Regenerate energy (rogue) & (monk)
         {
-            addvalue += ((0.01f * m_regenTimer) + CalculatePct(0.01f, meleeHaste)) * sWorld->getRate(Rates::RATE_POWER_ENERGY);
+            float flatMod = GetFloatValue(UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER + powerIndex);
+            addvalue += ((0.01f * m_regenTimer) + CalculatePct(0.01f, meleeHaste) + flatMod * 0.001f * m_regenTimer)
+                * sWorld->getRate(Rates::RATE_POWER_ENERGY);
             break;
         }
         case POWER_RUNIC_POWER:
@@ -2637,7 +2679,9 @@ void Player::Regenerate(Powers power)
     }
 
     // Mana regen calculated in Player::UpdateManaRegen()
-    if (power != POWER_MANA)
+    // Energy / Focus % modifiers are baked into UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER
+    // by AuraEffect::HandleModPowerRegenPCT (Blade Flurry, Adrenaline Rush, ...).
+    if (power != POWER_MANA && power != POWER_ENERGY && power != POWER_FOCUS)
     {
         AuraEffectList const& ModPowerRegenPCTAuras = GetAuraEffectsByType(SPELL_AURA_MOD_POWER_REGEN_PERCENT);
         for (AuraEffectList::const_iterator i = ModPowerRegenPCTAuras.begin(); i != ModPowerRegenPCTAuras.end(); ++i)
@@ -2647,6 +2691,12 @@ void Player::Regenerate(Powers power)
         // Butchery requires combat for this effect
         if (power != POWER_RUNIC_POWER || IsInCombat())
             addvalue += GetTotalAuraModifierByMiscValue(SPELL_AURA_MOD_POWER_REGEN, power) * ((power != POWER_ENERGY) ? m_regenTimerCount : m_regenTimer) / (5 * IN_MILLISECONDS);
+    }
+    else if (power == POWER_ENERGY || power == POWER_FOCUS)
+    {
+        // Flat per-5-seconds modifiers (SPELL_AURA_MOD_POWER_REGEN)
+        int32 regenTimer = (power == POWER_ENERGY) ? int32(m_regenTimer) : int32(m_regenTimerCount);
+        addvalue += GetTotalAuraModifierByMiscValue(SPELL_AURA_MOD_POWER_REGEN, power) * regenTimer / (5 * IN_MILLISECONDS);
     }
 
     if (addvalue < 0.0f)
@@ -3492,12 +3542,9 @@ void Player::InitStatsForLevel(bool reapplyMods)
 
 void Player::SendInitialSpells()
 {
-    time_t curTime = time(NULL);
-    time_t infTime = curTime + infinityCooldownDelayCheck;
-
     uint16 spellCount = 0;
 
-    WorldPacket data(SMSG_SEND_KNOWN_SPELLS, (1 + 2 + 4 * m_spells.size() + 2 + m_spellCooldowns.size() * (2 + 2 + 2 + 4 + 4)));
+    WorldPacket data(SMSG_SEND_KNOWN_SPELLS, (1 + 2 + 4 * m_spells.size()));
     data.WriteBit(0);
 
     size_t bitPos = data.bitwpos();
@@ -3521,44 +3568,9 @@ void Player::SendInitialSpells()
     data.PutBits(bitPos, spellCount, 22);
     data.FlushBits();
 
-    /*
-    uint16 spellCooldowns = m_spellCooldowns.size();
-    data << uint16(spellCooldowns);
-    for (SpellCooldowns::const_iterator itr = m_spellCooldowns.begin(); itr != m_spellCooldowns.end(); ++itr)
-    {
-        SpellInfo const* sEntry = sSpellMgr->GetSpellInfo(itr->first);
-        if (!sEntry)
-            continue;
-
-        data << uint32(itr->first);
-
-        data << uint32(itr->second.itemid);                 // cast item id
-        data << uint16(sEntry->GetCategory());              // spell category
-
-        // send infinity cooldown in special format
-        if (itr->second.end >= infTime)
-        {
-            data << uint32(1);                              // cooldown
-            data << uint32(0x80000000);                     // category cooldown
-            continue;
-        }
-
-        time_t cooldown = itr->second.end > curTime ? (itr->second.end-curTime)*IN_MILLISECONDS : 0;
-
-        if (sEntry->GetCategory())                          // may be wrong, but anyway better than nothing...
-        {
-            data << uint32(0);                              // cooldown
-            data << uint32(cooldown);                       // category cooldown
-        }
-        else
-        {
-            data << uint32(cooldown);                       // cooldown
-            data << uint32(0);                              // category cooldown
-        }
-    }
-    */
     GetSession()->SendPacket(&data);
-    SendSpellCooldowns();
+    SendSpellCooldowns(); // SMSG_SEND_SPELL_HISTORY - required for MoP client CD UI after login
+    SendSpellCharges();
 
     SF_LOG_DEBUG("network", "CHARACTER: Sent Initial Spells");
 }
@@ -4035,7 +4047,9 @@ void Player::learnSpell(uint32 spell_id, bool dependent)
         uint32 spellCount = 1;
 
         data.WriteBits(spellCount, 22);
-        data.WriteBit(0);
+        // SuppressMessaging: when set, client does not auto-push the spell onto the action bar
+        // (needed during dual-spec activation so saved per-spec bars are preserved).
+        data.WriteBit(IsSuppressSpellLearnMessages() ? 1 : 0);
 
         for (uint32 i = 0; i < spellCount; ++i)
             data << uint32(spell_id);
@@ -4333,6 +4347,19 @@ void Player::RemoveArenaSpellCooldowns(bool removeActivePetCooldowns)
         }
     }
 
+    for (SpellChargeMap::iterator it = m_spellCharges.begin(); it != m_spellCharges.end();)
+    {
+        if (it->second.BaseRegenTime < 10 * MINUTE * IN_MILLISECONDS)
+        {
+            uint32 categoryId = it->first;
+            m_spellCharges.erase(it++);
+            ClearSpellCharges(categoryId);
+        }
+        else
+            ++it;
+    }
+    SendSpellCharges();
+
     // pet cooldowns
     if (removeActivePetCooldowns)
         if (Pet* pet = GetPet())
@@ -4353,6 +4380,7 @@ void Player::RemoveAllSpellCooldown()
         SendClearAllCooldowns(this);
         m_spellCooldowns.clear();
     }
+    ClearAllSpellCharges();
 }
 
 void Player::_LoadSpellCooldowns(PreparedQueryResult result)
@@ -4423,6 +4451,85 @@ void Player::_SaveSpellCooldowns(SQLTransaction& trans)
             ++itr;
     }
     // if something changed execute
+    if (!first_round)
+        trans->Append(ss.str().c_str());
+}
+
+void Player::_LoadSpellCharges(PreparedQueryResult result)
+{
+    if (!result)
+        return;
+
+    uint32 const now = uint32(time(NULL));
+    uint32 const nowMs = getMSTime();
+
+    do
+    {
+        Field* fields = result->Fetch();
+        uint32 const categoryId = fields[0].GetUInt32();
+        uint8 consumedCharges = fields[1].GetUInt8();
+        uint32 const resetTime = fields[2].GetUInt32();
+        uint32 baseRegenTime = fields[3].GetUInt32();
+
+        SpellCategoryEntry const* category = sSpellCategoryStore.LookupEntry(categoryId);
+        if (!category || !category->ChargeRegenTime)
+        {
+            SF_LOG_ERROR("entities.player.loading", "Player %u has unknown spell charge category %u in `character_spell_charges`, skipping.", GetGUIDLow(), categoryId);
+            continue;
+        }
+
+        if (!baseRegenTime)
+            baseRegenTime = category->ChargeRegenTime;
+
+        uint32 maxCharges = category->MaxCharges;
+        if (!maxCharges)
+            maxCharges = uint32(GetTotalAuraModifierByMiscValue(SPELL_AURA_MOD_CHARGES, categoryId));
+
+        if (maxCharges && consumedCharges > maxCharges)
+            consumedCharges = uint8(maxCharges);
+
+        Skyfire::SpellCharges::RuntimeState state;
+        if (!Skyfire::SpellCharges::BuildRuntimeState(consumedCharges, resetTime, baseRegenTime, now, nowMs, state))
+            continue;
+
+        SpellChargeData& chargeData = m_spellCharges[categoryId];
+        chargeData.ConsumedCharges = state.ConsumedCharges;
+        chargeData.CurrentResetTime = state.CurrentResetTime;
+        chargeData.BaseRegenTime = state.BaseRegenTime;
+
+        SF_LOG_DEBUG("entities.player.loading", "Player (GUID: %u) spell charge category %u loaded (%u consumed).", GetGUIDLow(), categoryId, uint32(state.ConsumedCharges));
+    } while (result->NextRow());
+}
+
+void Player::_SaveSpellCharges(SQLTransaction& trans)
+{
+    PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_SPELL_CHARGES);
+    stmt->setUInt32(0, GetGUIDLow());
+    trans->Append(stmt);
+
+    uint32 const nowMs = getMSTime();
+    uint32 const now = uint32(time(NULL));
+
+    bool first_round = true;
+    std::ostringstream ss;
+
+    for (SpellChargeMap::const_iterator itr = m_spellCharges.begin(); itr != m_spellCharges.end(); ++itr)
+    {
+        Skyfire::SpellCharges::PersistedState state;
+        if (!Skyfire::SpellCharges::BuildPersistedState(itr->second.ConsumedCharges, itr->second.CurrentResetTime, itr->second.BaseRegenTime, nowMs, now, state))
+            continue;
+
+        if (first_round)
+        {
+            ss << "INSERT INTO character_spell_charges (guid, category, consumedCharges, resetTime, baseRegenTime) VALUES ";
+            first_round = false;
+        }
+        else
+            ss << ',';
+
+        ss << '(' << GetGUIDLow() << ',' << itr->first << ',' << uint32(state.ConsumedCharges) << ',' << uint64(state.ResetTime) << ',' << state.BaseRegenTime << ')';
+    }
+
     if (!first_round)
         trans->Append(ss.str().c_str());
 }
@@ -4601,6 +4708,11 @@ bool Player::RemoveTalent(uint32 talentId)
     uint32 spellId = talent->SpellId;
 
     SpellInfo const* unlearnSpellProto = sSpellMgr->GetSpellInfo(spellId);
+    if (!unlearnSpellProto)
+        return false;
+
+    if (HasTalentSpellCooldown(unlearnSpellProto))
+        return false;
 
     removeSpell(spellId, true);
 
@@ -4620,6 +4732,23 @@ bool Player::RemoveTalent(uint32 talentId)
 
     SendTalentsInfoData();
     return true;
+}
+
+bool Player::HasTalentSpellCooldown(SpellInfo const* talentSpellInfo) const
+{
+    if (!talentSpellInfo)
+        return false;
+
+    if (HasSpellCooldown(talentSpellInfo->Id))
+        return true;
+
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        if (talentSpellInfo->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL &&
+            talentSpellInfo->Effects[i].TriggerSpell > 0 &&
+            HasSpellCooldown(talentSpellInfo->Effects[i].TriggerSpell))
+            return true;
+
+    return false;
 }
 
 void Player::BuildCreateUpdateBlockForPlayer(UpdateData* data, Player* target) const
@@ -5003,6 +5132,10 @@ void Player::DeleteFromDB(uint64 playerguid, uint32 accountId, bool updateRealmC
             stmt->setUInt32(0, guid);
             trans->Append(stmt);
 
+            stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_SPELL_CHARGES);
+            stmt->setUInt32(0, guid);
+            trans->Append(stmt);
+
             stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_PLAYER_GM_TICKETS);
             stmt->setUInt32(0, guid);
             trans->Append(stmt);
@@ -5150,10 +5283,7 @@ void Player::DeleteOldCharacters(uint32 keepDays)
 */
 void Player::BuildPlayerRepop()
 {
-    ObjectGuid guid;
-    WorldPacket data(SMSG_PRE_RESURRECT, 8);
-    data.WriteGuidMask(guid, 1, 7, 5, 2, 6, 0, 3, 4);
-    data.WriteGuidBytes(guid, 5, 1, 7, 0, 6, 4, 2, 3);
+    WorldPacket data = Skyfire::PlayerPackets::BuildPreResurrectPacket(GetGUID());
     GetSession()->SendPacket(&data);
 
     if (getRace() == RACE_NIGHTELF)
@@ -6415,6 +6545,12 @@ void Player::SetSkill(uint16 id, uint16 step, uint16 newVal, uint16 maxVal)
             UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_REACH_SKILL_LEVEL, id);
             UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_LEARN_SKILL_LEVEL, id);
 
+            if (id == SKILL_ARCHAEOLOGY && IsInWorld())
+            {
+                UpdateResearchDigsites();
+                UpdateResearchProjects();
+            }
+
             if (refreshQuestObjects)
                 UpdateForQuestWorldObjects();
         }
@@ -6447,6 +6583,12 @@ void Player::SetSkill(uint16 id, uint16 step, uint16 newVal, uint16 maxVal)
                 SetUInt32Value(PLAYER_FIELD_PROFESSION_SKILL_LINE, 0);
             else if (GetUInt32Value(PLAYER_FIELD_PROFESSION_SKILL_LINE + 1) == id)
                 SetUInt32Value(PLAYER_FIELD_PROFESSION_SKILL_LINE + 1, 0);
+
+            if (id == SKILL_ARCHAEOLOGY && IsInWorld())
+            {
+                UpdateResearchDigsites();
+                UpdateResearchProjects();
+            }
 
             if (refreshQuestObjects)
                 UpdateForQuestWorldObjects();
@@ -6513,6 +6655,12 @@ void Player::SetSkill(uint16 id, uint16 step, uint16 newVal, uint16 maxVal)
 
                 // Learn all spells for skill
                 learnSkillRewardedSpells(id, newVal);
+
+                if (id == SKILL_ARCHAEOLOGY && IsInWorld())
+                {
+                    UpdateResearchDigsites();
+                    UpdateResearchProjects();
+                }
 
                 if (refreshQuestObjects)
                     UpdateForQuestWorldObjects();
@@ -7537,30 +7685,30 @@ void Player::SendNewCurrency(uint32 id) const
         return;
 
     uint32 precision = (entry->Flags & CURRENCY_FLAG_HIGH_PRECISION) ? CURRENCY_PRECISION : 1;
-    uint32 WeeklyQuantity = itr->second.WeeklyQuantity / precision;
     uint32 weekCap = GetCurrencyWeekCap(entry);
-    uint32 TrackedQuantity = itr->second.TrackedQuantity;
+    uint32 weeklyQuantity = itr->second.WeeklyQuantity / precision;
+    uint32 trackedQuantity = itr->second.TrackedQuantity / precision;
+    uint32 quantity = itr->second.Quantity / precision;
 
-
-    packet.WriteBit(TrackedQuantity); //28
-    packet.WriteBits(0, 5); // some flags 32
-    packet.WriteBit(weekCap); //20
-    packet.WriteBit(WeeklyQuantity); //12
+    packet.WriteBit(trackedQuantity);
+    packet.WriteBits(itr->second.Flags, 5);
+    packet.WriteBit(weekCap);
+    packet.WriteBit(weeklyQuantity);
 
     packet.FlushBits();
 
-    if (WeeklyQuantity) //12
-        packet << uint32(WeeklyQuantity / precision); //8
+    if (weeklyQuantity)
+        packet << uint32(weeklyQuantity);
 
     packet << uint32(entry->ID);
 
-    if (TrackedQuantity) //28
-        packet << uint32(TrackedQuantity / precision);  //24
+    if (trackedQuantity)
+        packet << uint32(trackedQuantity);
 
-    packet << uint32(itr->second.Quantity / precision);
+    packet << uint32(quantity);
 
-    if (weekCap) //20
-        packet << uint32(weekCap); //16
+    if (weekCap)
+        packet << uint32(weekCap);
 
     GetSession()->SendPacket(&packet);
 }
@@ -7582,22 +7730,22 @@ void Player::SendCurrencies() const
             continue;
 
         uint32 precision = (entry->Flags & CURRENCY_FLAG_HIGH_PRECISION) ? CURRENCY_PRECISION : 1;
-        uint32 WeeklyQuantity = itr->second.WeeklyQuantity / precision;
         uint32 weekCap = GetCurrencyWeekCap(entry);
-        uint32 TrackedQuantity = itr->second.TrackedQuantity;
+        uint32 weeklyQuantity = itr->second.WeeklyQuantity / precision;
+        uint32 trackedQuantity = itr->second.TrackedQuantity / precision;
 
-        packet.WriteBit(TrackedQuantity);
-        packet.WriteBits(0, 5); // some flags
+        packet.WriteBit(trackedQuantity);
+        packet.WriteBits(itr->second.Flags, 5);
         packet.WriteBit(weekCap);
-        packet.WriteBit(WeeklyQuantity);
+        packet.WriteBit(weeklyQuantity);
 
-        if (WeeklyQuantity)
-            buff << uint32(WeeklyQuantity / precision);
+        if (weeklyQuantity)
+            buff << uint32(weeklyQuantity);
 
         buff << uint32(entry->ID);
 
-        if (TrackedQuantity)
-            buff << uint32(TrackedQuantity / precision);
+        if (trackedQuantity)
+            buff << uint32(trackedQuantity);
 
         buff << uint32(itr->second.Quantity / precision);
 
@@ -7688,7 +7836,8 @@ void Player::ModifyCurrency(uint32 id, int32 count, bool printLog/* = true*/, bo
     uint32 oldWeekQuantity = 0;
     uint32 oldTrackedQuantity = 0;
     PlayerCurrenciesMap::iterator itr = _currencyStorage.find(id);
-    if (itr == _currencyStorage.end())
+    bool const isNewCurrency = (itr == _currencyStorage.end());
+    if (isNewCurrency)
     {
         PlayerCurrency cur;
         cur.state = PlayerCurrencyState::PLAYERCURRENCY_NEW;
@@ -7765,37 +7914,60 @@ void Player::ModifyCurrency(uint32 id, int32 count, bool printLog/* = true*/, bo
             return;
         }
 
-        WorldPacket packet(SMSG_UPDATE_CURRENCY, 12);
+        // First gain of a currency (e.g. archaeology fragments) must go through SETUP
+        // or the archaeology journal never binds the amount to a race.
+        // Archaeology race totals on the journal main page come from the full SETUP list —
+        // a single-currency SETUP replaces that list and zeros other races until relog.
+        if (isNewCurrency)
+        {
+            if (currency->Category == CURRENCY_CATEGORY_ARCHAEOLOGY)
+                SendCurrencies();
+            else
+                SendNewCurrency(id);
 
-        packet << uint32(id); // 44 Type
-        packet << int32(newQuantity / precision); // 16 Quantity
-        packet << uint32(itr->second.Flags); // 24 Flags
+            if (printLog)
+            {
+                WorldPacket packet(SMSG_UPDATE_CURRENCY, 12);
+                packet << uint32(id);
+                packet << int32(newQuantity / precision);
+                packet << uint32(itr->second.Flags);
+                packet.WriteBit(newTrackedQuantity);
+                packet.WriteBit(0); // do not suppress chat log
+                packet.WriteBit(newWeekQuantity);
+                packet.FlushBits();
+                if (newTrackedQuantity)
+                    packet << uint32(newTrackedQuantity / precision);
+                if (newWeekQuantity)
+                    packet << uint32(newWeekQuantity / precision);
+                GetSession()->SendPacket(&packet);
+            }
+        }
+        else
+        {
+            WorldPacket packet(SMSG_UPDATE_CURRENCY, 12);
 
-        packet.WriteBit(newTrackedQuantity); //32
-        packet.WriteBit(!printLog); //20 SuppressChatLog
-        packet.WriteBit(newWeekQuantity); //40
+            packet << uint32(id); // 44 Type
+            packet << int32(newQuantity / precision); // 16 Quantity
+            packet << uint32(itr->second.Flags); // 24 Flags
 
-        packet.FlushBits();
+            packet.WriteBit(newTrackedQuantity); //32
+            packet.WriteBit(!printLog); //20 SuppressChatLog
+            packet.WriteBit(newWeekQuantity); //40
 
-        if (newTrackedQuantity)
-            packet << uint32(newTrackedQuantity / precision); // 28 TrackedQuantity
+            packet.FlushBits();
 
-        if (newWeekQuantity)
-            packet << uint32(newWeekQuantity / precision); // 36 WeeklyQuantity
+            if (newTrackedQuantity)
+                packet << uint32(newTrackedQuantity / precision); // 28 TrackedQuantity
 
-        /*
-        packet.WriteBit(weekCap != 0);
-        packet.WriteBit(0); // hasSeasonCount
-        packet.WriteBit(!printLog); // print in log
+            if (newWeekQuantity)
+                packet << uint32(newWeekQuantity / precision); // 36 WeeklyQuantity
 
-        // if hasSeasonCount packet << uint32(seasontotalearned); TODO: save this in character DB and use it
+            GetSession()->SendPacket(&packet);
 
-        packet << uint32(newTotalCount / precision);
-        packet << uint32(id);
-        if (weekCap)
-            packet << uint32(newWeekCount / precision);
-            */
-        GetSession()->SendPacket(&packet);
+            // Archaeology journal main page needs the full SETUP list after fragment changes.
+            if (currency->Category == CURRENCY_CATEGORY_ARCHAEOLOGY)
+                SendCurrencies();
+        }
     }
 }
 
@@ -8698,6 +8870,39 @@ void Player::_ApplyWeaponDamage(uint8 slot, ItemTemplate const* proto, ScalingSt
         UpdateDamagePhysical(attType);
 }
 
+// Recalculate passive weapon spellmods after equip/unequip finishes (slot state is current).
+class WeaponDependentSpellModEvent : public BasicEvent
+{
+public:
+    explicit WeaponDependentSpellModEvent(Player& owner) : BasicEvent(), _owner(owner) { }
+
+    bool Execute(uint64 /*e_time*/, uint32 /*p_time*/) OVERRIDE
+    {
+        AuraType const types[] =
+        {
+            SPELL_AURA_ADD_FLAT_MODIFIER,
+            SPELL_AURA_ADD_PCT_MODIFIER,
+            SPELL_AURA_MOD_INCREASE_MAX_POWER_FLAT,
+            SPELL_AURA_MOD_DAMAGE_PERCENT_DONE
+        };
+        for (AuraType type : types)
+        {
+            Unit::AuraEffectList const& effects = _owner.GetAuraEffectsByType(type);
+            for (Unit::AuraEffectList::const_iterator itr = effects.begin(); itr != effects.end(); ++itr)
+            {
+                AuraEffect* aurEff = *itr;
+                SpellInfo const* spellInfo = aurEff->GetSpellInfo();
+                if (spellInfo->IsPassive() && spellInfo->EquippedItemClass == ITEM_CLASS_WEAPON)
+                    aurEff->RecalculateAmount();
+            }
+        }
+        return true;
+    }
+
+private:
+    Player& _owner;
+};
+
 void Player::_ApplyWeaponDependentAuraMods(Item* item, WeaponAttackType attackType, bool apply)
 {
     AuraEffectList const& auraCritList = GetAuraEffectsByType(SPELL_AURA_MOD_WEAPON_CRIT_PERCENT);
@@ -8711,6 +8916,9 @@ void Player::_ApplyWeaponDependentAuraMods(Item* item, WeaponAttackType attackTy
     AuraEffectList const& auraDamagePctList = GetAuraEffectsByType(SPELL_AURA_MOD_DAMAGE_PERCENT_DONE);
     for (AuraEffectList::const_iterator itr = auraDamagePctList.begin(); itr != auraDamagePctList.end(); ++itr)
         _ApplyWeaponDependentAuraDamageMod(item, attackType, *itr, apply);
+
+    // Defer spellmod recalculation: on unequip the item is still in the slot during this call.
+    m_Events.AddEvent(new WeaponDependentSpellModEvent(*this), m_Events.CalculateTime(1));
 }
 
 void Player::_ApplyWeaponDependentAuraCritMod(Item* item, WeaponAttackType attackType, AuraEffect const* aura, bool apply)
@@ -9021,7 +9229,7 @@ void Player::CastItemCombatSpell(Unit* target, WeaponAttackType attType, uint32 
     }
 }
 
-void Player::CastItemUseSpell(Item* item, SpellCastTargets const& targets, uint8 cast_count, uint32 glyphIndex)
+void Player::CastItemUseSpell(Item* item, SpellCastTargets const& targets, uint8 cast_count, uint32 glyphIndex, SpellResearchData const* researchData /*= NULL*/)
 {
     ItemTemplate const* proto = item->GetTemplate();
     // special learning case
@@ -9085,6 +9293,11 @@ void Player::CastItemUseSpell(Item* item, SpellCastTargets const& targets, uint8
         spell->m_CastItem = item;
         spell->m_cast_count = cast_count;                   // set count of casts
         spell->m_glyphIndex = glyphIndex;                   // glyph index
+        if (researchData && !count)
+        {
+            SpellResearchData* data = new SpellResearchData(*researchData);
+            spell->m_researchData = data;
+        }
         spell->prepare(&targets);
 
         ++count;
@@ -9321,6 +9534,11 @@ void Player::SendLoot(uint64 guid, LootType loot_type, bool isAoE)
     {
         SF_LOG_DEBUG("loot", "IS_GAMEOBJECT_GUID(guid)");
         GameObject* go = GetMap()->GetGameObject(guid);
+
+        // Archaeology finds are type CHEST but award fragment currency instead of loot.
+        // The client often opens them via the loot opcode rather than GAMEOBJECT_USE.
+        if (go && OnArchaeologyFindUsed(go))
+            return;
 
         // not check distance for GO in case owned GO (fishing bobber case, for example)
         // And permit out of range GO with no owner in case fishing hole
@@ -12220,6 +12438,8 @@ bool Player::LoadFromDB(uint32 guid, SQLQueryHolder* holder)
     SetByteValue(PLAYER_FIELD_ARENA_FACTION, 0, fields[5].GetUInt8());
     SetByteValue(PLAYER_FIELD_ARENA_FACTION, 1, fields[45].GetUInt8());
     SetUInt32Value(PLAYER_FIELD_PLAYER_FLAGS, fields[11].GetUInt32());
+    if (HasFlag(PLAYER_FIELD_PLAYER_FLAGS, PLAYER_FLAGS_IN_PVP))
+        SetPvP(true);
     SetInt32Value(PLAYER_FIELD_WATCHED_FACTION_INDEX, fields[44].GetUInt32());
     SetInt32Value(PLAYER_FIELD_LFG_BONUS_FACTION_ID, fields[60].GetUInt32());
     SetUInt32Value(PLAYER_FIELD_VIRTUAL_PLAYER_REALM, GetSession()->GetVirtualRealmID());
@@ -12673,6 +12893,7 @@ bool Player::LoadFromDB(uint32 guid, SQLQueryHolder* holder)
     SetFallInformation(0, GetPositionZ());
 
     _LoadSpellCooldowns(holder->GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_SPELL_COOLDOWNS));
+    _LoadSpellCharges(holder->GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_SPELL_CHARGES));
 
     // Spell code allow apply any auras to dead character in load time in aura/spell/item loading
     // Do now before stats re-calculation cleanup for ghost state unexpected auras
@@ -12783,6 +13004,16 @@ bool Player::LoadFromDB(uint32 guid, SQLQueryHolder* holder)
     _LoadEquipmentSets(holder->GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_EQUIPMENT_SETS));
 
     _LoadCUFProfiles(holder->GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_CUF_PROFILES));
+
+    _LoadResearchDigsites(holder->GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_RESEARCH_DIGSITES));
+    _LoadResearchHistory(holder->GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_RESEARCH_HISTORY));
+    _LoadResearchProjects(holder->GetPreparedResult(PLAYER_LOGIN_QUERY_LOAD_RESEARCH_PROJECTS));
+    if (HasSkill(SKILL_ARCHAEOLOGY))
+    {
+        UpdateResearchDigsites();
+        UpdateResearchProjects();
+    }
+
     return true;
 }
 
@@ -13544,9 +13775,27 @@ void Player::_LoadQuestObjectiveStatus(PreparedQueryResult result)
 
                 // Quest existence is checked on Quest Objective load, no issue should arise
                 QuestObjective const* objective = sObjectMgr->GetQuestTemplate(objectiveQuestId)->GetQuestObjective(objectiveId);
+                if (!objective)
+                    break;
 
                 SetQuestSlotCounter(i, objective->Index, amount);
                 m_questObjectiveStatus.insert(std::make_pair(objectiveId, amount));
+
+                // 18414: DUMMY/pet-battle progress is a state bit, not only a counter.
+                if (amount > 0 && objective->Index < 24)
+                {
+                    switch (objective->Type)
+                    {
+                        case QUEST_OBJECTIVE_TYPE_DUMMY:
+                        case QUEST_OBJECTIVE_TYPE_PET_BATTLE_TAMER:
+                        case QUEST_OBJECTIVE_TYPE_PET_BATTLE_ELITE:
+                        case QUEST_OBJECTIVE_TYPE_PET_BATTLE_PVP:
+                            SetQuestSlotState(i, QUEST_STATE_OBJECTIVE_0 << objective->Index);
+                            break;
+                        default:
+                            break;
+                    }
+                }
 
                 break;
             }
@@ -14518,6 +14767,7 @@ void Player::SaveToDB(bool create /*=false*/)
     _SaveTalents(trans);
     _SaveSpells(trans);
     _SaveSpellCooldowns(trans);
+    _SaveSpellCharges(trans);
     _SaveActions(trans);
     _SaveAuras(trans);
     _SaveSkills(trans);
@@ -14529,6 +14779,8 @@ void Player::SaveToDB(bool create /*=false*/)
     _SaveInstanceTimeRestrictions(trans);
     _SaveCurrency(trans);
     _SaveCUFProfiles(trans);
+    _SaveResearchHistory(trans);
+    _SaveResearchProjects(trans);
     m_battlePetMgr->SaveToDb(trans);
 
     // check if stats should only be saved on logout
@@ -15402,12 +15654,7 @@ void Player::SendAttackSwingError(AttackSwingError error)
 
 void Player::SendAttackSwingCancelAttack()
 {
-    ObjectGuid guid = GetGUID();
-
-    WorldPacket data(SMSG_CANCEL_COMBAT, 8);
-    data << uint32(0); // Unk
-    data << uint32(0); // Unk
-
+    WorldPacket data = Skyfire::PlayerPackets::BuildCancelCombatPacket();
     GetSession()->SendPacket(&data);
 }
 
@@ -16211,6 +16458,14 @@ void Player::AddSpellMod(SpellModifier* mod, bool apply)
     if (mod->type == SPELLMOD_FLAT)
         data << uint8(mod->op);
 
+    // Update the list before computing the packet value. For PCT mods, applying
+    // AddPct(+100) then AddPct(-100) on remove yields 0 instead of 1.0 — that made
+    // Enraged Regeneration tooltips drop to 0% after Enrage fell off.
+    if (apply)
+        m_spellMods[mod->op].push_back(mod);
+    else
+        m_spellMods[mod->op].remove(mod);
+
     for (int eff = 0; eff < 128; ++eff)
     {
         if (eff != 0 && (eff % 32) == 0)
@@ -16219,13 +16474,13 @@ void Player::AddSpellMod(SpellModifier* mod, bool apply)
         _mask[i] = uint32(1) << (eff - (32 * i));
         if (mod->mask & _mask)
         {
-            float val = 0.0f;
+            float val;
             if (mod->type == SPELLMOD_FLAT)
             {
+                val = 0.0f;
                 for (SpellModList::iterator itr = m_spellMods[mod->op].begin(); itr != m_spellMods[mod->op].end(); ++itr)
                     if ((*itr)->type == mod->type && (*itr)->mask & _mask)
                         val += (*itr)->value;
-                val += apply ? mod->value : -(mod->value);
             }
             else
             {
@@ -16233,7 +16488,6 @@ void Player::AddSpellMod(SpellModifier* mod, bool apply)
                 for (SpellModList::iterator itr = m_spellMods[mod->op].begin(); itr != m_spellMods[mod->op].end(); ++itr)
                     if ((*itr)->type == mod->type && (*itr)->mask & _mask)
                         AddPct(val, (*itr)->value);
-                AddPct(val, apply ? mod->value : -(mod->value));
             }
 
             data << float(val);
@@ -16247,11 +16501,9 @@ void Player::AddSpellMod(SpellModifier* mod, bool apply)
 
     data.PutBits(writePos, modTypeCount, 21);
     SendDirectMessage(&data);
-    if (apply)
-        m_spellMods[mod->op].push_back(mod);
-    else
+
+    if (!apply)
     {
-        m_spellMods[mod->op].remove(mod);
         // mods bound to aura will be removed in AuraEffect::~AuraEffect
         if (!mod->ownerAura)
             delete mod;
@@ -17440,6 +17692,14 @@ void Player::UpdatePvP(bool state, bool override)
 
 bool Player::HasSpellCooldown(uint32 spell_id) const
 {
+    if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spell_id))
+    {
+        Unit::AuraEffectList const& ignoreCooldown = GetAuraEffectsByType(SPELL_AURA_IGNORE_SPELL_COOLDOWN);
+        for (Unit::AuraEffectList::const_iterator itr = ignoreCooldown.begin(); itr != ignoreCooldown.end(); ++itr)
+            if ((*itr)->IsAffectingSpell(spellInfo))
+                return false;
+    }
+
     SpellCooldowns::const_iterator itr = m_spellCooldowns.find(spell_id);
     return itr != m_spellCooldowns.end() && itr->second.end > time(NULL);
 }
@@ -17453,6 +17713,14 @@ uint32 Player::GetSpellCooldownDelay(uint32 spell_id) const
 
 void Player::AddSpellAndCategoryCooldowns(SpellInfo const* spellInfo, uint32 itemId, Spell* spell, bool infinityCooldown)
 {
+    Unit::AuraEffectList const& ignoreCooldown = GetAuraEffectsByType(SPELL_AURA_IGNORE_SPELL_COOLDOWN);
+    for (Unit::AuraEffectList::const_iterator itr = ignoreCooldown.begin(); itr != ignoreCooldown.end(); ++itr)
+        if ((*itr)->IsAffectingSpell(spellInfo))
+            return;
+
+    // Consume a category charge first (Double Time / Roll / etc.).
+    bool const consumedCharge = ConsumeSpellCharge(spellInfo);
+
     // init cooldown values
     uint32 cat = 0;
     int32 rec = -1;
@@ -17544,6 +17812,13 @@ void Player::AddSpellAndCategoryCooldowns(SpellInfo const* spellInfo, uint32 ite
         if (catrec < 0)
             catrec = 0;
 
+        // Category charges own the long recharge (e.g. Charge + Double Time). Applying
+        // RecoveryTime as a normal spell CD locks the button for ~20s and makes the client
+        // look like both charges were spent. SPELL_GO also uses CAST_FLAG_NO_COOLDOWN so the
+        // client does not re-apply DBC RecoveryTime after this.
+        if (consumedCharge)
+            rec = 0;
+
         // no cooldown after applying spell mods
         if (rec == 0 && catrec == 0)
             return;
@@ -17554,7 +17829,17 @@ void Player::AddSpellAndCategoryCooldowns(SpellInfo const* spellInfo, uint32 ite
 
     // self spell cooldown
     if (recTime > 0)
+    {
         AddSpellCooldown(spellInfo->Id, itemId, recTime);
+
+        // MoP client starts the action-bar swirl from RecoveryTime on cast.
+        // Spells like Mangle (Bear) store the CD as CategoryRecoveryTime only
+        // (RecoveryTime = 0), so push an explicit cooldown update for those.
+        // Do not also SendSpellCooldown when RecoveryTime > 0 -- that desyncs
+        // client CD/GCD state for abilities such as Thunder Clap.
+        if (!infinityCooldown && spellInfo->RecoveryTime == 0)
+            SendSpellCooldown(spellInfo->Id, uint32((recTime - curTime) * IN_MILLISECONDS));
+    }
 
     // category spells
     if (cat && catrec > 0)
@@ -17568,6 +17853,8 @@ void Player::AddSpellAndCategoryCooldowns(SpellInfo const* spellInfo, uint32 ite
                     continue;
 
                 AddSpellCooldown(*i_scset, itemId, catrecTime);
+                if (!infinityCooldown && spellInfo->RecoveryTime == 0)
+                    SendSpellCooldown(*i_scset, uint32((catrecTime - curTime) * IN_MILLISECONDS));
             }
         }
     }
@@ -17620,43 +17907,256 @@ void Player::SendSpellCooldown(uint32 spellId, uint32 cooldown)
 
 void Player::SendSpellCooldowns()
 {
-    if (m_spellCooldowns.empty())
-        return;
-
+    // MoP client expects SMSG_SEND_SPELL_HISTORY on login, not SMSG_SPELL_COOLDOWN.
+    // Without this packet the action bar looks ready while the server still blocks casts.
     time_t const curTime = time(NULL);
-    std::vector<std::pair<uint32, uint32>> activeCooldowns;
-    activeCooldowns.reserve(m_spellCooldowns.size());
+    time_t const infTime = curTime + infinityCooldownDelayCheck;
+
+    struct HistoryEntry
+    {
+        uint32 spellId;
+        uint32 itemId;
+        uint32 category;
+        uint32 cooldown;
+        uint32 categoryCooldown;
+        bool onHold;
+    };
+
+    std::vector<HistoryEntry> entries;
+    entries.reserve(m_spellCooldowns.size());
 
     for (SpellCooldowns::const_iterator itr = m_spellCooldowns.begin(); itr != m_spellCooldowns.end(); ++itr)
     {
-        if (itr->second.end <= curTime)
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(itr->first);
+        if (!spellInfo)
             continue;
 
-        if (!sSpellMgr->GetSpellInfo(itr->first))
-            continue;
+        HistoryEntry entry;
+        entry.spellId = itr->first;
+        entry.itemId = itr->second.itemid;
+        entry.category = spellInfo->GetCategory();
+        entry.onHold = itr->second.end >= infTime;
 
-        activeCooldowns.push_back(std::make_pair(itr->first, uint32((itr->second.end - curTime) * IN_MILLISECONDS)));
+        if (entry.onHold)
+        {
+            entry.cooldown = 1;
+            entry.categoryCooldown = 0x80000000;
+        }
+        else if (itr->second.end <= curTime)
+            continue;
+        else
+        {
+            uint32 remaining = uint32((itr->second.end - curTime) * IN_MILLISECONDS);
+            // Category-only RecoveryTime spells (e.g. Mangle) drive the client swirl
+            // from CategoryRecoveryTime; put remaining there so the bar matches server.
+            if (spellInfo->RecoveryTime == 0 && entry.category && spellInfo->CategoryRecoveryTime > 0)
+            {
+                entry.cooldown = 0;
+                entry.categoryCooldown = remaining;
+            }
+            else
+            {
+                entry.cooldown = remaining;
+                entry.categoryCooldown = 0;
+            }
+        }
+
+        entries.push_back(entry);
     }
 
-    if (activeCooldowns.empty())
+    WorldPacket data(SMSG_SEND_SPELL_HISTORY, 4 + entries.size() * (1 + 20));
+    data.WriteBits(entries.size(), 19);
+    for (size_t i = 0; i < entries.size(); ++i)
+        data.WriteBit(0);
+    data.FlushBits();
+
+    for (std::vector<HistoryEntry>::const_iterator itr = entries.begin(); itr != entries.end(); ++itr)
+    {
+        data << uint32(itr->categoryCooldown);
+        data << uint32(itr->itemId);
+        data << uint32(itr->cooldown);
+        data << uint32(itr->category);
+        data << uint32(itr->spellId);
+    }
+
+    SendDirectMessage(&data);
+}
+
+bool Player::HasSpellCharge(uint32 categoryId) const
+{
+    SpellCategoryEntry const* category = sSpellCategoryStore.LookupEntry(categoryId);
+    if (!category || category->ChargeRegenTime == 0)
+        return true;
+
+    SpellChargeMap::const_iterator itr = m_spellCharges.find(categoryId);
+    if (itr == m_spellCharges.end())
+        return true;
+
+    uint32 now = getMSTime();
+    uint8 usedCharges = itr->second.ConsumedCharges;
+    uint32 resetTime = itr->second.CurrentResetTime;
+    while (usedCharges)
+    {
+        if ((int32)(now - resetTime) < 0)
+            break;
+        --usedCharges;
+        resetTime += itr->second.BaseRegenTime;
+    }
+
+    if (!usedCharges)
+        return true;
+
+    uint32 maxCharges = category->MaxCharges;
+    if (!maxCharges)
+        maxCharges = uint32(GetTotalAuraModifierByMiscValue(SPELL_AURA_MOD_CHARGES, categoryId));
+
+    return !maxCharges || usedCharges < maxCharges;
+}
+
+bool Player::ConsumeSpellCharge(SpellInfo const* spellInfo)
+{
+    SpellCategoriesEntry const* categories = spellInfo->GetSpellCategories();
+    if (!categories || !categories->ChargesCategory)
+        return false;
+
+    SpellCategoryEntry const* category = sSpellCategoryStore.LookupEntry(categories->ChargesCategory);
+    if (!category || category->ChargeRegenTime == 0)
+        return false;
+
+    uint32 maxCharges = category->MaxCharges;
+    if (!maxCharges)
+        maxCharges = uint32(GetTotalAuraModifierByMiscValue(SPELL_AURA_MOD_CHARGES, category->Id));
+    if (!maxCharges)
+        return false;
+
+    uint32 now = getMSTime();
+    std::pair<SpellChargeMap::iterator, bool> res = m_spellCharges.insert(SpellChargeMap::value_type(category->Id, SpellChargeData()));
+    SpellChargeData& chargeData = res.first->second;
+    ++chargeData.ConsumedCharges;
+    if (res.second)
+    {
+        chargeData.BaseRegenTime = category->ChargeRegenTime;
+        chargeData.CurrentResetTime = now + chargeData.BaseRegenTime;
+    }
+
+    // Sync consumed state; client also predicts, but an explicit update keeps the bar correct.
+    SendSpellCharges();
+    return true;
+}
+
+void Player::UpdateSpellCharges()
+{
+    uint32 now = getMSTime();
+    for (SpellChargeMap::iterator it = m_spellCharges.begin(); it != m_spellCharges.end();)
+    {
+        SpellChargeData& chargeData = it->second;
+        bool erase = false;
+        while ((int32)(now - chargeData.CurrentResetTime) >= 0)
+        {
+            if (--chargeData.ConsumedCharges == 0)
+            {
+                erase = true;
+                break;
+            }
+            chargeData.CurrentResetTime += chargeData.BaseRegenTime;
+        }
+
+        if (erase)
+        {
+            uint32 categoryId = it->first;
+            m_spellCharges.erase(it++);
+            ClearSpellCharges(categoryId);
+        }
+        else
+            ++it;
+    }
+}
+
+void Player::ClearSpellCharges(uint32 categoryId)
+{
+    ObjectGuid guid = GetGUID();
+    WorldPacket data(SMSG_CLEAR_SPELL_CHARGES, 1 + 8 + 4);
+    data.WriteBit(guid[6]);
+    data.WriteBit(guid[0]);
+    data.WriteBit(guid[2]);
+    data.WriteBit(guid[7]);
+    data.WriteBit(guid[5]);
+    data.WriteBit(guid[4]);
+    data.WriteBit(guid[3]);
+    data.WriteBit(guid[1]);
+    data.FlushBits();
+    data.WriteByteSeq(guid[7]);
+    data.WriteByteSeq(guid[6]);
+    data.WriteByteSeq(guid[4]);
+    data << uint32(categoryId);
+    data.WriteByteSeq(guid[1]);
+    data.WriteByteSeq(guid[3]);
+    data.WriteByteSeq(guid[2]);
+    data.WriteByteSeq(guid[0]);
+    data.WriteByteSeq(guid[5]);
+    SendDirectMessage(&data);
+}
+
+void Player::ClearAllSpellCharges()
+{
+    if (m_spellCharges.empty())
         return;
 
     ObjectGuid guid = GetGUID();
-    WorldPacket data(SMSG_SPELL_COOLDOWN, 9 + 3 + activeCooldowns.size() * 8);
-    data.WriteGuidMask(guid, 0, 6);
-    data.WriteBit(1); // Missing flags
-    data.WriteGuidMask(guid, 7, 3, 1, 5);
-    data.WriteBits(activeCooldowns.size(), 21);
-    data.WriteGuidMask(guid, 2, 4);
+    WorldPacket data(SMSG_CLEAR_ALL_SPELL_CHARGES, 1 + 8);
+    data.WriteBit(guid[0]);
+    data.WriteBit(guid[2]);
+    data.WriteBit(guid[5]);
+    data.WriteBit(guid[4]);
+    data.WriteBit(guid[3]);
+    data.WriteBit(guid[7]);
+    data.WriteBit(guid[6]);
+    data.WriteBit(guid[1]);
+    data.FlushBits();
+    data.WriteByteSeq(guid[6]);
+    data.WriteByteSeq(guid[0]);
+    data.WriteByteSeq(guid[1]);
+    data.WriteByteSeq(guid[7]);
+    data.WriteByteSeq(guid[3]);
+    data.WriteByteSeq(guid[2]);
+    data.WriteByteSeq(guid[5]);
+    data.WriteByteSeq(guid[4]);
+    SendDirectMessage(&data);
+
+    m_spellCharges.clear();
+}
+
+void Player::SendSpellCharges()
+{
+    WorldPacket data(SMSG_SEND_SPELL_CHARGES);
+    data.WriteBits(0, 21);
     data.FlushBits();
 
-    for (std::vector<std::pair<uint32, uint32>>::const_iterator itr = activeCooldowns.begin(); itr != activeCooldowns.end(); ++itr)
+    uint32 now = getMSTime();
+    uint32 count = 0;
+
+    for (SpellChargeMap::const_iterator itr = m_spellCharges.begin(); itr != m_spellCharges.end(); ++itr)
     {
+        uint8 usedCharges = itr->second.ConsumedCharges;
+        uint32 resetTime = itr->second.CurrentResetTime;
+        while (usedCharges)
+        {
+            if ((int32)(now - resetTime) < 0)
+                break;
+            --usedCharges;
+            resetTime += itr->second.BaseRegenTime;
+        }
+
+        if (!usedCharges)
+            continue;
+
+        ++count;
+        data << int32(resetTime - now);
+        data << uint8(usedCharges);
         data << uint32(itr->first);
-        data << uint32(itr->second);
     }
 
-    data.WriteGuidBytes(guid, 5, 3, 7, 4, 1, 0, 2, 6);
+    data.PutBits(0, count, 21);
     SendDirectMessage(&data);
 }
 
@@ -18972,12 +19472,13 @@ void Player::SendAurasForTarget(Unit* target)
 
         data.WriteBit(1);                               // Not remove
 
+        // Client indexes $wN by effect index — count is highest index + 1 (pad gaps with 0).
         if (flags & AFLAG_ANY_EFFECT_AMOUNT_SENT)
         {
             uint8 effCount = 0;
             for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
                 if (auraApp->HasEffect(i))
-                    effCount++;
+                    effCount = i + 1;
 
             data.WriteBits(effCount, 22);               // Effect Count
         }
@@ -19044,15 +19545,18 @@ void Player::SendAurasForTarget(Unit* target)
 
         if (flags & AFLAG_ANY_EFFECT_AMOUNT_SENT)
         {
+            uint8 effCount = 0;
             for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
-            {
                 if (auraApp->HasEffect(i))
-                {
+                    effCount = i + 1;
+
+            for (uint32 i = 0; i < effCount; ++i)
+            {
+                float amount = 0.0f;
+                if (auraApp->HasEffect(i))
                     if (AuraEffect const* eff = aura->GetEffect(i))
-                        data << float(eff->GetAmount());
-                    else
-                        data << float(0.f);
-                }
+                        amount = float(eff->GetAmount());
+                data << float(amount);
             }
         }
 
@@ -21105,7 +21609,20 @@ void Player::ResummonPetTemporaryUnSummonedIfAny()
 
 bool Player::IsPetNeedBeTemporaryUnsummoned() const
 {
-    return !IsInWorld() || !IsAlive() || IsMounted(); /*+in flight*/
+    if (!IsInWorld() || !IsAlive())
+        return true;
+
+    if (!IsMounted())
+        return false;
+
+    bool hasFlyingMountSpeedAura = false;
+    if (HasAuraType(SPELL_AURA_MOUNTED))
+        if (MountCapabilityEntry const* mountCapability = sMountCapabilityStore.LookupEntry(GetAuraEffectsByType(SPELL_AURA_MOUNTED).front()->GetAmount()))
+            if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(mountCapability->SpeedModSpell))
+                hasFlyingMountSpeedAura = spellInfo->HasAura(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED);
+
+    Battleground* bg = GetBattleground();
+    return Skyfire::PetTransport::ShouldTemporarilyUnsummonMountedPet(bg && !bg->isArena(), hasFlyingMountSpeedAura); /*+in flight*/
 }
 
 bool Player::CanSeeSpellClickOn(Creature const* c) const
@@ -21766,107 +22283,85 @@ void Player::ActivateSpec(uint8 spec)
     UnsummonAllTotems();
     ExitVehicle();
     RemoveAllControlled();
-    /*RemoveAllAurasOnDeath();
-    if (GetPet())
-        GetPet()->RemoveAllAurasOnDeath();*/
 
-        //RemoveAllAuras(GetGUID(), NULL, false, true); // removes too many auras
-        //ExitVehicle(); // should be impossible to switch specs from inside a vehicle..
-
-        // Let client clear his current Actions
+    // Let client clear his current Actions
     SendActionButtons(2);
-    // m_actionButtons.clear() is called in the next _LoadActionButtons
-    for (uint32 talentId = 0; talentId < sTalentStore.GetNumRows(); ++talentId)
+    // m_actionButtons.clear() is called in the next _LoadActions
+
+    // Suppress LEARNED_SPELL auto-bar placement while swapping talents/spec spells.
+    SetSuppressSpellLearnMessages(true);
+
+    // Unlearn only talents belonging to the currently active talent map (keep map entries for swap-back).
+    for (PlayerTalentMap::iterator itr = GetTalentMap(GetActiveSpec())->begin(); itr != GetTalentMap(GetActiveSpec())->end(); ++itr)
     {
-        TalentEntry const* talentInfo = sTalentStore.LookupEntry(talentId);
-
-        if (!talentInfo)
+        if (itr->second->state == PLAYERSPELL_REMOVED)
             continue;
 
-        /*TalentTabEntry const* talentTabInfo = sTalentTabStore.LookupEntry(talentInfo->TalentTab);
-
-        if (!talentTabInfo)
+        SpellInfo const* spellEntry = sSpellMgr->GetSpellInfo(itr->first);
+        if (!spellEntry)
             continue;
 
-        // unlearn only talents for character class
-        // some spell learned by one class as normal spells or know at creation but another class learn it as talent,
-        // to prevent unexpected lost normal learned spell skip another class talents
-        if ((getClassMask() & talentTabInfo->ClassMask) == 0)
-            continue;
+        removeSpell(spellEntry->Id, true);
 
-        for (int8 rank = MAX_TALENT_RANK-1; rank >= 0; --rank)
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            if (spellEntry->Effects[i].TriggerSpell > 0 && spellEntry->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL)
+                removeSpell(spellEntry->Effects[i].TriggerSpell, true);
+    }
+
+    // Remove specialization spells for the outgoing specialization.
+    if (uint32 oldSpecialization = GetTalentSpecialization(GetActiveSpec()))
+    {
+        if (std::vector<uint32> const* oldSpecSpells = GetSpecializationSpells(oldSpecialization))
         {
-            // skip non-existant talent ranks
-            if (talentInfo->RankID[rank] == 0)
-                continue;
-            removeSpell(talentInfo->RankID[rank], true); // removes the talent, and all dependant, learned, and chained spells..
-            if (const SpellInfo* _spellEntry = sSpellMgr->GetSpellInfo(talentInfo->RankID[rank]))
-                for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)                  // search through the SpellInfo for valid trigger spells
-                    if (_spellEntry->Effects[i].TriggerSpell > 0 && _spellEntry->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL)
-                        removeSpell(_spellEntry->Effects[i].TriggerSpell, true); // and remove any spells that the talent teaches
-            // if this talent rank can be found in the PlayerTalentMap, mark the talent as removed so it gets deleted
-            //PlayerTalentMap::iterator plrTalent = m_talents[m_activeSpec]->find(talentInfo->RankID[rank]);
-            //if (plrTalent != m_talents[m_activeSpec]->end())
-            //    plrTalent->second->state = PLAYERSPELL_REMOVED;
-        }*/
+            for (uint32 spellId : *oldSpecSpells)
+                if (HasSpell(spellId))
+                    removeSpell(spellId, true);
+        }
     }
-    /*
-    // Remove spec specific spells
-    for (uint32 i = 0; i < MAX_TALENT_TABS; ++i)
-    {
-        uint32 const* talentTabs = GetClassSpecializations(getClass());
-        std::vector<uint32> const* specSpells = GetTalentTreePrimarySpells(talentTabs[i]);
-        if (specSpells)
-            for (size_t i = 0; i < specSpells->size(); ++i)
-                removeSpell(specSpells->at(i), true);
 
-        TalentTabEntry const* talentTabInfo = sTalentTabStore.LookupEntry(talentTabs[i]);
-        for (uint32 i = 0; i < MAX_MASTERY_SPELLS; ++i)
-            if (uint32 mastery = talentTabInfo->MasterySpellId[i])
-                removeSpell(mastery, true);
-    }
-    */
-    // set glyphs
+    // Remove glyph auras for the outgoing spec.
     for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
-        // remove secondary glyph
         if (uint32 oldglyph = GetGlyph(GetActiveSpec(), slot))
             if (GlyphPropertiesEntry const* old_gp = sGlyphPropertiesStore.LookupEntry(oldglyph))
                 RemoveAurasDueToSpell(old_gp->SpellId);
 
     SetActiveSpec(spec);
+    SetUInt32Value(PLAYER_FIELD_CURRENT_SPEC_ID, GetTalentSpecialization(GetActiveSpec()));
+    UpdateTalentSpecializationManaBonus();
+
+    // Learn only talents stored on the incoming talent map.
     uint32 spentTalents = 0;
-
-    for (uint32 talentId = 0; talentId < sTalentStore.GetNumRows(); ++talentId)
+    for (PlayerTalentMap::iterator itr = GetTalentMap(GetActiveSpec())->begin(); itr != GetTalentMap(GetActiveSpec())->end(); ++itr)
     {
-        TalentEntry const* talentInfo = sTalentStore.LookupEntry(talentId);
-
-        if (!talentInfo)
+        if (itr->second->state == PLAYERSPELL_REMOVED)
             continue;
 
-        // learn only talents for character class
-        if (talentInfo->playerClass != getClass())
-            continue;
-
-        learnSpell(talentInfo->SpellId, false); // add the talent to the PlayerSpellMap
+        learnSpell(itr->first, false);
+        ++spentTalents;
     }
-    /*
-        std::vector<uint32> const* specSpells = GetTalentTreePrimarySpells(GetTalentSpecialization(GetActiveSpec()));
-        if (specSpells)
-            for (size_t i = 0; i < specSpells->size(); ++i)
-                learnSpell(specSpells->at(i), false);
 
-        if (CanUseMastery())
-            if (TalentTabEntry const* talentTabInfo = sTalentTabStore.LookupEntry(GetTalentSpecialization(GetActiveSpec())))
-                for (uint32 i = 0; i < MAX_MASTERY_SPELLS; ++i)
-                    if (uint32 mastery = talentTabInfo->MasterySpellId[i])
-                        learnSpell(mastery, false);
-    */
-    // set glyphs
+    // Learn specialization spells for the incoming specialization.
+    if (uint32 newSpecialization = GetTalentSpecialization(GetActiveSpec()))
+    {
+        if (std::vector<uint32> const* newSpecSpells = GetSpecializationSpells(newSpecialization))
+        {
+            for (uint32 spellId : *newSpecSpells)
+            {
+                SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+                if (!spellInfo || spellInfo->SpellLevel > getLevel())
+                    continue;
+
+                if (!HasSpell(spellId))
+                    learnSpell(spellId, true);
+            }
+        }
+    }
+
+    // Apply glyphs for the incoming spec.
     for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
     {
         uint32 glyph = GetGlyph(GetActiveSpec(), slot);
 
-        // apply primary glyph
         if (glyph)
             if (GlyphPropertiesEntry const* gp = sGlyphPropertiesStore.LookupEntry(glyph))
                 CastSpell(this, gp->SpellId, true);
@@ -21886,15 +22381,14 @@ void Player::ActivateSpec(uint8 spec)
     }
 
     SendActionButtons(1);
+    SetSuppressSpellLearnMessages(false);
 
     Powers pw = getPowerType();
     if (pw != POWER_MANA)
         SetPower(POWER_MANA, 0); // Mana must be 0 even if it isn't the active power type.
 
     SetPower(pw, 0);
-
-    // if (!sTalentTabStore.LookupEntry(GetTalentSpecialization(GetActiveSpec())))
-     //    ResetTalents(true);
+    UpdatePvpPower();
 }
 
 void Player::ResetTimeSync()
@@ -22543,6 +23037,13 @@ void Player::SendMovementSetCanTransitionBetweenSwimAndFly(bool apply)
         SMSG_MOVE_UNSET_CAN_TRANSITION_BETWEEN_SWIM_AND_FLY).Send();
 }
 
+void Player::SendMovementSetCanTurnWhileFalling(bool apply)
+{
+    Movement::PacketSender(this, NULL_OPCODE, apply ?
+        SMSG_MOVE_SET_CAN_TURN_WHILE_FALLING :
+        SMSG_MOVE_UNSET_CAN_TURN_WHILE_FALLING).Send();
+}
+
 void Player::SendMovementSetCollisionHeight(float height)
 {
     static MovementStatusElements const extraElements[] = { MSEExtraFloat, MSEExtraFloat2 };
@@ -22553,6 +23054,93 @@ void Player::SendMovementSetCollisionHeight(float height)
     // unreliable here and nearby clients misread it as object scale changes.
     // Self gets SET_COLLISION_HEIGHT; others see mount via UNIT_FIELD_MOUNT_DISPLAY_ID.
     Movement::PacketSender(this, NULL_OPCODE, SMSG_MOVE_SET_COLLISION_HEIGHT, NULL_OPCODE, &extra).Send();
+}
+
+void Player::SendApplyMovementForce(bool apply, Position const& source, float force /*= 0.0f*/)
+{
+    uint32 const movementForceId = 268441055;
+    ObjectGuid playerGuid = GetGUID();
+
+    if (apply)
+    {
+        if (HasForcedMovement())
+            return;
+
+        WorldPacket data(SMSG_MOVE_APPLY_MOVEMENT_FORCE, 1 + 8 + 7 * 4);
+
+        data.WriteBit(playerGuid[2]);
+        data.WriteBit(playerGuid[3]);
+        data.WriteBits(1, 2);
+        data.WriteBit(playerGuid[7]);
+        data.WriteBit(playerGuid[5]);
+        data.WriteBit(playerGuid[0]);
+        data.WriteBit(playerGuid[1]);
+        data.WriteBit(playerGuid[6]);
+        data.WriteBit(playerGuid[4]);
+
+        data.FlushBits();
+
+        data.WriteByteSeq(playerGuid[6]);
+        data << float(source.GetPositionY());
+        data.WriteByteSeq(playerGuid[4]);
+        data << float(source.GetPositionZ());
+        data << m_movementCounter++;
+        data << movementForceId;
+        data.WriteByteSeq(playerGuid[5]);
+        data << force;
+        data.WriteByteSeq(playerGuid[0]);
+        data.WriteByteSeq(playerGuid[7]);
+        data.WriteByteSeq(playerGuid[1]);
+        data.WriteByteSeq(playerGuid[3]);
+        data.WriteByteSeq(playerGuid[2]);
+        data << uint32(0);
+        data << float(source.GetPositionX());
+
+        SendDirectMessage(&data);
+
+        static MovementStatusElements const extraElements[] = { MSEExtraFloat, MSEExtraInt32, MSEExtraFloat2 };
+        Movement::ExtraMovementStatusElement extra(extraElements);
+        extra.Data.floatData = source.GetPositionX();
+        extra.Data.extraInt32Data = movementForceId;
+        extra.Data.floatData2 = force;
+        Movement::PacketSender(this, NULL_OPCODE, NULL_OPCODE, SMSG_MOVE_UPDATE_APPLY_MOVEMENT_FORCE, &extra).Send();
+
+        hasForcedMovement_ = true;
+    }
+    else
+    {
+        if (!HasForcedMovement())
+            return;
+
+        WorldPacket data(SMSG_MOVE_REMOVE_MOVEMENT_FORCE, 2 * 4 + 1 + 8);
+
+        data.WriteBit(playerGuid[1]);
+        data.WriteBit(playerGuid[2]);
+        data.WriteBit(playerGuid[4]);
+        data.WriteBit(playerGuid[7]);
+        data.WriteBit(playerGuid[6]);
+        data.WriteBit(playerGuid[0]);
+        data.WriteBit(playerGuid[5]);
+        data.WriteBit(playerGuid[3]);
+
+        data.FlushBits();
+
+        data.WriteByteSeq(playerGuid[4]);
+        data.WriteByteSeq(playerGuid[7]);
+        data.WriteByteSeq(playerGuid[0]);
+        data << m_movementCounter++;
+        data.WriteByteSeq(playerGuid[1]);
+        data.WriteByteSeq(playerGuid[3]);
+        data.WriteByteSeq(playerGuid[5]);
+        data << movementForceId;
+        data.WriteByteSeq(playerGuid[6]);
+        data.WriteByteSeq(playerGuid[2]);
+
+        SendDirectMessage(&data);
+        Movement::PacketSender(this, NULL_OPCODE, NULL_OPCODE, SMSG_MOVE_UPDATE_REMOVE_MOVEMENT_FORCE).Send();
+
+        hasForcedMovement_ = false;
+    }
 }
 
 float Player::GetCollisionHeight(bool mounted) const
@@ -23151,29 +23739,27 @@ void Player::ReadMovementInfo(WorldPacket& data, MovementInfo* mi, Movement::Ext
 
 #undef REMOVE_VIOLATING_FLAGS
 }
-/*
+
 void Player::SaveResearchDigsiteToDB(ResearchDigsite* digsite)
 {
-    // DELETE FROM character_research_digsites WHERE guid = ? AND digsiteId = ?
     PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_RESEARCH_DIGSITE);
     stmt->setUInt32(0, GetGUIDLow());
     stmt->setUInt32(1, digsite->GetDigsiteId());
     CharacterDatabase.Execute(stmt);
 
-    // INSERT INTO character_research_digsites (guid, digsiteId, currentFindGUID, remainingFindCount) VALUES (?, ?, ?, ?)
     stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHAR_RESEARCH_DIGSITE);
     stmt->setUInt32(0, GetGUIDLow());
     stmt->setUInt32(1, digsite->GetDigsiteId());
     if (ArchaeologyFindInfo const* find = digsite->GetArchaeologyFind())
         stmt->setUInt32(2, find->guid);
-
+    else
+        stmt->setUInt32(2, 0);
     stmt->setUInt8(3, digsite->GetRemainingFindCount());
     CharacterDatabase.Execute(stmt);
 }
 
 void Player::DeleteResearchDigsite(ResearchDigsite* digsite)
 {
-    // DELETE FROM character_research_digsites WHERE guid = ? AND digsiteId = ?
     PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_RESEARCH_DIGSITE);
     stmt->setUInt32(0, GetGUIDLow());
     stmt->setUInt32(1, digsite->GetDigsiteId());
@@ -23190,10 +23776,9 @@ void Player::_LoadResearchDigsites(PreparedQueryResult result)
     std::map<uint32, std::list<ResearchDigsite*> > tempDigsiteMap;
     do
     {
-        // SELECT digsiteId, currentFindGUID, remainingFindCount FROM character_research_digsites WHERE guid = ?
         Field* fields = result->Fetch();
 
-        uint32 digsiteId = fields [0].GetUInt32();
+        uint32 digsiteId = fields[0].GetUInt32();
         ResearchDigsiteInfo const* digsiteInfo = sObjectMgr->GetResearchDigsiteInfo(digsiteId);
         ResearchSiteEntry const* digsiteEntry = sResearchSiteStore.LookupEntry(digsiteId);
         if (!digsiteInfo || !digsiteEntry)
@@ -23206,10 +23791,10 @@ void Player::_LoadResearchDigsites(PreparedQueryResult result)
             continue;
         }
 
-        if (tempDigsiteMap [digsiteEntry->MapId].size() >= MAX_DIGSITES_PER_CONTINENT)
+        if (tempDigsiteMap[digsiteEntry->MapId].size() >= MAX_DIGSITES_PER_CONTINENT)
         {
-            SF_LOG_ERROR("entities.player", "Player::_LoadResearchDigsites - Player %s (GUID: %u) is trying to load digsite %u with map id %u, but he has already %u active digsites in the map. Deleting digsite.", GetName().c_str(),
-                         GetGUIDLow(), digsiteId, digsiteEntry->MapId, MAX_DIGSITES_PER_CONTINENT);
+            SF_LOG_DEBUG("entities.player", "Player::_LoadResearchDigsites - Player %s (GUID: %u) has surplus digsite %u on map %u; deleting.", GetName().c_str(),
+                         GetGUIDLow(), digsiteId, digsiteEntry->MapId);
             PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_RESEARCH_DIGSITE);
             stmt->setUInt32(0, GetGUIDLow());
             stmt->setUInt32(1, digsiteId);
@@ -23217,8 +23802,8 @@ void Player::_LoadResearchDigsites(PreparedQueryResult result)
             continue;
         }
 
-        uint32 currentFindGUID = fields [1].GetUInt32();
-        uint32 remainingFindCount = fields [2].GetUInt8();
+        uint32 currentFindGUID = fields[1].GetUInt32();
+        uint32 remainingFindCount = fields[2].GetUInt8();
         ResearchDigsite* digsite = new ResearchDigsite(digsiteInfo, remainingFindCount);
         if (ArchaeologyFindInfo const* find = sObjectMgr->GetArchaeologyFindInfo(currentFindGUID, digsiteId))
             digsite->ChangeArchaeologyFind(find);
@@ -23228,32 +23813,157 @@ void Player::_LoadResearchDigsites(PreparedQueryResult result)
             SaveResearchDigsiteToDB(digsite);
         }
 
-        tempDigsiteMap [digsiteEntry->MapId].push_back(digsite);
+        tempDigsiteMap[digsiteEntry->MapId].push_back(digsite);
     }
     while (result->NextRow());
 
-    uint8 i = 0;
-    for (std::map<uint32, std::list<ResearchDigsite*> >::iterator itr = tempDigsiteMap.begin(); itr != tempDigsiteMap.end(); ++i, ++itr)
+    // Place digsites into the continent slot that matches ResearchContinents[], not map iteration order.
+    for (uint8 i = 0; i < RESEARCH_CONTINENT_COUNT; ++i)
     {
+        std::map<uint32, std::list<ResearchDigsite*> >::iterator itr = tempDigsiteMap.find(ResearchContinents[i]);
+        if (itr == tempDigsiteMap.end())
+            continue;
+
         uint8 j = 0;
-        for (std::list<ResearchDigsite*>::iterator digsite = itr->second.begin(); digsite != itr->second.end(); ++j, ++digsite)
-            _researchDigsites [i] [j] = *digsite;
+        for (std::list<ResearchDigsite*>::iterator digsite = itr->second.begin(); digsite != itr->second.end() && j < MAX_DIGSITES_PER_CONTINENT; ++j, ++digsite)
+            _researchDigsites[i][j] = *digsite;
+
+        itr->second.clear();
+    }
+
+    // Any digsites left were for unexpected map ids; free and remove from DB.
+    for (std::map<uint32, std::list<ResearchDigsite*> >::iterator itr = tempDigsiteMap.begin(); itr != tempDigsiteMap.end(); ++itr)
+    {
+        for (std::list<ResearchDigsite*>::iterator digsite = itr->second.begin(); digsite != itr->second.end(); ++digsite)
+        {
+            SF_LOG_ERROR("entities.player", "Player::_LoadResearchDigsites - Player %s (GUID: %u) has digsite %u on unsupported map %u. Deleting digsite.",
+                         GetName().c_str(), GetGUIDLow(), (*digsite)->GetDigsiteId(), itr->first);
+            DeleteResearchDigsite(*digsite);
+        }
     }
 }
 
-void Player::SendSurveryCastInfo(ResearchDigsite* digsite, bool success)
+void Player::SendSurveyCastInfo(ResearchDigsite* digsite, bool success)
 {
     if (!digsite)
         return;
 
+    // Wire order is total, completed, researchBranchID (client remaps to Lua
+    // ARCHAEOLOGY_SURVEY_CAST(completed, total, branch, successfulFind)).
+    // Branch ID is required for Digsite Complete race name + archaeology book icon.
     WorldPacket data(SMSG_ARCHAEOLOGY_SURVERY_CAST, 13);
     data << uint32(MAX_FINDS_PER_DIGSITE);
     data << uint32(MAX_FINDS_PER_DIGSITE - digsite->GetRemainingFindCount());
-    data << uint32(digsite->GetDigsiteId());
+    data << uint32(digsite->GetDigsiteInfo()->branchId);
     data.WriteBit(success);
-    data.FlushBits(); // Client needs this
+    data.FlushBits();
 
     GetSession()->SendPacket(&data);
+}
+
+ResearchDigsite* Player::GetResearchDigsiteForFind(GameObject const* go) const
+{
+    if (!go)
+        return NULL;
+
+    // Prefer the digsite that actually spawned this node over polygon checks — players often
+    // loot from just outside the site border, which previously skipped fragment credit while
+    // still allowing keystone chest loot.
+    if (go->GetOwnerGUID() && go->GetOwnerGUID() != GetGUID())
+        return NULL;
+
+    for (uint8 i = 0; i < RESEARCH_CONTINENT_COUNT; ++i)
+    {
+        if (ResearchContinents[i] != GetMapId())
+            continue;
+
+        for (uint8 j = 0; j < MAX_DIGSITES_PER_CONTINENT; ++j)
+        {
+            ResearchDigsite* digsite = _researchDigsites[i][j];
+            if (!digsite)
+                continue;
+
+            ArchaeologyFindInfo const* find = digsite->GetArchaeologyFind();
+            if (!find || find->goEntry != go->GetEntry())
+                continue;
+
+            if (go->GetDistance(find->x, find->y, find->z) > INTERACTION_DISTANCE)
+                continue;
+
+            return digsite;
+        }
+    }
+
+    return NULL;
+}
+
+bool Player::OnArchaeologyFindUsed(GameObject* go)
+{
+    if (!go || !HasSkill(SKILL_ARCHAEOLOGY))
+        return false;
+
+    // GAMEOBJECT_USE and OPEN_LOCK both hit this for archaeology chests; claim once.
+    if (go->getLootState() != LootState::GO_READY)
+        return false;
+
+    ResearchDigsite* digsite = GetResearchDigsiteForFind(go);
+    if (!digsite)
+        return false;
+
+    go->SetLootState(LootState::GO_ACTIVATED, this);
+
+    ResearchDigsiteInfo const* digsiteInfo = digsite->GetDigsiteInfo();
+    if (ResearchBranchEntry const* branch = sResearchBranchStore.LookupEntry(digsiteInfo->branchId))
+    {
+        if (branch->FragmentCurrencyId)
+        {
+            int32 fragments = int32(5 + (uint32(rand32()) % 5)); // 5-9 per find
+            ModifyCurrency(branch->FragmentCurrencyId, fragments);
+
+            char const* raceName = "Unknown";
+            switch (branch->Id)
+            {
+                case 1: raceName = "Dwarf"; break;
+                case 2: raceName = "Draenei"; break;
+                case 3: raceName = "Fossil"; break;
+                case 4: raceName = "Night Elf"; break;
+                case 5: raceName = "Nerubian"; break;
+                case 6: raceName = "Orc"; break;
+                case 7: raceName = "Tol'vir"; break;
+                case 8: raceName = "Troll"; break;
+                case 27: raceName = "Vrykul"; break;
+                case 29: raceName = "Mantid"; break;
+                case 229: raceName = "Pandaren"; break;
+                case 231: raceName = "Mogu"; break;
+                default: break;
+            }
+
+            ChatHandler(GetSession()).PSendSysMessage("|cff00ff00Archaeology:|r +%d %s Fragments (total %u). Open Archaeology to solve artifacts.",
+                fragments, raceName, GetCurrency(branch->FragmentCurrencyId, false));
+
+            // First fragments for a race unlock that branch and assign its active project.
+            UpdateResearchProjects();
+        }
+
+        // Keystones are uncommon; roughly one in ten digs.
+        if (branch->KeystoneItemId && roll_chance_i(10))
+            AddItem(branch->KeystoneItemId, 1);
+    }
+
+    UpdateSkillPro(SKILL_ARCHAEOLOGY, 1000, 1);
+
+    digsite->SelectNewArchaeologyFind(false);
+    SaveResearchDigsiteToDB(digsite);
+
+    // Progress bar switches from SURVEY_CAST to FIND_COMPLETE after it appears; send an
+    // updated cast so each looted find advances the 6-segment digsite bar.
+    SendSurveyCastInfo(digsite, true);
+
+    UpdateResearchDigsites();
+
+    go->SetRespawnTime(0);
+    go->Delete();
+    return true;
 }
 
 void Player::UpdateResearchDigsites()
@@ -23262,26 +23972,31 @@ void Player::UpdateResearchDigsites()
     {
         for (uint8 j = 0; j < MAX_DIGSITES_PER_CONTINENT; ++j)
         {
-            if (_researchDigsites [i] [j] && (_researchDigsites [i] [j]->IsEmptyDigsite() || !IsResearchDigsiteAvailable(_researchDigsites [i] [j]->GetDigsiteInfo())))
+            if (_researchDigsites[i][j] && (_researchDigsites[i][j]->IsEmptyDigsite() || !IsResearchDigsiteAvailable(_researchDigsites[i][j]->GetDigsiteInfo())))
             {
-                // we need to spawn a new digsite before the old digsite is deleted, so there won't be a chance that the old digsite will be spawned again
-                ResearchDigsite* newDigsite = TryToSpawnResearchDigsiteOnContinent(ResearchContinents [i]);
-                DeleteResearchDigsite(_researchDigsites [i] [j]);
-                _researchDigsites [i] [j] = newDigsite;
+                // Spawn replacement first so the old digsite is not immediately re-picked.
+                ResearchDigsite* newDigsite = TryToSpawnResearchDigsiteOnContinent(ResearchContinents[i]);
+                DeleteResearchDigsite(_researchDigsites[i][j]);
+                _researchDigsites[i][j] = newDigsite;
             }
-            else if (!_researchDigsites [i] [j])
-                _researchDigsites [i] [j] = TryToSpawnResearchDigsiteOnContinent(ResearchContinents [i]);
+            else if (!_researchDigsites[i][j])
+                _researchDigsites[i][j] = TryToSpawnResearchDigsiteOnContinent(ResearchContinents[i]);
 
-            if (_researchDigsites [i] [j])
+            if (_researchDigsites[i][j])
             {
-                SetDynamicUInt32Value(PLAYER_DYNAMIC_FIELD_RESERACH_SITE, i * MAX_DIGSITES_PER_CONTINENT + j, _researchDigsites [i] [j]->GetDigsiteId());
-                SetDynamicUInt32Value(PLAYER_DYNAMIC_FIELD_RESEARCH_SITE_PROGRESS, i * MAX_DIGSITES_PER_CONTINENT + j, MAX_FINDS_PER_DIGSITE - _researchDigsites [i] [j]->GetRemainingFindCount());
+                SetDynamicUInt32Value(PLAYER_DYNAMIC_FIELD_RESERACH_SITE, i * MAX_DIGSITES_PER_CONTINENT + j, _researchDigsites[i][j]->GetDigsiteId());
+                SetDynamicUInt32Value(PLAYER_DYNAMIC_FIELD_RESEARCH_SITE_PROGRESS, i * MAX_DIGSITES_PER_CONTINENT + j, MAX_FINDS_PER_DIGSITE - _researchDigsites[i][j]->GetRemainingFindCount());
+            }
+            else
+            {
+                SetDynamicUInt32Value(PLAYER_DYNAMIC_FIELD_RESERACH_SITE, i * MAX_DIGSITES_PER_CONTINENT + j, 0);
+                SetDynamicUInt32Value(PLAYER_DYNAMIC_FIELD_RESEARCH_SITE_PROGRESS, i * MAX_DIGSITES_PER_CONTINENT + j, 0);
             }
         }
     }
 }
 
-bool Player::IsWithinResearchDigsite(ResearchDigsite* digsite)
+bool Player::IsWithinResearchDigsite(ResearchDigsite* digsite) const
 {
     if (!digsite)
         return false;
@@ -23293,7 +24008,7 @@ bool Player::IsWithinResearchDigsite(ResearchDigsite* digsite)
     float x = GetPositionX();
     float y = GetPositionY();
     bool result = false;
-    int j = polygon->size() - 1;
+    int j = int(polygon->size()) - 1;
     for (uint32 i = 0; i < polygon->size(); j = i++)
     {
         if ((polygon->at(i).second < y && polygon->at(j).second >= y || polygon->at(j).second < y && polygon->at(i).second >= y) && (polygon->at(i).first <= x || polygon->at(j).first <= x))
@@ -23307,11 +24022,11 @@ ResearchDigsite* Player::GetCurrentResearchDigsite()
 {
     for (uint8 i = 0; i < RESEARCH_CONTINENT_COUNT; ++i)
     {
-        if (ResearchContinents [i] != GetMapId())
+        if (ResearchContinents[i] != GetMapId())
             continue;
 
         for (uint8 j = 0; j < MAX_DIGSITES_PER_CONTINENT; ++j)
-            if (ResearchDigsite* digsite = _researchDigsites [i] [j])
+            if (ResearchDigsite* digsite = _researchDigsites[i][j])
                 if (IsWithinResearchDigsite(digsite))
                     return digsite;
     }
@@ -23340,7 +24055,7 @@ ResearchDigsiteInfo const* Player::GetRandomResearchDigsiteForContinent(uint32 m
     std::set<uint32> activeDigsitesById;
     for (uint8 i = 0; i < RESEARCH_CONTINENT_COUNT; ++i)
         for (uint8 j = 0; j < MAX_DIGSITES_PER_CONTINENT; ++j)
-            if (ResearchDigsite* activeDigsite = _researchDigsites [i] [j])
+            if (ResearchDigsite* activeDigsite = _researchDigsites[i][j])
                 activeDigsitesById.insert(activeDigsite->GetDigsiteId());
 
     std::list<ResearchDigsiteInfo const*> availableDigsites;
@@ -23349,12 +24064,11 @@ ResearchDigsiteInfo const* Player::GetRandomResearchDigsiteForContinent(uint32 m
         if (!IsResearchDigsiteAvailable(&(*digsite)))
             continue;
 
-        // Patch 4.1.0: Players now have a much smaller chance of getting a dig site for a race for which they have completed all rare finds.
+        // Patch 4.1.0: much smaller chance of dig site for a race with all rare finds completed.
         if (HasCompletedAllRareProjectsForRace(digsite->branchId))
             if (!roll_chance_i(25))
                 continue;
 
-        // check if digsite is already active
         if (activeDigsitesById.find(digsite->digsiteId) != activeDigsitesById.end())
             continue;
 
@@ -23367,7 +24081,7 @@ ResearchDigsiteInfo const* Player::GetRandomResearchDigsiteForContinent(uint32 m
     return Skyfire::Containers::SelectRandomContainerElement(availableDigsites);
 }
 
-bool Player::IsResearchDigsiteAvailable(ResearchDigsiteInfo const* digsiteInfo)
+bool Player::IsResearchDigsiteAvailable(ResearchDigsiteInfo const* digsiteInfo) const
 {
     if (!HasSkill(SKILL_ARCHAEOLOGY))
         return false;
@@ -23399,19 +24113,18 @@ void Player::_LoadResearchHistory(PreparedQueryResult result)
 
     do
     {
-        // SELECT projectId, researchCount, firstResearchTimestamp FROM character_research_history WHERE guid = ?
         Field* fields = result->Fetch();
 
-        uint32 projectId = fields [0].GetUInt32();
+        uint32 projectId = fields[0].GetUInt32();
         if (!sResearchProjectStore.LookupEntry(projectId))
         {
-            SF_LOG_ERROR("entities.player", "Player::_LoadResearchHistory - Player(GUID: %u, name : %s) is trying to load history for non existing reasearch project(id: %u).", GetGUIDLow(), GetName().c_str(), projectId);
+            SF_LOG_ERROR("entities.player", "Player::_LoadResearchHistory - Player (GUID: %u, name: %s) is trying to load history for non existing research project (id: %u).", GetGUIDLow(), GetName().c_str(), projectId);
             continue;
         }
 
-        ResearchProjectHistory& researchProjectHistory = _researchHistory [projectId];
-        researchProjectHistory.researchCount = fields [1].GetUInt32();
-        researchProjectHistory.firstResearchTimestamp = fields [2].GetUInt32();
+        ResearchProjectHistory& researchProjectHistory = _researchHistory[projectId];
+        researchProjectHistory.researchCount = fields[1].GetUInt32();
+        researchProjectHistory.firstResearchTimestamp = fields[2].GetUInt32();
     }
     while (result->NextRow());
 }
@@ -23423,39 +24136,37 @@ void Player::_LoadResearchProjects(PreparedQueryResult result)
 
     do
     {
-        // SELECT projectId FROM character_research_projects WHERE guid = ?
         Field* fields = result->Fetch();
 
-        uint32 projectId = fields [0].GetUInt32();
+        uint32 projectId = fields[0].GetUInt32();
         ResearchProjectEntry const* projectEntry = sResearchProjectStore.LookupEntry(projectId);
         if (!projectEntry)
         {
-            SF_LOG_ERROR("entities.player", "Player::_LoadResearchProjects - Player (GUID: %u, name: %s) is trying to load non existing reasearch project (id: %u).", GetGUIDLow(), GetName().c_str(), projectId);
+            SF_LOG_ERROR("entities.player", "Player::_LoadResearchProjects - Player (GUID: %u, name: %s) is trying to load non existing research project (id: %u).", GetGUIDLow(), GetName().c_str(), projectId);
             continue;
         }
 
         if (_researchProjects.find(projectEntry->ResearchBranchId) != _researchProjects.end())
         {
-            SF_LOG_ERROR("entities.player", "Player::_LoadResearchProjects - Player (GUID: %u, name: %s) is trying to load reasearch project (id: %u) for branch id %u, but he is already researching another project for this branch.",
+            // Keep the first project for this branch; extras are dropped and rewritten on next character save.
+            SF_LOG_DEBUG("entities.player", "Player::_LoadResearchProjects - Player (GUID: %u, name: %s) has surplus research project %u for branch %u; ignoring.",
                          GetGUIDLow(), GetName().c_str(), projectId, projectEntry->ResearchBranchId);
             continue;
         }
 
-        _researchProjects [projectEntry->ResearchBranchId] = projectId;
+        _researchProjects[projectEntry->ResearchBranchId] = projectId;
     }
     while (result->NextRow());
 }
 
 void Player::_SaveResearchHistory(SQLTransaction& trans)
 {
-    // DELETE FROM character_research_history WHERE guid = ?
     PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_RESEARCH_HISTORY);
     stmt->setUInt32(0, GetGUIDLow());
     trans->Append(stmt);
 
     for (ResearchHistoryMap::iterator itr = _researchHistory.begin(); itr != _researchHistory.end(); ++itr)
     {
-        // INSERT INTO character_research_history (guid, projectId, researchCount, firstResearchTimestamp) VALUES (?, ?, ?, ?)
         stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHAR_RESEARCH_HISTORY);
         stmt->setUInt32(0, GetGUIDLow());
         stmt->setUInt32(1, itr->first);
@@ -23467,14 +24178,12 @@ void Player::_SaveResearchHistory(SQLTransaction& trans)
 
 void Player::_SaveResearchProjects(SQLTransaction& trans)
 {
-    // DELETE FROM character_research_projects WHERE guid = ?
     PreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_RESEARCH_PROJECTS);
     stmt->setUInt32(0, GetGUIDLow());
     trans->Append(stmt);
 
     for (ResearchProjectMap::iterator itr = _researchProjects.begin(); itr != _researchProjects.end(); ++itr)
     {
-        // INSERT INTO character_research_projects (guid, projectId) VALUES (?, ?)
         stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHAR_RESEARCH_PROJECT);
         stmt->setUInt32(0, GetGUIDLow());
         stmt->setUInt32(1, itr->second);
@@ -23490,7 +24199,7 @@ void Player::SendResearchHistory()
 
     for (ResearchHistoryMap::iterator itr = _researchHistory.begin(); itr != _researchHistory.end(); ++itr)
     {
-        data << uint32(itr->first); // project id
+        data << uint32(itr->first);
         data << uint32(itr->second.researchCount);
         data << uint32(itr->second.firstResearchTimestamp);
     }
@@ -23500,19 +24209,31 @@ void Player::SendResearchHistory()
 
 void Player::SolveResearchProject(Spell* spell)
 {
-    SpellResearchData const* researchData = spell->m_researchData;
-    if (!researchData)
+    uint32 projectId = spell->GetSpellInfo()->ResearchProject;
+    if (!projectId)
         return;
 
-    if (researchData->fragmentCurrencyId && researchData->fragmentCount)
-        ModifyCurrency(researchData->fragmentCurrencyId, -(int32) researchData->fragmentCount);
+    ResearchProjectEntry const* projectEntry = sResearchProjectStore.LookupEntry(projectId);
+    if (!projectEntry)
+        return;
 
-    if (researchData->keystoneItemId && researchData->keystoneCount)
-        DestroyItemCount(researchData->keystoneItemId, researchData->keystoneCount, true);
+    SpellResearchData const* researchData = spell->m_researchData;
+    if (researchData)
+    {
+        if (researchData->fragmentCurrencyId && researchData->fragmentCount)
+            ModifyCurrency(researchData->fragmentCurrencyId, -(int32)researchData->fragmentCount);
 
-    uint32 projectId = spell->GetSpellInfo()->ResearchProject;
+        if (researchData->keystoneItemId && researchData->keystoneCount)
+            DestroyItemCount(researchData->keystoneItemId, researchData->keystoneCount, true);
+    }
+    else if (ResearchBranchEntry const* branch = sResearchBranchStore.LookupEntry(projectEntry->ResearchBranchId))
+    {
+        // Fallback if the client omitted research payload: consume the full fragment cost.
+        if (branch->FragmentCurrencyId && projectEntry->RequiredFragmentCount)
+            ModifyCurrency(branch->FragmentCurrencyId, -(int32)projectEntry->RequiredFragmentCount);
+    }
 
-    ResearchProjectHistory& researchProjectHistory = _researchHistory [projectId];
+    ResearchProjectHistory& researchProjectHistory = _researchHistory[projectId];
     researchProjectHistory.researchCount++;
     if (!researchProjectHistory.firstResearchTimestamp)
         researchProjectHistory.firstResearchTimestamp = uint32(time(NULL));
@@ -23525,14 +24246,31 @@ void Player::SolveResearchProject(Spell* spell)
 
     UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_COMPLETE_ARCHAEOLOGY_PROJECTS, projectId);
 
-    // new project will be selected in UpdateResearchProjects
-    if (ResearchProjectEntry const* currentProjectEntry = sResearchProjectStore.LookupEntry(projectId))
-        _researchProjects [currentProjectEntry->ResearchBranchId] = 0;
+    _researchProjects[projectEntry->ResearchBranchId] = 0;
 
     UpdateResearchProjects();
 }
 
-bool Player::HasCompletedAllRareProjectsForRace(uint32 researchBranchId)
+bool Player::IsResearchBranchUnlocked(uint32 researchBranchId) const
+{
+    // Races only unlock after you dig that race (fragments) or finish one of its projects —
+    // not simply by learning Archaeology.
+    ResearchBranchEntry const* branch = sResearchBranchStore.LookupEntry(researchBranchId);
+    if (!branch)
+        return false;
+
+    if (branch->FragmentCurrencyId && GetCurrency(branch->FragmentCurrencyId, false) > 0)
+        return true;
+
+    for (ResearchHistoryMap::const_iterator itr = _researchHistory.begin(); itr != _researchHistory.end(); ++itr)
+        if (ResearchProjectEntry const* projectEntry = sResearchProjectStore.LookupEntry(itr->first))
+            if (projectEntry->ResearchBranchId == researchBranchId)
+                return true;
+
+    return false;
+}
+
+bool Player::HasCompletedAllRareProjectsForRace(uint32 researchBranchId) const
 {
     for (uint32 i = 0; i < sResearchProjectStore.GetNumRows(); ++i)
         if (ResearchProjectEntry const* projectEntry = sResearchProjectStore.LookupEntry(i))
@@ -23542,7 +24280,7 @@ bool Player::HasCompletedAllRareProjectsForRace(uint32 researchBranchId)
     return true;
 }
 
-bool Player::HasCompletedAllCommonProjectsForRace(uint32 researchBranchId, bool onlyAvailable)
+bool Player::HasCompletedAllCommonProjectsForRace(uint32 researchBranchId, bool onlyAvailable) const
 {
     for (uint32 i = 0; i < sResearchProjectStore.GetNumRows(); ++i)
         if (ResearchProjectEntry const* projectEntry = sResearchProjectStore.LookupEntry(i))
@@ -23572,11 +24310,9 @@ uint32 Player::GetRandomResearchProjectForRace(uint32 researchBranchId)
             if (projectEntry->ResearchBranchId != researchBranchId)
                 continue;
 
-            // rare artifact can be completed only once
             if (projectEntry->Rarity > 0 && HasCompletedResearchProject(projectEntry->Id))
                 continue;
 
-            // common artifact can be completed again only if player has completed all available common artifacts
             if (projectEntry->Rarity == 0 && HasCompletedResearchProject(projectEntry->Id) && !hasCompletedAllCommonProjects)
                 continue;
 
@@ -23586,7 +24322,7 @@ uint32 Player::GetRandomResearchProjectForRace(uint32 researchBranchId)
                     continue;
 
                 if (requirements->chance > 0)
-                    explicitlyChancedProjects [projectEntry->Id] = requirements->chance;
+                    explicitlyChancedProjects[projectEntry->Id] = requirements->chance;
                 else
                     equalChancedProjects.push_back(projectEntry->Id);
             }
@@ -23598,12 +24334,12 @@ uint32 Player::GetRandomResearchProjectForRace(uint32 researchBranchId)
     if (!explicitlyChancedProjects.empty())
     {
         std::map<uint32, float>::iterator itr = explicitlyChancedProjects.begin();
-        std::advance(itr, urand(0, explicitlyChancedProjects.size() - 1));
+        std::advance(itr, size_t(uint32(rand32()) % explicitlyChancedProjects.size()));
         if (roll_chance_f(itr->second))
             return itr->first;
     }
 
-    if (!equalChancedProjects.empty())  // If nothing selected yet - project is taken from equal-chanced part
+    if (!equalChancedProjects.empty())
         return Skyfire::Containers::SelectRandomContainerElement(equalChancedProjects);
 
     return 0;
@@ -23611,55 +24347,72 @@ uint32 Player::GetRandomResearchProjectForRace(uint32 researchBranchId)
 
 void Player::UpdateResearchProjects()
 {
-    uint32 projectIds [RESEARCH_BRANCH_COUNT];
-    memset(&projectIds, 0, RESEARCH_BRANCH_COUNT * sizeof(uint32));
+    uint32 projectIds[RESEARCH_BRANCH_COUNT];
+    memset(projectIds, 0, sizeof(projectIds));
+    bool unlockedNewRace = false;
     if (HasSkill(SKILL_ARCHAEOLOGY))
     {
-        uint8 j = 0;
-        for (uint32 i = 0; i < sResearchBranchStore.GetNumRows(); ++i)
+        // Drop stale projects for races that were auto-assigned before unlock gating.
+        for (ResearchProjectMap::iterator itr = _researchProjects.begin(); itr != _researchProjects.end();)
         {
-            if (i == 29) // this branch should not be available
-                continue;
+            if (!IsResearchBranchUnlocked(itr->first))
+                _researchProjects.erase(itr++);
+            else
+                ++itr;
+        }
 
+        uint8 j = 0;
+        for (uint32 i = 0; i < sResearchBranchStore.GetNumRows() && j < RESEARCH_BRANCH_COUNT; ++i)
+        {
             if (ResearchBranchEntry const* branchEntry = sResearchBranchStore.LookupEntry(i))
             {
+                // Skip unused placeholder branch.
+                if (branchEntry->Id == 315)
+                    continue;
+
+                if (!IsResearchBranchUnlocked(branchEntry->Id))
+                    continue;
+
                 ResearchProjectMap::iterator itr = _researchProjects.find(branchEntry->Id);
-                if (itr == _researchProjects.end()) // branch not found
+                if (itr == _researchProjects.end())
                 {
-                    if (uint32 projectId = GetRandomResearchProjectForRace(branchEntry->Id)) // try to select new project
+                    if (uint32 projectId = GetRandomResearchProjectForRace(branchEntry->Id))
                     {
-                        _researchProjects [branchEntry->Id] = projectId;
-                        projectIds [++j] = projectId;
+                        _researchProjects[branchEntry->Id] = projectId;
+                        projectIds[j++] = projectId;
+                        unlockedNewRace = true;
                     }
                 }
-                else if (!itr->second) // branch found, but without project
+                else if (!itr->second)
                 {
-                    if (uint32 projectId = GetRandomResearchProjectForRace(branchEntry->Id)) // try to select new project
+                    if (uint32 projectId = GetRandomResearchProjectForRace(branchEntry->Id))
                     {
                         itr->second = projectId;
-                        projectIds [++j] = projectId;
+                        projectIds[j++] = projectId;
                     }
-                    else // no project selected, remove branch
+                    else
                         _researchProjects.erase(itr);
                 }
                 else
-                    projectIds [++j] = itr->second;
+                    projectIds[j++] = itr->second;
             }
         }
     }
-    else // archaeology has been unlearned, remove all active research projects and research history
+    else
     {
         _researchProjects.clear();
         _researchHistory.clear();
     }
 
     for (uint8 i = 0; i < RESEARCH_BRANCH_COUNT; ++i)
-    {
-        uint32 offset = i % 2;
-        SetUInt16Value(PLAYER_FIELD_RESEARCHING, i % 2, projectIds [i]);
-    }
+        SetUInt16Value(PLAYER_FIELD_RESEARCHING + i / 2, i % 2, projectIds[i]);
+
+    // Journal binds race fragment totals after the researching field is set; SETUP that
+    // ran during ModifyCurrency is too early for a newly unlocked race (shows 0/X).
+    if (unlockedNewRace)
+        SendCurrencies();
 }
-*/
+
 void Player::SendDeclineGuildInvitation(std::string declinerName, bool autoDecline /*= false*/)
 {
     WorldPacket data(SMSG_GUILD_DECLINE, 5 + declinerName.length());

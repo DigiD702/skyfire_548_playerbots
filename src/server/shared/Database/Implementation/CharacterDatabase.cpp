@@ -91,6 +91,7 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     PrepareStatement(CHAR_SEL_CHARACTER_SOCIALLIST, "SELECT friend, flags, note FROM character_social JOIN characters ON characters.guid = character_social.friend WHERE character_social.guid = ? AND deleteinfos_name IS NULL LIMIT 255", CONNECTION_ASYNC);
     PrepareStatement(CHAR_SEL_CHARACTER_HOMEBIND, "SELECT mapId, zoneId, posX, posY, posZ FROM character_homebind WHERE guid = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_SEL_CHARACTER_SPELLCOOLDOWNS, "SELECT spell, item, time FROM character_spell_cooldown WHERE guid = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_CHARACTER_SPELL_CHARGES, "SELECT category, consumedCharges, resetTime, baseRegenTime FROM character_spell_charges WHERE guid = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_SEL_CHARACTER_DECLINEDNAMES, "SELECT genitive, dative, accusative, instrumental, prepositional FROM character_declinedname WHERE guid = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_SEL_GUILD_MEMBER, "SELECT guildid, member_rank FROM guild_member WHERE guid = ?", CONNECTION_BOTH);
     PrepareStatement(CHAR_SEL_GUILD_MEMBER_EXTENDED, "SELECT g.guildid, g.name, gr.rname, gr.rid, gm.pnote, gm.offnote "
@@ -509,6 +510,7 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     PrepareStatement(CHAR_UPD_CHAR_TITLES_FACTION_CHANGE, "UPDATE characters SET knownTitles = ? WHERE guid = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_RES_CHAR_TITLES_FACTION_CHANGE, "UPDATE characters SET chosenTitle = 0 WHERE guid = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_DEL_CHAR_SPELL_COOLDOWN, "DELETE FROM character_spell_cooldown WHERE guid = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_DEL_CHAR_SPELL_CHARGES, "DELETE FROM character_spell_charges WHERE guid = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_DEL_CHARACTER, "DELETE FROM characters WHERE guid = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_DEL_CHAR_ACTION, "DELETE FROM character_action WHERE guid = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_DEL_CHAR_AURA, "DELETE FROM character_aura WHERE guid = ?", CONNECTION_ASYNC);
@@ -638,15 +640,15 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     PrepareStatement(CHAR_DEL_CHAR_PET_BY_SLOT, "DELETE FROM character_pet WHERE owner = ? AND (slot = ? OR slot > ?)", CONNECTION_ASYNC);
 
     // Archaeology
-    //PrepareStatement(CHAR_SEL_CHAR_RESEARCH_DIGSITES, "SELECT digsiteId, currentFindGUID, remainingFindCount FROM character_research_digsites WHERE guid = ?", CONNECTION_ASYNC);
-    //PrepareStatement(CHAR_INS_CHAR_RESEARCH_DIGSITE, "INSERT INTO character_research_digsites (guid, digsiteId, currentFindGUID, remainingFindCount) VALUES (?, ?, ?, ?)", CONNECTION_ASYNC);
-    //PrepareStatement(CHAR_DEL_CHAR_RESEARCH_DIGSITE, "DELETE FROM character_research_digsites WHERE guid = ? AND digsiteId = ?", CONNECTION_ASYNC);
-    //PrepareStatement(CHAR_SEL_CHAR_RESEARCH_HISTORY, "SELECT projectId, researchCount, firstResearchTimestamp FROM character_research_history WHERE guid = ?", CONNECTION_ASYNC);
-    //PrepareStatement(CHAR_INS_CHAR_RESEARCH_HISTORY, "INSERT INTO character_research_history (guid, projectId, researchCount, firstResearchTimestamp) VALUES (?, ?, ?, ?)", CONNECTION_ASYNC);
-    //PrepareStatement(CHAR_DEL_CHAR_RESEARCH_HISTORY, "DELETE FROM character_research_history WHERE guid = ?", CONNECTION_ASYNC);
-    //PrepareStatement(CHAR_SEL_CHAR_RESEARCH_PROJECTS, "SELECT projectId FROM character_research_projects WHERE guid = ?", CONNECTION_ASYNC);
-    //PrepareStatement(CHAR_INS_CHAR_RESEARCH_PROJECT, "INSERT INTO character_research_projects (guid, projectId) VALUES (?, ?)", CONNECTION_ASYNC);
-    //PrepareStatement(CHAR_DEL_CHAR_RESEARCH_PROJECTS, "DELETE FROM character_research_projects WHERE guid = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_CHAR_RESEARCH_DIGSITES, "SELECT digsiteId, currentFindGUID, remainingFindCount FROM character_research_digsites WHERE guid = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_INS_CHAR_RESEARCH_DIGSITE, "INSERT INTO character_research_digsites (guid, digsiteId, currentFindGUID, remainingFindCount) VALUES (?, ?, ?, ?)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_DEL_CHAR_RESEARCH_DIGSITE, "DELETE FROM character_research_digsites WHERE guid = ? AND digsiteId = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_CHAR_RESEARCH_HISTORY, "SELECT projectId, researchCount, firstResearchTimestamp FROM character_research_history WHERE guid = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_INS_CHAR_RESEARCH_HISTORY, "INSERT INTO character_research_history (guid, projectId, researchCount, firstResearchTimestamp) VALUES (?, ?, ?, ?)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_DEL_CHAR_RESEARCH_HISTORY, "DELETE FROM character_research_history WHERE guid = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_CHAR_RESEARCH_PROJECTS, "SELECT projectId FROM character_research_projects WHERE guid = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_INS_CHAR_RESEARCH_PROJECT, "INSERT INTO character_research_projects (guid, projectId) VALUES (?, ?)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_DEL_CHAR_RESEARCH_PROJECTS, "DELETE FROM character_research_projects WHERE guid = ?", CONNECTION_ASYNC);
 
     // battle Pet
     PrepareStatement(CHAR_SEL_ACCOUNT_BATTLE_PETS, "SELECT id, species, nickname, timestamp, level, xp, health, maxHealth, power, speed, quality, breed, flags FROM account_battle_pet WHERE accountId = ?", CONNECTION_ASYNC);

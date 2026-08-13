@@ -28,6 +28,7 @@
 #include "Database/DatabaseEnv.h"
 #include "Log.h"
 #include "OpenSSLProviders.h"
+#include "PacketLogServer.h"
 #include "Platform/TimeUtils.h"
 #include "RealmAcceptor.h"
 #include "RealmList.h"
@@ -84,6 +85,8 @@ namespace
 
         options.AllowUpdateHashMismatch =
             sConfigMgr->GetBoolDefault("LoginDatabase.AllowUpdateHashMismatch", true);
+        options.ImportPendingUpdates =
+            sConfigMgr->GetBoolDefault("LoginDatabase.ImportPendingUpdates", false);
 
         return options;
     }
@@ -346,6 +349,8 @@ extern int main(int argc, char** argv)
 
     if (!Skyfire::LoadOpenSSLProviders("server.authserver"))
         return 1;
+
+    sPacketLogServer->Initialize("", "PacketLogs");
 
     // authserver PID file creation
     std::string pidFile = sConfigMgr->GetStringDefault("PidFile", "");

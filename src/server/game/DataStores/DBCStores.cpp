@@ -167,10 +167,10 @@ DBCStorage <QuestFactionRewEntry>  sQuestFactionRewardStore(QuestFactionRewardfm
 DBCStorage <QuestPOIPointEntry> sQuestPOIPointStore(QuestPOIPointfmt);
 DBCStorage <RandomPropertiesPointsEntry> sRandomPropertiesPointsStore(RandomPropertiesPointsfmt);
 
-//DBCStorage <ResearchBranchEntry>  sResearchBranchStore(ResearchBranchfmt);
-//DBCStorage <ResearchProjectEntry> sResearchProjectStore(ResearchProjectfmt);
-//DBCStorage <ResearchSiteEntry>    sResearchSiteStore(ResearchSitefmt);
-//static DigsitePOIPolygonContainer sDigsitePOIPolygons;
+DBCStorage <ResearchBranchEntry>  sResearchBranchStore(ResearchBranchfmt);
+DBCStorage <ResearchProjectEntry> sResearchProjectStore(ResearchProjectfmt);
+DBCStorage <ResearchSiteEntry>    sResearchSiteStore(ResearchSitefmt);
+static DigsitePOIPolygonContainer sDigsitePOIPolygons;
 
 DBCStorage <ScalingStatDistributionEntry> sScalingStatDistributionStore(ScalingStatDistributionfmt);
 DBCStorage <ScalingStatValuesEntry> sScalingStatValuesStore(ScalingStatValuesfmt);
@@ -549,10 +549,9 @@ void LoadDBCStores(const std::string& dataPath)
     LoadDBC(availableDbcLocales, bad_dbc_files, sQuestPOIPointStore, dbcPath, "QuestPOIPoint.dbc");//15595
 
     LoadDBC(availableDbcLocales, bad_dbc_files, sRandomPropertiesPointsStore, dbcPath, "RandPropPoints.dbc");//15595
-    /*
-    LoadDBC(availableDbcLocales, bad_dbc_files, sResearchBranchStore,         dbcPath, "ResearchBranch.dbc");//15595
-    LoadDBC(availableDbcLocales, bad_dbc_files, sResearchProjectStore,        dbcPath, "ResearchProject.dbc");//15595
-    LoadDBC(availableDbcLocales, bad_dbc_files, sResearchSiteStore,           dbcPath, "ResearchSite.dbc");//15595
+    LoadDBC(availableDbcLocales, bad_dbc_files, sResearchBranchStore, dbcPath, "ResearchBranch.dbc");//15595
+    LoadDBC(availableDbcLocales, bad_dbc_files, sResearchProjectStore, dbcPath, "ResearchProject.dbc");//15595
+    LoadDBC(availableDbcLocales, bad_dbc_files, sResearchSiteStore, dbcPath, "ResearchSite.dbc");//15595
 
     // must be after sQuestPOIPointStore and sResearchSiteStore loading
     for (uint32 i = 0; i < sResearchSiteStore.GetNumRows(); ++i)
@@ -562,9 +561,9 @@ void LoadDBCStores(const std::string& dataPath)
             for (uint32 j = 0; j < sQuestPOIPointStore.GetNumRows(); ++j)
                 if (QuestPOIPointEntry const* pointEntry = sQuestPOIPointStore.LookupEntry(j))
                     if (siteEntry->QuestPOIBlobId == pointEntry->BlobId)
-                        sDigsitePOIPolygons [siteEntry->Id].push_back(std::make_pair(pointEntry->X, pointEntry->Y));
+                        sDigsitePOIPolygons[siteEntry->Id].push_back(std::make_pair(pointEntry->X, pointEntry->Y));
         }
-    }*/
+    }
 
     LoadDBC(availableDbcLocales, bad_dbc_files, sScalingStatDistributionStore, dbcPath, "ScalingStatDistribution.dbc");//15595
     LoadDBC(availableDbcLocales, bad_dbc_files, sScalingStatValuesStore, dbcPath, "ScalingStatValues.dbc");//15595
@@ -752,6 +751,15 @@ void LoadDBCStores(const std::string& dataPath)
         for (int j = 0; j < MAX_TALENT_RANK; j++)
             if (talentInfo->SpellId)
                 sTalentSpellPosMap[talentInfo->SpellId] = TalentSpellPos(i, j);
+    }
+
+    // Faerie Swarm (106707): Talent.dbc OverrideSpellID is 0, but the talent replaces
+    // Faerie Fire (770) via OVERRIDE_ACTIONBAR (amount 102355). Set OverrideSpellID so
+    // the cast remap path can resolve the passive to the castable swarm spell.
+    if (TalentEntry* faerieSwarmTalent = const_cast<TalentEntry*>(sTalentStore.LookupEntry(18575)))
+    {
+        if (faerieSwarmTalent->SpellId == 106707 && !faerieSwarmTalent->OverrideSpellID)
+            faerieSwarmTalent->OverrideSpellID = 770;
     }
 
     LoadDBC(availableDbcLocales, bad_dbc_files, sChrSpecializationStore, dbcPath, "ChrSpecialization.dbc");
@@ -1506,7 +1514,6 @@ uint32 ScalingStatValuesEntry::GetDPSAndDamageMultiplier(uint32 subClass, bool i
     }
     return 0;
 }
-/*
 DigsitePOIPolygon const* GetDigsitePOIPolygon(uint32 digsiteId)
 {
     DigsitePOIPolygonContainer::const_iterator itr = sDigsitePOIPolygons.find(digsiteId);
@@ -1514,7 +1521,7 @@ DigsitePOIPolygon const* GetDigsitePOIPolygon(uint32 digsiteId)
         return &itr->second;
 
     return NULL;
-}*/
+}
 
 /// Returns LFGDungeonEntry for a specific map and difficulty. Will return first found entry if multiple dungeons use the same map (such as Scarlet Monastery)
 LFGDungeonEntry const* GetLFGDungeon(uint32 mapId, DifficultyID difficulty)

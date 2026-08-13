@@ -1619,8 +1619,12 @@ public:
 
         void Reset() OVERRIDE
         {
-            me->SetControlled(true, UNIT_STATE_STUNNED);//disable rotate
-            me->ApplySpellImmune(0, IMMUNITY_EFFECT, SPELL_EFFECT_KNOCK_BACK, true);//imune to knock aways like blast wave
+            // Pacify + root for client; avoid SetControlled(STUNNED) which breaks Attack().
+            me->SetFacingTo(me->GetHomePosition().GetOrientation());
+            me->AddUnitState(UNIT_STATE_ROOT);
+            me->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_STUNNED);
+            me->ApplySpellImmune(0, IMMUNITY_EFFECT, SPELL_EFFECT_KNOCK_BACK, true);
+            me->SetFullHealth();
 
             resetTimer = 5000;
             despawnTimer = 15000;
@@ -1637,16 +1641,19 @@ public:
         void DamageTaken(Unit* /*doneBy*/, uint32& damage) OVERRIDE
         {
             resetTimer = 5000;
-            damage = 0;
+
+            // Allow damage for combat text / rage / procs, but never die.
+            if (damage >= me->GetHealth())
+                damage = me->GetHealth() > 1 ? me->GetHealth() - 1 : 0;
         }
 
         void UpdateAI(uint32 diff) OVERRIDE
         {
+            if (!me->HasUnitState(UNIT_STATE_ROOT))
+                me->AddUnitState(UNIT_STATE_ROOT);
+
             if (!UpdateVictim())
                 return;
-
-            if (!me->HasUnitState(UNIT_STATE_STUNNED))
-                me->SetControlled(true, UNIT_STATE_STUNNED);//disable rotate
 
             if (entry != NPC_ADVANCED_TARGET_DUMMY && entry != NPC_TARGET_DUMMY)
             {
@@ -1666,6 +1673,15 @@ public:
                 else
                     despawnTimer -= diff;
             }
+        }
+
+        void AttackStart(Unit* target) OVERRIDE
+        {
+            if (!target)
+                return;
+
+            if (me->Attack(target, true))
+                DoStartNoMovement(target);
         }
 
         void MoveInLineOfSight(Unit* /*who*/) OVERRIDE { }
@@ -2517,6 +2533,47 @@ public:
 };
 
 
+class npc_flee_from_player : public CreatureScript
+{
+public:
+    npc_flee_from_player() : CreatureScript("npc_flee_from_player") { }
+
+    struct npc_flee_from_playerAI : ScriptedAI
+    {
+        npc_flee_from_playerAI(Creature* creature) : ScriptedAI(creature) { }
+
+        uint32 checkTimer;
+
+        void Reset() override
+        {
+            checkTimer = 500;
+        }
+
+        void UpdateAI(uint32 diff) override
+        {
+            if (checkTimer <= diff)
+            {
+                checkTimer = 500;
+
+                if (Player* player = me->SelectNearestPlayer(8.0f))
+                {
+                    float angle = me->GetAngle(player->GetPositionX(), player->GetPositionY()) + M_PI;
+                    float x, y, z;
+                    me->GetNearPoint(me, x, y, z, 0.0f, 15.0f, angle);
+                    me->GetMotionMaster()->MovePoint(0, x, y, z + 8.0f);
+                }
+            }
+            else
+                checkTimer -= diff;
+        }
+    };
+
+    CreatureAI* GetAI(Creature* creature) const override
+    {
+        return new npc_flee_from_playerAI(creature);
+    }
+};
+
 void AddSC_npcs_special()
 {
     new npc_air_force_bots();
@@ -2542,4 +2599,5 @@ void AddSC_npcs_special()
     new npc_Spirit_of_Master_Shang_Xi();
     new npc_spring_rabbit();
     new npc_training_target();
+    new npc_flee_from_player();
 }

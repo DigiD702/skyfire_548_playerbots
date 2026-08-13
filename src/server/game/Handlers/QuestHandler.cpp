@@ -5,6 +5,8 @@
 
 #include "Battleground.h"
 #include "Common.h"
+#include "Creature.h"
+#include "CreatureAI.h"
 #include "GameObjectAI.h"
 #include "GossipDef.h"
 #include "Group.h"
@@ -18,6 +20,53 @@
 #include "World.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+
+enum DeathComesFromOnHighAbandon
+{
+    QUEST_DEATH_COMES_FROM_ON_HIGH = 12641,
+    NPC_EYE_OF_ACHERUS = 28511,
+
+    ACTION_CANCEL_EYE_OF_ACHERUS = 2,
+
+    SPELL_THE_EYE_OF_ACHERUS = 51852,
+    SPELL_EYE_FLIGHT_BOOST = 51923,
+};
+
+static float const EYE_OF_ACHERUS_RETURN_X = 2351.565186f;
+static float const EYE_OF_ACHERUS_RETURN_Y = -5670.172363f;
+static float const EYE_OF_ACHERUS_RETURN_Z = 426.027588f;
+static float const EYE_OF_ACHERUS_RETURN_O = 3.78736f;
+
+static void PrepareEyeOfAcherusCancel(Player* player)
+{
+    if (Unit* charm = player->GetCharm())
+    {
+        if (charm->GetEntry() == NPC_EYE_OF_ACHERUS)
+        {
+            if (Creature* eye = charm->ToCreature())
+            {
+                if (eye->AI())
+                {
+                    eye->AI()->DoAction(ACTION_CANCEL_EYE_OF_ACHERUS);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+static void CancelEyeOfAcherusQuest(Player* player)
+{
+    PrepareEyeOfAcherusCancel(player);
+
+    player->RemoveAurasDueToSpell(SPELL_EYE_FLIGHT_BOOST);
+    player->StopCastingBindSight();
+    player->StopCastingCharm();
+    player->SetMover(player);
+    player->SetClientControl(player, 1);
+    player->RemoveAurasDueToSpell(SPELL_THE_EYE_OF_ACHERUS);
+    player->NearTeleportTo(EYE_OF_ACHERUS_RETURN_X, EYE_OF_ACHERUS_RETURN_Y, EYE_OF_ACHERUS_RETURN_Z, EYE_OF_ACHERUS_RETURN_O, true);
+}
 
 void WorldSession::HandleQuestgiverStatusQueryOpcode(WorldPacket& recvData)
 {
@@ -358,8 +407,10 @@ void WorldSession::HandleQuestgiverChooseRewardOpcode(WorldPacket& recvData)
         }
     }
 
-    // QUEST_FLAGS_AUTO_SUBMIT
-    if (!quest->HasFlag(QUEST_FLAGS_PLAYER_CAST_ACCEPT))
+    // Remote / autocomplete turn-in uses the player's own GUID (no nearby NPC).
+    if (!quest->HasFlag(QUEST_FLAGS_PLAYER_CAST_ACCEPT) &&
+        !quest->HasFlag(QUEST_FLAGS_AUTOCOMPLETE) &&
+        !quest->HasFlag(QUEST_FLAGS_PLAYER_CAST_COMPLETE))
     {
         object = ObjectAccessor::GetObjectByTypeMask(*_player, guid, TYPEMASK_UNIT | TYPEMASK_GAMEOBJECT);
         if (!object || !object->hasInvolvedQuest(questId))
@@ -367,6 +418,15 @@ void WorldSession::HandleQuestgiverChooseRewardOpcode(WorldPacket& recvData)
 
         // some kind of WPE protection
         if (!_player->CanInteractWithQuestGiver(object))
+            return;
+    }
+    else if (guid && guid != _player->GetGUID())
+    {
+        // Autocomplete packets must target the player; still allow real NPC turn-ins.
+        Object* questGiver = ObjectAccessor::GetObjectByTypeMask(*_player, guid, TYPEMASK_UNIT | TYPEMASK_GAMEOBJECT);
+        if (questGiver && questGiver->hasInvolvedQuest(questId) && _player->CanInteractWithQuestGiver(questGiver))
+            object = questGiver;
+        else if (guid != _player->GetGUID())
             return;
     }
 
@@ -427,8 +487,22 @@ void WorldSession::HandleQuestgiverChooseRewardOpcode(WorldPacket& recvData)
                 }
                 break;
             }
+            case TypeID::TYPEID_PLAYER:
             default:
+            {
+                // Autocomplete / remote turn-in: still offer the next quest in chain.
+                if (Quest const* nextQuest = _player->GetNextQuest(_player->GetGUID(), quest))
+                {
+                    if (_player->CanTakeQuest(nextQuest, false))
+                    {
+                        if (nextQuest->IsAutoAccept() && _player->CanAddQuest(nextQuest, true))
+                            _player->AddQuest(nextQuest, _player);
+
+                        _player->PlayerTalkClass->SendQuestGiverQuestDetails(nextQuest, _player->GetGUID(), true);
+                    }
+                }
                 break;
+            }
         }
     }
     else
@@ -446,13 +520,32 @@ void WorldSession::HandleQuestgiverRequestRewardOpcode(WorldPacket& recvData)
 
     SF_LOG_DEBUG("network", "WORLD: Received CMSG_QUEST_GIVER_REQUEST_REWARD npc = %u, quest = %u", uint32(GUID_LOPART(guid)), questId);
 
-    Object* object = ObjectAccessor::GetObjectByTypeMask(*_player, guid, TYPEMASK_UNIT | TYPEMASK_GAMEOBJECT);
-    if (!object || !object->hasInvolvedQuest(questId))
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    if (!quest)
         return;
 
-    // some kind of WPE protection
-    if (!_player->CanInteractWithQuestGiver(object))
-        return;
+    Object* object = nullptr;
+    if (quest->HasFlag(QUEST_FLAGS_AUTOCOMPLETE) || quest->HasFlag(QUEST_FLAGS_PLAYER_CAST_COMPLETE))
+    {
+        if (guid != _player->GetGUID())
+        {
+            object = ObjectAccessor::GetObjectByTypeMask(*_player, guid, TYPEMASK_UNIT | TYPEMASK_GAMEOBJECT);
+            if (!object || !object->hasInvolvedQuest(questId) || !_player->CanInteractWithQuestGiver(object))
+                return;
+        }
+        else
+            object = _player;
+    }
+    else
+    {
+        object = ObjectAccessor::GetObjectByTypeMask(*_player, guid, TYPEMASK_UNIT | TYPEMASK_GAMEOBJECT);
+        if (!object || !object->hasInvolvedQuest(questId))
+            return;
+
+        // some kind of WPE protection
+        if (!_player->CanInteractWithQuestGiver(object))
+            return;
+    }
 
     if (_player->CanCompleteQuest(questId))
         _player->CompleteQuest(questId);
@@ -460,8 +553,7 @@ void WorldSession::HandleQuestgiverRequestRewardOpcode(WorldPacket& recvData)
     if (_player->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)
         return;
 
-    if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
-        _player->PlayerTalkClass->SendQuestGiverOfferReward(quest, guid, true);
+    _player->PlayerTalkClass->SendQuestGiverOfferReward(quest, guid, true);
 }
 
 void WorldSession::HandleQuestgiverCancel(WorldPacket& /*recvData*/)
@@ -511,7 +603,16 @@ void WorldSession::HandleQuestLogRemoveQuest(WorldPacket& recvData)
             }
 
             _player->TakeQuestSourceItem(questId, true); // remove quest src item from player
+            if (questId == QUEST_DEATH_COMES_FROM_ON_HIGH)
+                CancelEyeOfAcherusQuest(_player);
+
             _player->RemoveActiveQuest(questId);
+            if (questId == QUEST_DEATH_COMES_FROM_ON_HIGH)
+            {
+                _player->UpdateForQuestWorldObjects();
+                _player->UpdatePhasing();
+            }
+
             _player->RemoveTimedAchievement(ACHIEVEMENT_TIMED_TYPE_QUEST, questId);
 
             SF_LOG_INFO("network", "Player %u abandoned quest %u", _player->GetGUIDLow(), questId);
@@ -576,15 +677,26 @@ void WorldSession::HandleQuestgiverCompleteQuest(WorldPacket& recvData)
     if (!quest)
         return;
 
-    Object* object = ObjectAccessor::GetObjectByTypeMask(*_player, playerGuid, TYPEMASK_UNIT | TYPEMASK_GAMEOBJECT);
-    if (!object || !object->hasInvolvedQuest(questId))
-        return;
-
-    if (autoCompleteMode == 0)
+    Object* object = nullptr;
+    if (autoCompleteMode && (quest->HasFlag(QUEST_FLAGS_AUTOCOMPLETE) || quest->HasFlag(QUEST_FLAGS_PLAYER_CAST_COMPLETE)))
     {
-        // some kind of WPE protection
-        if (!_player->CanInteractWithQuestGiver(object))
+        // Toast / remote complete: client sends the player's own GUID.
+        if (playerGuid != _player->GetGUID())
             return;
+        object = _player;
+    }
+    else
+    {
+        object = ObjectAccessor::GetObjectByTypeMask(*_player, playerGuid, TYPEMASK_UNIT | TYPEMASK_GAMEOBJECT);
+        if (!object || !object->hasInvolvedQuest(questId))
+            return;
+
+        if (autoCompleteMode == 0)
+        {
+            // some kind of WPE protection
+            if (!_player->CanInteractWithQuestGiver(object))
+                return;
+        }
     }
 
     if (!_player->CanSeeStartQuest(quest) && _player->GetQuestStatus(questId) == QUEST_STATUS_NONE)

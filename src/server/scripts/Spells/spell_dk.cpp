@@ -13,10 +13,14 @@
 #include "ScriptMgr.h"
 #include "SpellScript.h"
 #include "SpellAuraEffects.h"
+#include "DynamicObject.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 
 enum DeathKnightSpells
 {
-    SPELL_DK_ANTI_MAGIC_SHELL_TALENT = 51052,
+    SPELL_DK_ANTI_MAGIC_ZONE_AREA = 51052,
+    SPELL_DK_ANTI_MAGIC_ZONE_REDUCTION = 145629,
 
     SPELL_DK_BLOOD_GORGED_HEAL = 50454,
     SPELL_DK_BLOOD_PRESENCE = 48263,
@@ -42,9 +46,15 @@ enum DeathKnightSpells
     SPELL_DK_RUNIC_EMPOWERMENT = 81229,
     SPELL_DK_RUNIC_POWER_ENERGIZE = 49088,
     SPELL_DK_RUNE_TAP = 48982,
-    SPELL_DK_SCENT_OF_BLOOD = 50422,
+    SPELL_DK_SCENT_OF_BLOOD_PASSIVE = 49509,
+    SPELL_DK_SCENT_OF_BLOOD = 50421,
     SPELL_DK_SCOURGE_STRIKE_TRIGGERED = 70890,
     SPELL_DK_UNHOLY_PRESENCE = 48265,
+};
+
+enum DeathKnightSpellValues
+{
+    SCENT_OF_BLOOD_DEATH_STRIKE_BONUS_PCT = 20,
 };
 
 // Gorefiend's Grasp - 108199
@@ -146,7 +156,7 @@ public:
                         if (!runes.empty())
                         {
                             std::set<uint8>::iterator itr = runes.begin();
-                            std::advance(itr, std::rand() % (runes.size() - 1));
+                            std::advance(itr, std::rand() % runes.size());
                             _player->SetRuneCooldown((*itr), 0);
                             _player->ResyncRunes(MAX_RUNES);
                         }
@@ -355,23 +365,29 @@ public:
 
         bool Load() OVERRIDE
         {
-            absorbPct = GetSpellInfo()->Effects[EFFECT_0].CalcValue(GetCaster());
+            SpellInfo const* reductionSpell = sSpellMgr->GetSpellInfo(SPELL_DK_ANTI_MAGIC_ZONE_REDUCTION);
+            if (!reductionSpell)
+                return false;
+
+            int32 const reductionPct = reductionSpell->Effects[EFFECT_0].CalcValue(GetCaster());
+            absorbPct = uint32(reductionPct < 0 ? -reductionPct : reductionPct);
             return true;
         }
 
         bool Validate(SpellInfo const* /*spellInfo*/) OVERRIDE
         {
-            if (!sSpellMgr->GetSpellInfo(SPELL_DK_ANTI_MAGIC_SHELL_TALENT))
+            if (!sSpellMgr->GetSpellInfo(SPELL_DK_ANTI_MAGIC_ZONE_AREA))
                 return false;
+
+            if (!sSpellMgr->GetSpellInfo(SPELL_DK_ANTI_MAGIC_ZONE_REDUCTION))
+                return false;
+
             return true;
         }
 
         void CalculateAmount(AuraEffect const* /*aurEff*/, int32& amount, bool& /*canBeRecalculated*/)
         {
-            SpellInfo const* talentSpell = sSpellMgr->GetSpellInfo(SPELL_DK_ANTI_MAGIC_SHELL_TALENT);
-            amount = talentSpell->Effects[EFFECT_0].CalcValue(GetCaster());
-            if (Player* player = GetCaster()->ToPlayer())
-                amount += int32(2 * player->GetTotalAttackPowerValue(WeaponAttackType::BASE_ATTACK));
+            amount = -1;
         }
 
         void Absorb(AuraEffect* /*aurEff*/, DamageInfo& dmgInfo, uint32& absorbAmount)
@@ -391,6 +407,35 @@ public:
     AuraScript* GetAuraScript() const OVERRIDE
     {
         return new spell_dk_anti_magic_zone_AuraScript();
+    }
+};
+
+class spell_dk_anti_magic_zone_dynamic : public DynamicObjectScript
+{
+public:
+    spell_dk_anti_magic_zone_dynamic() : DynamicObjectScript("spell_dk_anti_magic_zone_dynamic") { }
+
+    void OnUpdate(DynamicObject* dynObj, uint32 /*diff*/) OVERRIDE
+    {
+        if (dynObj->GetSpellId() != SPELL_DK_ANTI_MAGIC_ZONE_AREA)
+            return;
+
+        Unit* caster = dynObj->GetCaster();
+        if (!caster)
+            return;
+
+        float const radius = dynObj->GetRadius();
+        std::list<Unit*> targets;
+        Skyfire::AnyFriendlyUnitInObjectRangeCheck check(dynObj, caster, radius);
+        Skyfire::UnitListSearcher<Skyfire::AnyFriendlyUnitInObjectRangeCheck> searcher(dynObj, targets, check);
+        dynObj->VisitNearbyObject(radius, searcher);
+
+        for (std::list<Unit*>::iterator itr = targets.begin(); itr != targets.end(); ++itr)
+        {
+            Unit* target = *itr;
+            if (!target->HasAura(SPELL_DK_ANTI_MAGIC_ZONE_REDUCTION, caster->GetGUID()))
+                caster->AddAura(SPELL_DK_ANTI_MAGIC_ZONE_REDUCTION, target);
+        }
     }
 };
 
@@ -668,7 +713,17 @@ public:
                 if (AuraEffect const* aurEff = GetCaster()->GetAuraEffectOfRankedSpell(SPELL_DK_IMPROVED_DEATH_STRIKE, EFFECT_2))
                     heal = AddPct(heal, aurEff->GetAmount());
 
-                heal = std::max(heal, int32(GetCaster()->CountPctFromMaxHealth(GetEffectValue())));
+                int32 minimumHeal = int32(GetCaster()->CountPctFromMaxHealth(GetEffectValue()));
+
+                if (Aura* scentOfBlood = GetCaster()->GetAura(SPELL_DK_SCENT_OF_BLOOD))
+                {
+                    uint8 const scentOfBloodStacks = scentOfBlood->GetStackAmount();
+                    AddPct(heal, scentOfBloodStacks * SCENT_OF_BLOOD_DEATH_STRIKE_BONUS_PCT);
+                    AddPct(minimumHeal, scentOfBloodStacks * SCENT_OF_BLOOD_DEATH_STRIKE_BONUS_PCT);
+                    GetCaster()->RemoveAura(SPELL_DK_SCENT_OF_BLOOD);
+                }
+
+                heal = std::max(heal, minimumHeal);
                 GetCaster()->CastCustomSpell(SPELL_DK_DEATH_STRIKE_HEAL, SPELLVALUE_BASE_POINT0, heal, GetCaster(), true);
             }
 
@@ -865,7 +920,7 @@ public:
         void CalculateAmount(AuraEffect const* /*aurEff*/, int32& amount, bool& /*canBeRecalculated*/)
         {
             if (Unit* caster = GetCaster())
-                amount = int32(caster->GetTotalAttackPowerValue(WeaponAttackType::BASE_ATTACK) * 0.7f);
+                amount = int32(caster->GetTotalAttackPowerValue(WeaponAttackType::BASE_ATTACK) * 2.25f);
         }
 
         void Register() OVERRIDE
@@ -907,7 +962,7 @@ public:
     }
 };
 
-// 50421 - Scent of Blood
+// 49509 - Scent of Blood
 class spell_dk_scent_of_blood : public SpellScriptLoader
 {
 public:
@@ -919,21 +974,27 @@ public:
 
         bool Validate(SpellInfo const* /*spellInfo*/) OVERRIDE
         {
-            if (!sSpellMgr->GetSpellInfo(SPELL_DK_SCENT_OF_BLOOD))
+            if (!sSpellMgr->GetSpellInfo(SPELL_DK_SCENT_OF_BLOOD_PASSIVE) ||
+                !sSpellMgr->GetSpellInfo(SPELL_DK_SCENT_OF_BLOOD))
                 return false;
             return true;
         }
 
-        void OnProc(AuraEffect const* aurEff, ProcEventInfo& /*eventInfo*/)
+        bool CheckProc(ProcEventInfo& eventInfo)
         {
-            PreventDefaultAction();
-            GetTarget()->CastSpell(GetTarget(), SPELL_DK_SCENT_OF_BLOOD, true, NULL, aurEff);
-            GetTarget()->RemoveAuraFromStack(GetId());
+            uint32 const procFlags = eventInfo.GetTypeMask();
+            if (!(procFlags & PROC_FLAG_DONE_MELEE_AUTO_ATTACK))
+                return false;
+
+            if (!(procFlags & PROC_FLAG_DONE_MAINHAND_ATTACK) || (procFlags & PROC_FLAG_DONE_OFFHAND_ATTACK))
+                return false;
+
+            return (eventInfo.GetHitMask() & (PROC_EX_NORMAL_HIT | PROC_EX_CRITICAL_HIT)) != 0;
         }
 
         void Register() OVERRIDE
         {
-            OnEffectProc += AuraEffectProcFn(spell_dk_scent_of_blood_AuraScript::OnProc, EFFECT_0, SPELL_AURA_PROC_TRIGGER_SPELL);
+            DoCheckProc += AuraCheckProcFn(spell_dk_scent_of_blood_AuraScript::CheckProc);
         }
     };
 
@@ -1036,6 +1097,7 @@ void AddSC_deathknight_spell_scripts()
     new spell_dk_anti_magic_shell_raid();
     new spell_dk_anti_magic_shell_self();
     new spell_dk_anti_magic_zone();
+    new spell_dk_anti_magic_zone_dynamic();
     new spell_dk_blood_gorged();
     new spell_dk_death_coil();
     new spell_dk_death_gate();
@@ -1043,9 +1105,13 @@ void AddSC_deathknight_spell_scripts()
     new spell_dk_death_pact();
     new spell_dk_death_strike();
     new spell_dk_death_strike_enabler();
+    new spell_dk_gorefiends_grasp();
     new spell_dk_ghoul_explode();
     new spell_dk_icebound_fortitude();
     new spell_dk_necrotic_strike();
+    new spell_dk_raise_dead();
+    new spell_dk_runic_corruption();
+    new spell_dk_runic_empowerment();
     new spell_dk_rune_tap_party();
     new spell_dk_scent_of_blood();
     new spell_dk_scourge_strike(); // 5.4.8 18414

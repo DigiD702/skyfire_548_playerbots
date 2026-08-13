@@ -9,6 +9,7 @@
  * Scriptnames of files in this file should be prefixed with "spell_mage_".
  */
 
+#include "Containers.h"
 #include "Player.h"
 #include "GridNotifiers.h"
 #include "ScriptMgr.h"
@@ -21,7 +22,6 @@ enum MageSpells
     SPELL_MAGE_FROSTJAW                          = 102051,
     SPELL_MAGE_COLD_SNAP                         = 11958,
     SPELL_MAGE_FROST_NOVA                        = 122,
-    SPELL_MAGE_IGNITE                            = 12654,
     SPELL_MAGE_SLOW                              = 31589,
     SPELL_MAGE_SQUIRREL_FORM                     = 32813,
     SPELL_MAGE_GIRAFFE_FORM                      = 32816,
@@ -32,9 +32,10 @@ enum MageSpells
 
     SPELL_MAGE_FLAMESTRIKE                       = 2120,
 
-    SPELL_MAGE_RING_OF_FROST_SUMMON              = 82676, // obsolete SpellID
+    SPELL_MAGE_RING_OF_FROST_SUMMON              = 113724, // MoP cast spell (was 82676 in Cata)
     SPELL_MAGE_RING_OF_FROST_FREEZE              = 82691,
     SPELL_MAGE_RING_OF_FROST_DUMMY               = 91264,
+    SPELL_MAGE_RING_OF_FROST_TICK                = 136511, // periodic aura triggered by 113724
 
     SPELL_MAGE_FINGERS_OF_FROST                  = 44544,
 
@@ -540,12 +541,13 @@ public:
                 return;
 
             if (Unit* caster = GetCaster())
-                caster->CastSpell(GetTarget(), uint32(aurEff->GetAmount()), true, NULL, aurEff);
+                // Cap AOE selection: bomb target + up to 3 extra enemies nearby.
+                caster->CastCustomSpell(uint32(aurEff->GetAmount()), SPELLVALUE_MAX_TARGETS, 4, GetTarget(), true, NULL, aurEff);
         }
 
         void Register() override
         {
-            AfterEffectRemove += AuraEffectRemoveFn(spell_mage_living_bomb_AuraScript::AfterRemove, EFFECT_1, SPELL_AURA_DUMMY, AURA_EFFECT_HANDLE_REAL);
+            AfterEffectRemove += AuraEffectRemoveFn(spell_mage_living_bomb_AuraScript::AfterRemove, EFFECT_1, SPELL_AURA_PERIODIC_DUMMY, AURA_EFFECT_HANDLE_REAL);
         }
     };
 
@@ -555,50 +557,51 @@ public:
     }
 };
 
-// -11119 - Ignite
-class spell_mage_ignite : public SpellScriptLoader
+// 44461 - Living Bomb (explosion)
+// Always hit the bomb target, then at most 3 additional nearby enemies.
+class spell_mage_living_bomb_explosion : public SpellScriptLoader
 {
 public:
-    spell_mage_ignite() : SpellScriptLoader("spell_mage_ignite") { }
+    spell_mage_living_bomb_explosion() : SpellScriptLoader("spell_mage_living_bomb_explosion") { }
 
-    class spell_mage_ignite_AuraScript : public AuraScript
+    class spell_mage_living_bomb_explosion_SpellScript : public SpellScript
     {
-        PrepareAuraScript(spell_mage_ignite_AuraScript);
+        PrepareSpellScript(spell_mage_living_bomb_explosion_SpellScript);
 
-        bool Validate(SpellInfo const* /*spellInfo*/) override
+        void FilterTargets(std::list<WorldObject*>& targets)
         {
-            if (!sSpellMgr->GetSpellInfo(SPELL_MAGE_IGNITE))
-                return false;
-            return true;
-        }
+            Unit* bombTarget = GetExplTargetUnit();
+            if (!bombTarget)
+            {
+                if (targets.size() > 3)
+                    Skyfire::Containers::RandomResizeList(targets, 3);
+                return;
+            }
 
-        bool CheckProc(ProcEventInfo& eventInfo)
-        {
-            return eventInfo.GetProcTarget();
-        }
+            std::list<WorldObject*> extraTargets;
+            for (std::list<WorldObject*>::iterator itr = targets.begin(); itr != targets.end(); ++itr)
+            {
+                if (*itr != bombTarget)
+                    extraTargets.push_back(*itr);
+            }
 
-        void HandleProc(AuraEffect const* aurEff, ProcEventInfo& eventInfo)
-        {
-            PreventDefaultAction();
+            if (extraTargets.size() > 3)
+                Skyfire::Containers::RandomResizeList(extraTargets, 3);
 
-            SpellInfo const* igniteDot = sSpellMgr->GetSpellInfo(SPELL_MAGE_IGNITE);
-            int32 pct = 8 * GetSpellInfo()->GetRank();
-
-            int32 amount = int32(CalculatePct(eventInfo.GetDamageInfo()->GetDamage(), pct) / igniteDot->GetMaxTicks());
-            amount += eventInfo.GetProcTarget()->GetRemainingPeriodicAmount(eventInfo.GetActor()->GetGUID(), SPELL_MAGE_IGNITE, SPELL_AURA_PERIODIC_DAMAGE);
-            GetTarget()->CastCustomSpell(SPELL_MAGE_IGNITE, SPELLVALUE_BASE_POINT0, amount, eventInfo.GetProcTarget(), true, NULL, aurEff);
+            targets.clear();
+            targets.push_back(bombTarget);
+            targets.splice(targets.end(), extraTargets);
         }
 
         void Register() override
         {
-            DoCheckProc += AuraCheckProcFn(spell_mage_ignite_AuraScript::CheckProc);
-            OnEffectProc += AuraEffectProcFn(spell_mage_ignite_AuraScript::HandleProc, EFFECT_0, SPELL_AURA_DUMMY);
+            OnObjectAreaTargetSelect += SpellObjectAreaTargetSelectFn(spell_mage_living_bomb_explosion_SpellScript::FilterTargets, EFFECT_0, TARGET_UNIT_DEST_AREA_ENEMY);
         }
     };
 
-    AuraScript* GetAuraScript() const override
+    SpellScript* GetSpellScript() const override
     {
-        return new spell_mage_ignite_AuraScript();
+        return new spell_mage_living_bomb_explosion_SpellScript();
     }
 };
 
@@ -678,7 +681,7 @@ public:
         {
             if (Unit* target = GetCaster()->FindNearestCreature(NPC_AUROSALIA, 30.0f))
                 if (target->GetTypeId() == TypeID::TYPEID_UNIT)
-                    target->CastSpell(target, PolymorhForms[std::rand() % 5], true);
+                    target->CastSpell(target, PolymorhForms[std::rand() % 6], true);
         }
 
         void Register() override
@@ -704,8 +707,8 @@ uint32 const spell_mage_polymorph_cast_visual::spell_mage_polymorph_cast_visual_
     SPELL_MAGE_SHEEP_FORM
 };
 
-// 82676 - Ring of Frost
-/// Updated 4.3.4
+// 136511 - Ring of Frost (periodic, triggered by 113724)
+/// MoP: periodic aura lives on EFFECT_0 (Cata used EFFECT_1 on a different spell).
 class spell_mage_ring_of_frost : public SpellScriptLoader
 {
 public:
@@ -742,7 +745,12 @@ public:
         void Apply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
         {
             std::list<Creature*> MinionList;
-            GetTarget()->GetAllMinionsByEntry(MinionList, GetSpellInfo()->Effects[EFFECT_0].MiscValue);
+            // MoP summon creature entry is on the cast spell (113724) EFFECT_0, not this aura.
+            SpellInfo const* summonInfo = sSpellMgr->GetSpellInfo(SPELL_MAGE_RING_OF_FROST_SUMMON);
+            if (!summonInfo)
+                return;
+
+            GetTarget()->GetAllMinionsByEntry(MinionList, summonInfo->Effects[EFFECT_0].MiscValue);
 
             // Get the last summoned RoF, save it and despawn older ones
             for (std::list<Creature*>::iterator itr = MinionList.begin(); itr != MinionList.end(); ++itr)
@@ -768,8 +776,8 @@ public:
 
         void Register() override
         {
-            OnEffectPeriodic += AuraEffectPeriodicFn(spell_mage_ring_of_frost_AuraScript::HandleEffectPeriodic, EFFECT_1, SPELL_AURA_PERIODIC_TRIGGER_SPELL);
-            OnEffectApply += AuraEffectApplyFn(spell_mage_ring_of_frost_AuraScript::Apply, EFFECT_1, SPELL_AURA_PERIODIC_TRIGGER_SPELL, AURA_EFFECT_HANDLE_REAL_OR_REAPPLY_MASK);
+            OnEffectPeriodic += AuraEffectPeriodicFn(spell_mage_ring_of_frost_AuraScript::HandleEffectPeriodic, EFFECT_0, SPELL_AURA_PERIODIC_TRIGGER_SPELL);
+            OnEffectApply += AuraEffectApplyFn(spell_mage_ring_of_frost_AuraScript::Apply, EFFECT_0, SPELL_AURA_PERIODIC_TRIGGER_SPELL, AURA_EFFECT_HANDLE_REAL_OR_REAPPLY_MASK);
         }
     };
 
@@ -801,7 +809,9 @@ public:
 
         void FilterTargets(std::list<WorldObject*>& targets)
         {
-            float outRadius = sSpellMgr->GetSpellInfo(SPELL_MAGE_RING_OF_FROST_SUMMON)->Effects[EFFECT_0].CalcRadius();
+            // MoP: outer radius comes from cast spell 113724 EFFECT_2 dummy radius (was summon spell EFFECT_0 in Cata).
+            SpellInfo const* ringInfo = sSpellMgr->GetSpellInfo(SPELL_MAGE_RING_OF_FROST_SUMMON);
+            float outRadius = ringInfo ? ringInfo->Effects[EFFECT_2].CalcRadius() : 10.0f;
             float inRadius = 4.7f;
 
             for (std::list<WorldObject*>::iterator itr = targets.begin(); itr != targets.end(); ++itr)
@@ -973,10 +983,10 @@ void AddSC_mage_spell_scripts()
     new spell_mage_cold_snap();
     new spell_mage_conjure_refreshment_table();
     new spell_mage_conjure_refreshment();
-    new spell_mage_ignite();
     new spell_mage_glyph_of_ice_block();
     new spell_mage_glyph_of_polymorph();
     new spell_mage_living_bomb();
+    new spell_mage_living_bomb_explosion();
     new spell_mage_nether_vortex();
     new spell_mage_polymorph_cast_visual();
     new spell_mage_ring_of_frost();

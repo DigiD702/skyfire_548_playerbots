@@ -45,6 +45,7 @@
 #include "SpellAuras.h"
 #include "SpellMgr.h"
 #include "SpellMovementMetadata.h"
+#include "MovementTypedefs.h"
 #include "SpellValidation.h"
 #include "TemporarySummon.h"
 #include "Totem.h"
@@ -71,12 +72,14 @@ void Spell::EffectJump(SpellEffIndex effIndex)
     float x, y, z;
     unitTarget->GetContactPoint(m_caster, x, y, z, CONTACT_DISTANCE);
 
-    // Use 3D distance: near-vertical jumps (e.g. a creature pouncing down from a
-    // ledge) have almost no 2D distance, which yields a horizontal speed below the
-    // spline validation minimum (velocity > 0.1f) and silently aborts the jump.
+    // Horizontal distance drives the leap arc; CalculateJumpSpeeds floors very short
+    // jumps so near-vertical pounces still get a valid spline velocity.
     float speedXY, speedZ;
-    CalculateJumpSpeeds(effIndex, m_caster->GetExactDist(x, y, z), speedXY, speedZ);
-    m_caster->GetMotionMaster()->MoveJump(x, y, z, speedXY, speedZ);
+    CalculateJumpSpeeds(effIndex, m_caster->GetExactDist2d(x, y), speedXY, speedZ);
+    uint32 arrivalSpellId = m_spellInfo->Effects[effIndex].TriggerSpell;
+    if (!arrivalSpellId)
+        arrivalSpellId = Skyfire::Spells::GetJumpArrivalSpellId(m_spellInfo->Id);
+    m_caster->GetMotionMaster()->MoveJump(x, y, z, speedXY, speedZ, EVENT_JUMP, arrivalSpellId);
 }
 
 void Spell::EffectJumpDest(SpellEffIndex effIndex)
@@ -94,32 +97,57 @@ void Spell::EffectJumpDest(SpellEffIndex effIndex)
     float x, y, z;
     destTarget->GetPosition(x, y, z);
 
+    uint32 arrivalSpellId = m_spellInfo->Effects[effIndex].TriggerSpell;
+    if (!arrivalSpellId)
+        arrivalSpellId = Skyfire::Spells::GetJumpArrivalSpellId(m_spellInfo->Id);
+
     if (Skyfire::Spells::JumpDestOverride const* jumpDestOverride =
         Skyfire::Spells::GetJumpDestOverride(m_spellInfo->Id))
     {
         m_caster->GetMotionMaster()->MoveJump(x, y, z + jumpDestOverride->ZOffset,
-            jumpDestOverride->SpeedXY, jumpDestOverride->SpeedZ);
+            jumpDestOverride->SpeedXY, jumpDestOverride->SpeedZ, EVENT_JUMP, arrivalSpellId);
         return;
     }
 
     float speedXY, speedZ;
-    CalculateJumpSpeeds(effIndex, m_caster->GetExactDist(x, y, z), speedXY, speedZ);
-    m_caster->GetMotionMaster()->MoveJump(x, y, z, speedXY, speedZ);
+    CalculateJumpSpeeds(effIndex, m_caster->GetExactDist2d(x, y), speedXY, speedZ);
+    m_caster->GetMotionMaster()->MoveJump(x, y, z, speedXY, speedZ, EVENT_JUMP, arrivalSpellId);
 }
 
 void Spell::CalculateJumpSpeeds(uint8 i, float dist, float& speedXY, float& speedZ)
 {
-    if (m_spellInfo->Effects[i].MiscValue)
-        speedZ = float(m_spellInfo->Effects[i].MiscValue) / 10;
-    else if (m_spellInfo->Effects[i].MiscValueB)
-        speedZ = float(m_spellInfo->Effects[i].MiscValueB) / 10;
-    else
-        speedZ = 10.0f;
-    speedXY = dist * 10.0f / speedZ;
+    // MiscValue / MiscValueB are min/max parabolic height (tenths of yards), not speedZ.
+    // Treating MiscValue as speedZ made leaps like Heroic Leap look like a flat charge.
+    float runSpeed = m_caster->IsControlledByPlayer() ? playerBaseMoveSpeed[MOVE_RUN] : baseMoveSpeed[MOVE_RUN];
+    if (Creature* creature = m_caster->ToCreature())
+        runSpeed *= creature->GetCreatureTemplate()->speed_run;
+
+    float multiplier = m_spellInfo->Effects[i].ValueMultiplier;
+    if (multiplier <= 0.0f)
+        multiplier = 1.0f;
+
+    speedXY = std::min(runSpeed * 3.0f * multiplier, std::max(28.0f, m_caster->GetSpeed(MOVE_RUN) * 4.0f));
 
     // Keep above the spline validation minimum (velocity > 0.1f) for very short jumps.
     if (speedXY < 2.0f)
         speedXY = 2.0f;
+
+    if (dist < 0.1f)
+        dist = 0.1f;
+
+    float duration = dist / speedXY;
+    float durationSqr = duration * duration;
+    float minHeight = m_spellInfo->Effects[i].MiscValue ? m_spellInfo->Effects[i].MiscValue / 10.0f : 0.5f;
+    float maxHeight = m_spellInfo->Effects[i].MiscValueB ? m_spellInfo->Effects[i].MiscValueB / 10.0f : 1000.0f;
+    float height;
+    if (durationSqr < minHeight * 8.0f / float(Movement::gravity))
+        height = minHeight;
+    else if (durationSqr > maxHeight * 8.0f / float(Movement::gravity))
+        height = maxHeight;
+    else
+        height = float(Movement::gravity) * durationSqr / 8.0f;
+
+    speedZ = std::sqrt(2.0f * float(Movement::gravity) * height);
 }
 
 void Spell::EffectTeleportUnits(SpellEffIndex /*effIndex*/)
@@ -141,6 +169,14 @@ void Spell::EffectTeleportUnits(SpellEffIndex /*effIndex*/)
     uint32 mapid = destTarget->GetMapId();
     if (mapid == MAPID_INVALID)
         mapid = unitTarget->GetMapId();
+
+    // Same-map spell teleports (Shadowstep, Blink, etc.) must not CombatStop —
+    // that fires SMSG_CANCEL_COMBAT between SPELL_GO and MOVE_TELEPORT and drops
+    // the departure smoke/visual for observers.
+    uint32 options = 0;
+    if (mapid == unitTarget->GetMapId())
+        options |= TELE_TO_NOT_LEAVE_COMBAT;
+
     float x, y, z, orientation;
     destTarget->GetPosition(x, y, z, orientation);
     if (!orientation && m_targets.GetUnitTarget())
@@ -148,7 +184,11 @@ void Spell::EffectTeleportUnits(SpellEffIndex /*effIndex*/)
     SF_LOG_DEBUG("spells", "Spell::EffectTeleportUnits - teleport unit to %u %f %f %f %f\n", mapid, x, y, z, orientation);
 
     if (unitTarget->GetTypeId() == TypeID::TYPEID_PLAYER)
-        unitTarget->ToPlayer()->TeleportTo(mapid, x, y, z, orientation, unitTarget == m_caster ? TELE_TO_SPELL : 0);
+    {
+        if (unitTarget == m_caster)
+            options |= TELE_TO_SPELL;
+        unitTarget->ToPlayer()->TeleportTo(mapid, x, y, z, orientation, options);
+    }
     else if (mapid == unitTarget->GetMapId())
         unitTarget->NearTeleportTo(x, y, z, orientation, unitTarget == m_caster);
     else
@@ -430,8 +470,17 @@ void Spell::EffectLeapBack(SpellEffIndex effIndex)
 
     float speedxy = float(m_spellInfo->Effects[effIndex].MiscValue) / 10;
     float speedz = float(damage / 10);
-    //1891: Disengage
-    m_caster->JumpTo(speedxy, speedz, m_spellInfo->SpellIconID != 1891);
+
+    switch (m_spellInfo->Id)
+    {
+        case 781:    // Disengage
+        case 102383: // Wild Charge (Moonkin)
+            m_caster->JumpTo(speedxy, speedz, false);
+            break;
+        default:
+            m_caster->JumpTo(speedxy, speedz, true);
+            break;
+    }
 }
 
 void Spell::EffectSendTaxi(SpellEffIndex effIndex)

@@ -30,9 +30,11 @@
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
 #include "Spell.h"
+#include "AllowOnlyAbilityCast.h"
 #include "SpellAuraEffects.h"
 #include "SpellCalculations.h"
 #include "SpellInfo.h"
+#include "ShamanWeaponImbue.h"
 #include "SpellMgr.h"
 #include "SpellScript.h"
 #include "SpellValidation.h"
@@ -49,6 +51,15 @@
 #include "WorldSession.h"
 
 extern pEffect SpellEffects[TOTAL_SPELL_EFFECTS];
+
+namespace
+{
+    enum DarkmoonRingTossSpells
+    {
+        SPELL_DARKMOON_RING_TOSS_THROW = 101695,
+        SPELL_DARKMOON_RING_TOSS_ACTION = 102058
+    };
+}
 
 SpellDestination::SpellDestination()
 {
@@ -572,6 +583,7 @@ Spell::Spell(Unit* caster, SpellInfo const* info, TriggerCastFlags triggerFlags,
     focusObject = NULL;
     m_cast_count = 0;
     m_glyphIndex = 0;
+    m_researchData = NULL;
     m_triggeredByAuraSpell = NULL;
     m_spellAura = NULL;
 
@@ -595,7 +607,6 @@ Spell::Spell(Unit* caster, SpellInfo const* info, TriggerCastFlags triggerFlags,
         && !m_spellInfo->IsPassive() && !m_spellInfo->IsPositive();
 
     CleanupTargetList();
-    memset(m_effectExecuteData, 0, MAX_SPELL_EFFECTS * sizeof(ByteBuffer*));
 
     for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
         m_destTargets[i] = SpellDestination(*m_caster);
@@ -624,6 +635,7 @@ Spell::~Spell()
         ASSERT(m_caster->ToPlayer()->m_spellModTakingSpell != this);
 
     delete m_spellValue;
+    delete m_researchData;
 
     CheckEffectExecuteData();
 }
@@ -2512,7 +2524,10 @@ void Spell::DoAllEffectOnTarget(TargetInfo* target)
 
         // Do triggers for unit (reflect triggers passed on hit phase for correct drop charge)
         if (canEffectTrigger && missInfo != SPELL_MISS_REFLECT)
-            caster->ProcDamageAndSpell(unitTarget, procAttacker, procVictim, procEx, addhealth, m_attackType, m_spellInfo, m_triggeredByAuraSpell);
+        {
+            uint32 overheal = (addhealth > uint32(gain)) ? (addhealth - uint32(gain)) : 0;
+            caster->ProcDamageAndSpell(unitTarget, procAttacker, procVictim, procEx, addhealth, m_attackType, m_spellInfo, m_triggeredByAuraSpell, overheal);
+        }
     }
     // Do damage and triggers
     else if (m_damage > 0)
@@ -2635,7 +2650,7 @@ SpellMissInfo Spell::DoSpellHitOnUnit(Unit* unit, uint32 effectMask, bool scaleA
 
         if (m_caster->_IsValidAttackTarget(unit, m_spellInfo))
         {
-            unit->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_HITBYSPELL);
+            unit->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_HITBYSPELL, m_spellInfo->Id, m_caster);
             /// @todo This is a hack. But we do not know what types of stealth should be interrupted by CC
             if ((m_spellInfo->AttributesCu & SPELL_ATTR0_CU_AURA_CC) && unit->IsControlledByPlayer())
                 unit->RemoveAurasByType(SPELL_AURA_MOD_STEALTH);
@@ -2795,7 +2810,7 @@ void Spell::DoTriggersOnSpellHit(Unit* unit, uint32 effMask)
     if (!m_hitTriggerSpells.empty())
     {
         int _duration = 0;
-        for (HitTriggerSpellList::const_iterator i = m_hitTriggerSpells.begin(); i != m_hitTriggerSpells.end(); ++i)
+        for (HitTriggerSpellList::iterator i = m_hitTriggerSpells.begin(); i != m_hitTriggerSpells.end();)
         {
             if (CanExecuteTriggersOnHit(effMask, i->triggeredByAura) && roll_chance_i(i->chance))
             {
@@ -2818,6 +2833,12 @@ void Spell::DoTriggersOnSpellHit(Unit* unit, uint32 effMask)
                     }
                 }
             }
+
+            // Ruthlessness / Relentless Strikes: only one target may consume the trigger
+            if (i->triggeredByAura->Id == 14161 || i->triggeredByAura->Id == 58423)
+                i = m_hitTriggerSpells.erase(i);
+            else
+                ++i;
         }
     }
 
@@ -2995,6 +3016,7 @@ void Spell::prepare(SpellCastTargets const* targets, AuraEffect const* triggered
 
     uint32 tmpPowerCost = 0;
     uint32 tmpPeriodicPowerCost = 0;
+    bool foundSpellPower = false;
     for (uint32 i = 0; i < sSpellPowerStore.GetNumRows(); ++i)
     {
         const SpellPowerEntry* spellPower = sSpellPowerStore.LookupEntry(i);
@@ -3007,11 +3029,19 @@ void Spell::prepare(SpellCastTargets const* targets, AuraEffect const* triggered
         if (spellPower->ShapeShiftSpellID && !m_caster->ToPlayer()->HasAura(spellPower->ShapeShiftSpellID))
             continue;
 
+        foundSpellPower = true;
         m_powerType = spellPower->powerType;
+        // Mana % costs are of base (create) mana — matching client tooltips — not current max mana.
+        // Other powers (e.g. Demonic Fury) correctly use max power.
         uint32 maxPowerForCost = 0;
         if (spellPower->ChannelCostPercentageFloat ||
             (spellPower->ManaCostPercentageFloat && (m_powerType == POWER_MANA || m_powerType == POWER_DEMONIC_FURY)))
-            maxPowerForCost = m_caster->GetMaxPower(Powers(m_powerType));
+        {
+            if (m_powerType == POWER_MANA)
+                maxPowerForCost = m_caster->GetCreateMana();
+            else
+                maxPowerForCost = m_caster->GetMaxPower(Powers(m_powerType));
+        }
 
         Skyfire::Spells::SpellPowerCostCalculationData costData =
         {
@@ -3051,7 +3081,7 @@ void Spell::prepare(SpellCastTargets const* targets, AuraEffect const* triggered
                 GtNPCManaCostScalerEntry const* spellScaler = sGtNPCManaCostScalerStore.LookupEntry(m_spellInfo->SpellLevel - 1);
                 GtNPCManaCostScalerEntry const* casterScaler = sGtNPCManaCostScalerStore.LookupEntry(m_caster->getLevel() - 1);
                 if (spellScaler && casterScaler)
-                    tmpPowerCost *= casterScaler->ratio / spellScaler->ratio;
+                    tmpPowerCost = Skyfire::Spells::ScaleNpcSpellPowerCost(tmpPowerCost, casterScaler->ratio, spellScaler->ratio);
             }
         }
 
@@ -3099,6 +3129,12 @@ void Spell::prepare(SpellCastTargets const* targets, AuraEffect const* triggered
             }
         }
     }
+
+    // No SpellPower.dbc row (Mangle Bear, Lacerate, Thrash, ...): m_powerType stayed POWER_MANA.
+    // SPELL_START/GO then sent the wrong power and the client never cleared the cast
+    // (stuck yellow action-bar outline, no GCD on other abilities).
+    if (!foundSpellPower)
+        m_powerType = m_caster->getPowerType();
 
     // Fill cost data (not use power for item casts)
     m_powerCost = m_CastItem ? 0 : tmpPowerCost;
@@ -3200,8 +3236,9 @@ void Spell::prepare(SpellCastTargets const* targets, AuraEffect const* triggered
         if (!(_triggeredCastFlags & TRIGGERED_IGNORE_GCD))
             TriggerGlobalCooldown();
 
-        //item: first cast may destroy item and second cast causes crash
-        if (!m_casttime && !m_spellInfo->StartRecoveryTime && !m_castItemGUID && GetCurrentContainer() == CURRENT_GENERIC_SPELL)
+        // Instant spells: cast immediately even when they trigger a GCD.
+        // Waiting a tick (old StartRecoveryTime gate) is unnecessary and can desync client UI.
+        if (!m_casttime && !m_castItemGUID && GetCurrentContainer() == CURRENT_GENERIC_SPELL)
             cast(true);
     }
 }
@@ -4020,7 +4057,12 @@ void Spell::SendSpellStart()
     if (!IsNeedSendToClient())
         return;
 
-    uint32 castFlags = CAST_FLAG_HAS_TRAJECTORY;
+    // Only mark trajectory when the cast actually has one. Always setting this made the
+    // client wait on a missile for melee abilities (e.g. Mangle), leaving the action button
+    // pushed in and suppressing GCD/cooldown display even though damage applied.
+    uint32 castFlags = CAST_FLAG_NONE;
+    if (m_targets.HasTraj())
+        castFlags |= CAST_FLAG_HAS_TRAJECTORY;
     if (((IsTriggered() && !m_spellInfo->IsAutoRepeatRangedSpell()) || m_triggeredByAuraSpell) && !m_cast_count)
         castFlags |= CAST_FLAG_PENDING;
 
@@ -4380,6 +4422,27 @@ void Spell::SendSpellGo()
 
     if (m_targets.HasTraj())
         castFlags |= CAST_FLAG_ADJUST_MISSILE;
+
+    // Spells with category charges (Double Time Charge, Roll, etc.): client must not start
+    // DBC RecoveryTime on SPELL_GO — that looks like dumping both charges into a ~20s CD.
+    // Charge regen is driven by SMSG_SEND_SPELL_CHARGES instead.
+    if (m_caster->GetTypeId() == TypeID::TYPEID_PLAYER)
+    {
+        if (SpellCategoriesEntry const* categories = m_spellInfo->GetSpellCategories())
+        {
+            if (categories->ChargesCategory)
+            {
+                if (SpellCategoryEntry const* category = sSpellCategoryStore.LookupEntry(categories->ChargesCategory))
+                {
+                    uint32 maxCharges = category->MaxCharges;
+                    if (!maxCharges)
+                        maxCharges = uint32(m_caster->GetTotalAuraModifierByMiscValue(SPELL_AURA_MOD_CHARGES, int32(category->Id)));
+                    if (maxCharges && category->ChargeRegenTime)
+                        castFlags |= CAST_FLAG_NO_COOLDOWN;
+                }
+            }
+        }
+    }
 
     ObjectGuid casterGuid = m_CastItem ? m_CastItem->GetGUID() : m_caster->GetGUID();
     ObjectGuid casterUnitGuid = m_caster->GetGUID();
@@ -4809,49 +4872,112 @@ void Spell::SendSpellGo()
 
 void Spell::SendLogExecute()
 {
-    ObjectGuid CastergGuid = m_caster->GetGUID();
+    if (m_effectExecuteData.empty())
+        return;
 
-    WorldPacket data(SMSG_SPELL_EXECUTE_LOG, 8 + 4 + 4 + 4 + 4 + 8);
+    ObjectGuid casterGuid = m_caster->GetGUID();
+    bool hasSpellCastLogData = false;
+    uint32 spellCastLogDataCount = 0;
 
-    data.WriteGuidMask(CastergGuid, 0, 6, 5, 7, 2);
-    data.WriteBits(0, 19); // effCount
-    data.WriteGuidMask(CastergGuid, 4, 1, 3);
-    data.WriteBit(0); // HasSpellCastLogData
-    data.FlushBits();
-    data << uint32(m_spellInfo->Id);
+    WorldPacket data(SMSG_SPELL_EXECUTE_LOG);
 
-    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    data.WriteGuidMask(casterGuid, 0, 6, 5, 7, 2);
+    data.WriteBits(m_effectExecuteData.size(), 19);
+    data.WriteGuidMask(casterGuid, 4);
+
+    for (LogHelperMap::const_iterator itr = m_effectExecuteData.begin(); itr != m_effectExecuteData.end(); ++itr)
     {
-        if (!m_effectExecuteData[i])
-            continue;
+        SpellLogHelper const& helper = itr->second;
 
-        data << uint32(m_spellInfo->Effects[i].Effect); // SpellID
+        data.WriteBits(helper.ExtraAttacks.size(), 21);
+        for (std::list<SpellLogExtraAttacksHelper>::const_iterator extraAttack = helper.ExtraAttacks.begin(); extraAttack != helper.ExtraAttacks.end(); ++extraAttack)
+            data.WriteGuidMask(extraAttack->Guid, 5, 4, 2, 3, 1, 0, 6, 7);
 
-        data.append(*m_effectExecuteData[i]);
+        data.WriteBits(helper.Energizes.size(), 20);
+        for (std::list<SpellLogEnergizeHelper>::const_iterator energize = helper.Energizes.begin(); energize != helper.Energizes.end(); ++energize)
+            data.WriteGuidMask(energize->Guid, 0, 3, 1, 5, 6, 4, 7, 2);
 
-        delete m_effectExecuteData[i];
-        m_effectExecuteData[i] = NULL;
+        data.WriteBits(0, 21); // Unknown counter
+        data.WriteBits(helper.PetFeed.size(), 22);
+        data.WriteBits(helper.CreatedItems.size(), 22);
+
+        data.WriteBits(helper.Targets.size(), 24);
+        for (std::list<ObjectGuid>::const_iterator target = helper.Targets.begin(); target != helper.Targets.end(); ++target)
+            data.WriteGuidMask(*target, 6, 5, 1, 0, 3, 4, 7, 2);
     }
 
-    data.WriteGuidBytes(CastergGuid, 5, 7, 1, 6, 2, 0, 4, 3);
+    data.WriteGuidMask(casterGuid, 1, 3);
+
+    data.WriteBit(hasSpellCastLogData);
+    if (hasSpellCastLogData)
+        data.WriteBits(spellCastLogDataCount, 21);
+    data.FlushBits();
+
+    if (hasSpellCastLogData)
+    {
+        for (uint32 i = 0; i < spellCastLogDataCount; ++i)
+        {
+            data << uint32(0);
+            data << uint32(0);
+        }
+
+        data << uint32(0);
+        data << uint32(0);
+        data << uint32(0);
+    }
+
+    for (LogHelperMap::const_iterator itr = m_effectExecuteData.begin(); itr != m_effectExecuteData.end(); ++itr)
+    {
+        uint32 effIndex = itr->first;
+        SpellLogHelper const& helper = itr->second;
+
+        for (std::list<ObjectGuid>::const_iterator target = helper.Targets.begin(); target != helper.Targets.end(); ++target)
+            data.WriteGuidBytes(*target, 7, 5, 1, 2, 6, 4, 0, 3);
+
+        for (std::list<SpellLogEnergizeHelper>::const_iterator energize = helper.Energizes.begin(); energize != helper.Energizes.end(); ++energize)
+        {
+            data.WriteGuidBytes(energize->Guid, 3, 7, 5, 2, 0);
+            data << uint32(energize->PowerType);
+            data << uint32(energize->Value);
+            data.WriteGuidBytes(energize->Guid, 4, 1);
+            data << float(energize->Multiplier);
+            data.WriteGuidBytes(energize->Guid, 6);
+        }
+
+        for (std::list<SpellLogExtraAttacksHelper>::const_iterator extraAttack = helper.ExtraAttacks.begin(); extraAttack != helper.ExtraAttacks.end(); ++extraAttack)
+        {
+            data.WriteGuidBytes(extraAttack->Guid, 0, 6, 4, 7, 2, 5, 3);
+            data << uint32(extraAttack->Count);
+            data.WriteGuidBytes(extraAttack->Guid, 1);
+        }
+
+        for (std::list<uint32>::const_iterator petFeedEntry = helper.PetFeed.begin(); petFeedEntry != helper.PetFeed.end(); ++petFeedEntry)
+            data << uint32(*petFeedEntry);
+
+        data << uint32(m_spellInfo->Effects[effIndex].Effect);
+
+        for (std::list<uint32>::const_iterator itemEntry = helper.CreatedItems.begin(); itemEntry != helper.CreatedItems.end(); ++itemEntry)
+            data << uint32(*itemEntry);
+    }
+
+    data << uint32(m_spellInfo->Id);
+    data.WriteGuidBytes(casterGuid, 5, 7, 1, 6, 2, 0, 4, 3);
 
     m_caster->SendMessageToSet(&data, true);
+
+    m_effectExecuteData.clear();
 }
 
 void Spell::ExecuteLogEffectTakeTargetPower(uint8 effIndex, Unit* target, uint32 powerType, uint32 powerTaken, float gainMultiplier)
 {
-    InitEffectExecuteData(effIndex);
-    m_effectExecuteData[effIndex]->append(target->GetPackGUID());
-    *m_effectExecuteData[effIndex] << uint32(powerTaken);
-    *m_effectExecuteData[effIndex] << uint32(powerType);
-    *m_effectExecuteData[effIndex] << float(gainMultiplier);
+    ASSERT(effIndex < MAX_SPELL_EFFECTS);
+    m_effectExecuteData[effIndex].AddEnergize(target->GetGUID(), gainMultiplier, powerTaken, powerType);
 }
 
 void Spell::ExecuteLogEffectExtraAttacks(uint8 effIndex, Unit* victim, uint32 attCount)
 {
-    InitEffectExecuteData(effIndex);
-    m_effectExecuteData[effIndex]->append(victim->GetPackGUID());
-    *m_effectExecuteData[effIndex] << uint32(attCount);
+    ASSERT(effIndex < MAX_SPELL_EFFECTS);
+    m_effectExecuteData[effIndex].AddExtraAttacks(victim->GetGUID(), attCount);
 }
 
 void Spell::ExecuteLogEffectInterruptCast(uint8 /*effIndex*/, Unit* victim, uint32 spellId)
@@ -4886,48 +5012,46 @@ void Spell::ExecuteLogEffectInterruptCast(uint8 /*effIndex*/, Unit* victim, uint
     m_caster->SendMessageToSet(&data, true);
 }
 
-void Spell::ExecuteLogEffectDurabilityDamage(uint8 effIndex, Unit* victim, int32 itemId, int32 slot)
+void Spell::ExecuteLogEffectDurabilityDamage(uint8 effIndex, Unit* /*victim*/, int32 /*itemId*/, int32 /*slot*/)
 {
-    InitEffectExecuteData(effIndex);
-    m_effectExecuteData[effIndex]->append(victim->GetPackGUID());
-    *m_effectExecuteData[effIndex] << int32(itemId);
-    *m_effectExecuteData[effIndex] << int32(slot);
+    ASSERT(effIndex < MAX_SPELL_EFFECTS);
+    // Not represented in the 5.4.8 execute-log payload used here.
 }
 
 void Spell::ExecuteLogEffectOpenLock(uint8 effIndex, Object* obj)
 {
-    InitEffectExecuteData(effIndex);
-    m_effectExecuteData[effIndex]->append(obj->GetPackGUID());
+    ASSERT(effIndex < MAX_SPELL_EFFECTS);
+    m_effectExecuteData[effIndex].AddTarget(obj->GetGUID());
 }
 
 void Spell::ExecuteLogEffectCreateItem(uint8 effIndex, uint32 entry)
 {
-    InitEffectExecuteData(effIndex);
-    *m_effectExecuteData[effIndex] << uint32(entry);
+    ASSERT(effIndex < MAX_SPELL_EFFECTS);
+    m_effectExecuteData[effIndex].AddCreatedItem(entry);
 }
 
 void Spell::ExecuteLogEffectDestroyItem(uint8 effIndex, uint32 entry)
 {
-    InitEffectExecuteData(effIndex);
-    *m_effectExecuteData[effIndex] << uint32(entry);
+    ASSERT(effIndex < MAX_SPELL_EFFECTS);
+    m_effectExecuteData[effIndex].AddPetFeed(entry);
 }
 
 void Spell::ExecuteLogEffectSummonObject(uint8 effIndex, WorldObject* obj)
 {
-    InitEffectExecuteData(effIndex);
-    m_effectExecuteData[effIndex]->append(obj->GetPackGUID());
+    ASSERT(effIndex < MAX_SPELL_EFFECTS);
+    m_effectExecuteData[effIndex].AddTarget(obj->GetGUID());
 }
 
 void Spell::ExecuteLogEffectUnsummonObject(uint8 effIndex, WorldObject* obj)
 {
-    InitEffectExecuteData(effIndex);
-    m_effectExecuteData[effIndex]->append(obj->GetPackGUID());
+    ASSERT(effIndex < MAX_SPELL_EFFECTS);
+    m_effectExecuteData[effIndex].AddTarget(obj->GetGUID());
 }
 
 void Spell::ExecuteLogEffectResurrect(uint8 effIndex, Unit* target)
 {
-    InitEffectExecuteData(effIndex);
-    m_effectExecuteData[effIndex]->append(target->GetPackGUID());
+    ASSERT(effIndex < MAX_SPELL_EFFECTS);
+    m_effectExecuteData[effIndex].AddTarget(target->GetGUID());
 }
 
 void Spell::SendInterrupted(uint8 result)
@@ -5490,8 +5614,12 @@ SpellCastResult Spell::CheckCast(bool strict)
     // check cooldowns to prevent cheating
     if (m_caster->GetTypeId() == TypeID::TYPEID_PLAYER && !(m_spellInfo->Attributes & SPELL_ATTR0_PASSIVE))
     {
-        //can cast triggered (by aura only?) spells while have this flag
-        if (!(_triggeredCastFlags & TRIGGERED_IGNORE_CASTER_AURASTATE) && m_caster->ToPlayer()->HasFlag(PLAYER_FIELD_PLAYER_FLAGS, PLAYER_FLAGS_ALLOW_ONLY_ABILITY))
+        // SPELL_AURA_ALLOW_ONLY_ABILITY (Bladestorm, Killing Spree, ...):
+        // only spells matching the aura effect SpellClassMask may be cast
+        if (Skyfire::Spells::ShouldBlockCastForAllowOnlyAbility(
+                (_triggeredCastFlags & TRIGGERED_IGNORE_CASTER_AURASTATE) != 0,
+                m_caster->HasAuraType(SPELL_AURA_ALLOW_ONLY_ABILITY),
+                m_caster->HasAuraTypeWithAffectMask(SPELL_AURA_ALLOW_ONLY_ABILITY, m_spellInfo)))
             return SpellCastResult::SPELL_FAILED_SPELL_IN_PROGRESS;
 
         if (m_caster->ToPlayer()->HasSpellCooldown(m_spellInfo->Id))
@@ -5501,6 +5629,15 @@ SpellCastResult Spell::CheckCast(bool strict)
             else
                 return SpellCastResult::SPELL_FAILED_NOT_READY;
         }
+
+        if (SpellCategoriesEntry const* categories = m_spellInfo->GetSpellCategories())
+            if (categories->ChargesCategory && !m_caster->ToPlayer()->HasSpellCharge(categories->ChargesCategory))
+            {
+                if (m_triggeredByAuraSpell)
+                    return SpellCastResult::SPELL_FAILED_DONT_REPORT;
+                else
+                    return SpellCastResult::SPELL_FAILED_NOT_READY;
+            }
     }
 
     if (m_spellInfo->AttributesEx7 & SPELL_ATTR7_IS_CHEAT_SPELL && !m_caster->HasFlag(UNIT_FIELD_FLAGS2, UNIT_FLAG2_ALLOW_CHEAT_SPELLS))
@@ -5654,9 +5791,15 @@ SpellCastResult Spell::CheckCast(bool strict)
 
         if (target != m_caster)
         {
-            // Must be behind the target
+            // Must be behind the target (Ambush etc.). Cloak and Dagger opens from any facing.
             if ((m_spellInfo->AttributesCu & SPELL_ATTR0_CU_REQ_CASTER_BEHIND_TARGET) && target->HasInArc(static_cast<float>(M_PI), m_caster))
-                return SpellCastResult::SPELL_FAILED_NOT_BEHIND;
+            {
+                bool const cloakAndDagger = m_spellInfo->SpellFamilyName == SPELLFAMILY_ROGUE
+                    && (m_spellInfo->SpellFamilyFlags[0] & 0x00000700)
+                    && m_caster->HasAura(138106);
+                if (!cloakAndDagger)
+                    return SpellCastResult::SPELL_FAILED_NOT_BEHIND;
+            }
 
             // Target must be facing you
             if ((m_spellInfo->AttributesCu & SPELL_ATTR0_CU_REQ_TARGET_FACING_CASTER) && !target->HasInArc(static_cast<float>(M_PI), m_caster))
@@ -5665,6 +5808,11 @@ SpellCastResult Spell::CheckCast(bool strict)
             if (m_caster->GetEntry() != WORLD_TRIGGER) // Ignore LOS for gameobjects casts (wrongly casted by a trigger)
                 if (!(m_spellInfo->AttributesEx2 & SPELL_ATTR2_CAN_TARGET_NOT_IN_LOS) && !DisableMgr::IsDisabledFor(DISABLE_TYPE_SPELL, m_spellInfo->Id, NULL, SPELL_DISABLE_LOS) && !m_caster->IsWithinLOSInMap(target))
                     return SpellCastResult::SPELL_FAILED_LINE_OF_SIGHT;
+
+            // Smoke Bomb / similar: interfere targeting between inside and outside cloud
+            if (!IsTriggered() || GetCurrentContainer() == CURRENT_AUTOREPEAT_SPELL)
+                if (m_caster->HasVisionObscured(target))
+                    return SpellCastResult::SPELL_FAILED_VISION_OBSCURED;
         }
     }
 
@@ -5731,7 +5879,7 @@ SpellCastResult Spell::CheckCast(bool strict)
     }
 
     // check spell focus object
-    if (m_spellInfo->RequiresSpellFocus)
+    if (m_spellInfo->RequiresSpellFocus && !(m_spellInfo->Id == SPELL_DARKMOON_RING_TOSS_THROW && m_caster->HasAura(SPELL_DARKMOON_RING_TOSS_ACTION)))
     {
         focusObject = SearchSpellFocus();
         if (!focusObject)
@@ -6587,7 +6735,14 @@ SpellCastResult Spell::CheckRange(bool strict)
 
         if (m_caster->GetTypeId() == TypeID::TYPEID_PLAYER &&
             (m_spellInfo->FacingCasterFlags & SPELL_FACING_FLAG_INFRONT) && !m_caster->HasInArc(static_cast<float>(M_PI), target))
-            return !(_triggeredCastFlags & TRIGGERED_DONT_REPORT_CAST_ERROR) ? SpellCastResult::SPELL_FAILED_UNIT_NOT_INFRONT : SpellCastResult::SPELL_FAILED_DONT_REPORT;
+        {
+            // Cloak and Dagger: Ambush / Garrote / Cheap Shot may start from outside melee arc.
+            bool const cloakAndDagger = m_spellInfo->SpellFamilyName == SPELLFAMILY_ROGUE
+                && (m_spellInfo->SpellFamilyFlags[0] & 0x00000700)
+                && m_caster->HasAura(138106);
+            if (!cloakAndDagger)
+                return !(_triggeredCastFlags & TRIGGERED_DONT_REPORT_CAST_ERROR) ? SpellCastResult::SPELL_FAILED_UNIT_NOT_INFRONT : SpellCastResult::SPELL_FAILED_DONT_REPORT;
+        }
     }
 
     if (m_targets.HasDst() && !m_targets.HasTraj())
@@ -6642,6 +6797,10 @@ SpellCastResult Spell::CheckItems()
     Player* player = m_caster->ToPlayer();
     if (!player)
         return SpellCastResult::SPELL_CAST_OK;
+
+    if (!m_targets.GetItemTargetGUID() && Skyfire::Spells::IsSelfCastShamanWeaponImbue(m_spellInfo->Id))
+        if (Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, Skyfire::Spells::GetSelfCastShamanWeaponImbueEquipmentSlot()))
+            m_targets.SetItemTarget(item);
 
     if (!m_CastItem)
     {
@@ -6815,16 +6974,14 @@ SpellCastResult Spell::CheckItems()
                             player->SendEquipError(msg, NULL, NULL, m_spellInfo->Effects[i].ItemType);
                             return SpellCastResult::SPELL_FAILED_DONT_REPORT;
                         }
-                        else
+                        // Conjure Mana Gem / Brilliant Mana Gem: already own the gem -> recharge
+                        // (EFFECT_1 BasePoints is charge count for the tooltip, not a spell id).
+                        if (m_spellInfo->Id == 759 || m_spellInfo->Id == 119316)
                         {
-                            if (!(m_spellInfo->SpellFamilyName == SPELLFAMILY_MAGE && (m_spellInfo->SpellFamilyFlags[0] & 0x40000000)))
-                                return SpellCastResult::SPELL_FAILED_TOO_MANY_OF_ITEM;
-                            else if (!(player->HasItemCount(m_spellInfo->Effects[i].ItemType)))
-                                return SpellCastResult::SPELL_FAILED_TOO_MANY_OF_ITEM;
-                            else
-                                player->CastSpell(m_caster, m_spellInfo->Effects[EFFECT_1].CalcValue(), false);        // move this to anywhere
+                            player->CastSpell(player, m_spellInfo->Id == 119316 ? 119318 : 54408, false);
                             return SpellCastResult::SPELL_FAILED_DONT_REPORT;
                         }
+                        return SpellCastResult::SPELL_FAILED_TOO_MANY_OF_ITEM;
                     }
                 }
                 break;
@@ -7636,27 +7793,9 @@ void Spell::FinishTargetProcessing()
     SendLogExecute();
 }
 
-void Spell::InitEffectExecuteData(uint8 effIndex)
-{
-    ASSERT(effIndex < MAX_SPELL_EFFECTS);
-    if (!m_effectExecuteData[effIndex])
-    {
-        m_effectExecuteData[effIndex] = new ByteBuffer(0x20);
-        // first dword - target counter
-        *m_effectExecuteData[effIndex] << uint32(1);
-    }
-    else
-    {
-        // increase target counter by one
-        uint32 count = (*m_effectExecuteData[effIndex]).read<uint32>(0);
-        (*m_effectExecuteData[effIndex]).put<uint32>(0, ++count);
-    }
-}
-
 void Spell::CheckEffectExecuteData() const
 {
-    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
-        ASSERT(!m_effectExecuteData[i]);
+    ASSERT(m_effectExecuteData.empty());
 }
 
 void Spell::LoadScripts()

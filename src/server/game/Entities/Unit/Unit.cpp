@@ -7,6 +7,7 @@
 #include "BattlefieldMgr.h"
 #include "Battleground.h"
 #include "CellImpl.h"
+#include "CombatPackets.h"
 #include "Common.h"
 #include "ConditionMgr.h"
 #include "Creature.h"
@@ -30,7 +31,9 @@
 #include "PassiveAI.h"
 #include "Pet.h"
 #include "PetAI.h"
+#include "PetTransportSupport.h"
 #include "Player.h"
+#include "PvpResilience.h"
 #include "QuestDef.h"
 #include "ReputationMgr.h"
 #include "Spell.h"
@@ -38,6 +41,7 @@
 #include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "SpellValidation.h"
 #include "TemporarySummon.h"
 #include "Totem.h"
 #include "Transport.h"
@@ -131,6 +135,24 @@ ProcEventInfo::ProcEventInfo(Unit* actor, Unit* actionTarget, Unit* procTarget,
     _spellPhaseMask(spellPhaseMask), _hitMask(hitMask), _spell(spell),
     _damageInfo(damageInfo), _healInfo(healInfo)
 { }
+
+SpellInfo const* ProcEventInfo::GetSpellInfo() const
+{
+    if (_spell)
+        return _spell->GetSpellInfo();
+    if (_damageInfo)
+        return _damageInfo->GetSpellInfo();
+    return NULL;
+}
+
+SpellSchoolMask ProcEventInfo::GetSchoolMask() const
+{
+    if (SpellInfo const* info = GetSpellInfo())
+        return info->GetSchoolMask();
+    if (_damageInfo)
+        return _damageInfo->GetSchoolMask();
+    return SPELL_SCHOOL_MASK_NONE;
+}
 
 // we can disable this warning for this since it only
 // causes undefined behavior when passed to the base class constructor
@@ -383,7 +405,8 @@ void Unit::UpdateSplinePosition()
 
     m_movesplineTimer.Reset(positionUpdateDelay);
     Movement::Location loc = movespline->ComputePosition();
-    if (GetTransGUID())
+    bool const hasTransport = GetTransGUID() != 0;
+    if (hasTransport)
     {
         Position& pos = m_movementInfo.transport.pos;
         pos.m_positionX = loc.x;
@@ -399,7 +422,7 @@ void Unit::UpdateSplinePosition()
         loc.orientation = GetOrientation();
 
     // Ground spline paths can interpolate below terrain on hills; snap server position to vmap.
-    if (GetTypeId() == TypeID::TYPEID_UNIT && !movespline->isFalling())
+    if (Skyfire::PetTransport::ShouldApplySplineGroundClamp(hasTransport, GetTypeId() == TypeID::TYPEID_UNIT, movespline->isFalling()))
     {
         Creature const* creature = ToCreature();
         CreatureTemplate const* cInfo = creature->GetCreatureTemplate();
@@ -536,7 +559,8 @@ bool Unit::HasVisionObscured(Unit const* target) const
             bool failCast = true;
             for (Unit::AuraEffectList::iterator j = targetStateAuras.begin(); j != targetStateAuras.end();)
             {
-                if (((*i)->GetId() == (*j)->GetId()) && ((*i)->GetCasterGUID() == (*i)->GetCasterGUID()))
+                // Same smoke cloud (spell + caster) on both sides => targeting allowed
+                if ((*i)->GetId() == (*j)->GetId() && (*i)->GetCasterGUID() == (*j)->GetCasterGUID())
                 {
                     failCast = false;
                     j = targetStateAuras.erase(j);
@@ -551,12 +575,11 @@ bool Unit::HasVisionObscured(Unit const* target) const
         }
     }
 
-    if (!targetStateAuras.empty()) // target has some aura that caster not
-    {
-        for (Unit::AuraEffectList::const_iterator i = targetStateAuras.begin(); i != targetStateAuras.end(); ++i)
-            if (!(*i)->GetCaster() || !IsFriendlyTo((*i)->GetCaster()))
+    // target has some aura that caster not (cannot target into/out of hostile smoke)
+    for (Unit::AuraEffectList::const_iterator i = targetStateAuras.begin(); i != targetStateAuras.end(); ++i)
+        if (Unit* auraCaster = (*i)->GetCaster())
+            if (!IsFriendlyTo(auraCaster))
                 return true;
-    }
 
     return false;
 }
@@ -571,6 +594,78 @@ bool Unit::HasAuraTypeWithFamilyFlags(AuraType auraType, uint32 familyName, uint
             if (iterSpellProto->SpellFamilyName == familyName && iterSpellProto->SpellFamilyFlags[0] & familyFlags)
                 return true;
     return false;
+}
+
+bool Unit::HasDirtyTricks() const
+{
+    if (HasAura(108216)) // Dirty Tricks
+        return true;
+
+    if (Player const* player = ToPlayer())
+        return player->HasSpell(108216);
+
+    return false;
+}
+
+bool Unit::IsPoisonOrBleedSpell(SpellInfo const* spell)
+{
+    if (!spell)
+        return false;
+
+    if (spell->Dispel == DISPEL_POISON)
+        return true;
+
+    if (Skyfire::Spells::HasMechanic(spell->GetAllEffectsMechanicMask(), MECHANIC_BLEED))
+        return true;
+
+    switch (spell->Id)
+    {
+        case 703:    // Garrote
+        case 1943:   // Rupture
+        case 2818:   // Deadly Poison
+        case 8680:   // Wound Poison
+        case 79136:  // Venomous Wound
+        case 89775:  // Hemorrhage (DoT)
+        case 113780: // Deadly Poison (instant)
+        case 121411: // Crimson Tempest
+        case 122233: // Crimson Tempest (DoT)
+            return true;
+        default:
+            break;
+    }
+
+    if (spell->SpellFamilyName == SPELLFAMILY_ROGUE)
+    {
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            switch (spell->Effects[i].ApplyAuraName)
+            {
+                case SPELL_AURA_PERIODIC_DAMAGE:
+                case SPELL_AURA_PERIODIC_DAMAGE_PERCENT:
+                case SPELL_AURA_PERIODIC_LEECH:
+                    return true;
+                default:
+                    break;
+            }
+        }
+
+        // Instant poison / Envenom style nature damage
+        if (spell->GetSchoolMask() & SPELL_SCHOOL_MASK_NATURE)
+            return true;
+    }
+
+    return false;
+}
+
+bool Unit::ShouldDirtyTricksIgnoreCrowdControlBreak(uint32 ccAuraId, uint64 ccCasterGUID, Unit const* attacker, SpellInfo const* damageSpell) const
+{
+    if ((ccAuraId != 2094 && ccAuraId != 1776) || !attacker || !damageSpell) // Blind / Gouge
+        return false;
+
+    if (ccCasterGUID != attacker->GetGUID() || !attacker->HasDirtyTricks())
+        return false;
+
+    return IsPoisonOrBleedSpell(damageSpell);
 }
 
 bool Unit::HasBreakableByDamageAuraType(AuraType type, uint32 excludeAura) const
@@ -656,7 +751,9 @@ void Unit::SendMeleeAttackStop(Unit* victim)
     data.WriteBit(attackerGuid[2]);
     data.WriteBit(attackerGuid[5]);
     data.WriteBit(victimGuid[4]);
-    data.WriteBit(1);
+    bool const victimIsDead = Skyfire::CombatPackets::GetAttackStopVictimDeadBit(
+        victim != NULL, victim && victim->isDead());
+    data.WriteBit(victimIsDead);
     data.WriteBit(victimGuid[3]);
     data.WriteBit(victimGuid[0]);
     data.WriteBit(victimGuid[2]);
@@ -3686,11 +3783,22 @@ void Unit::Mount(uint32 mount, uint32 VehicleId, uint32 creatureEntry)
         if (pet)
         {
             Battleground* bg = ToPlayer()->GetBattleground();
-            // don't unsummon pet in arena but SetFlag UNIT_FLAG_STUNNED to disable pet's interface
-            if (bg && bg->isArena())
-                pet->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_STUNNED);
-            else
+            bool hasFlyingMountSpeedAura = false;
+            if (HasAuraType(SPELL_AURA_MOUNTED))
+                if (MountCapabilityEntry const* mountCapability = sMountCapabilityStore.LookupEntry(GetAuraEffectsByType(SPELL_AURA_MOUNTED).front()->GetAmount()))
+                    if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(mountCapability->SpeedModSpell))
+                        hasFlyingMountSpeedAura = spellInfo->HasAura(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED);
+
+            if (Skyfire::PetTransport::ShouldTemporarilyUnsummonMountedPet(bg && !bg->isArena(), hasFlyingMountSpeedAura))
                 player->UnsummonPetTemporaryIfAny();
+            else if (!player->GetTransport())
+            {
+                pet->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_STUNNED);
+                pet->AI()->EnterEvadeMode();
+            }
+            else if (Skyfire::PetTransport::ShouldClearMountedPetStunForTransport(player->IsMounted(),
+                player->GetTransport() != NULL, pet->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_STUNNED)))
+                pet->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_STUNNED);
         }
 
         player->SendMovementSetCollisionHeight(player->GetCollisionHeight(true));
@@ -3916,6 +4024,12 @@ bool Unit::_IsValidAttackTarget(Unit const* target, SpellInfo const* bySpell, Wo
 
     Player const* playerAffectingAttacker = HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PVP_ATTACKABLE) ? GetAffectingPlayer() : NULL;
     Player const* playerAffectingTarget = target->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PVP_ATTACKABLE) ? target->GetAffectingPlayer() : NULL;
+
+    // Smoke Bomb (and similar): block melee/auto-attack into or out of the cloud.
+    // Allies of the smoke caster are exempt inside HasVisionObscured. AoE spells are
+    // handled separately; only check here when there is no bySpell or it is single-target.
+    if ((!bySpell || !bySpell->IsAffectingArea()) && HasVisionObscured(target))
+        return false;
 
     // check duel - before sanctuary checks
     if (playerAffectingAttacker && playerAffectingTarget)
@@ -6799,7 +6913,8 @@ void Unit::SetStunned(bool apply)
 
         // don't remove UNIT_FLAG_STUNNED for pet when owner is mounted (disabled pet's interface)
         Unit* owner = GetOwner();
-        if (!owner || (owner->GetTypeId() == TypeID::TYPEID_PLAYER && !owner->ToPlayer()->IsMounted()))
+        if (!owner || (owner->GetTypeId() == TypeID::TYPEID_PLAYER
+                && (!owner->ToPlayer()->IsMounted() || owner->ToPlayer()->GetTransport())))
             RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_STUNNED);
 
         if (!HasUnitState(UNIT_STATE_ROOT))         // prevent moving if it also has root effect
@@ -7338,54 +7453,54 @@ void Unit::SetPvP(bool state)
         RemoveByteFlag(UNIT_FIELD_SHAPESHIFT_FORM, 1, UNIT_BYTE2_FLAG_PVP);
 }
 
-void Unit::SendPlaySpellVisual(uint32 SpellVisualId, float x, float y, float z, float orientation, uint8 SpeedTime, uint16 MissReason, uint16 ReflectStatus)
+void Unit::SendPlaySpellVisual(uint32 spellVisualId, uint64 target, float x, float y, float z, float speed, bool hasDest, uint16 missReason, uint16 reflectStatus)
 {
-    ObjectGuid SourceGuid = GetGUID();
-    ObjectGuid TargetGuid;
+    ObjectGuid sourceGuid = GetGUID();
+    ObjectGuid targetGuid = target;
 
     WorldPacket data(SMSG_PLAY_SPELL_VISUAL, 4 + 4 + 4 + 8);
 
-    data.WriteBit(SourceGuid[4]);
-    data.WriteBit(TargetGuid[6]);
-    data.WriteBit(TargetGuid[4]);
-    data.WriteBit(TargetGuid[7]);
-    data.WriteBit(SourceGuid[6]);
-    data.WriteBit(TargetGuid[2]);
-    data.WriteBit(TargetGuid[0]);
-    data.WriteBit(SourceGuid[2]);
-    data.WriteBit(SpeedTime);
-    data.WriteBit(SourceGuid[7]);
-    data.WriteBit(TargetGuid[3]);
-    data.WriteBit(TargetGuid[1]);
-    data.WriteBit(SourceGuid[0]);
-    data.WriteBit(SourceGuid[1]);
-    data.WriteBit(TargetGuid[5]);
-    data.WriteBit(SourceGuid[5]);
-    data.WriteBit(SourceGuid[3]);
+    data.WriteBit(targetGuid[4]);
+    data.WriteBit(sourceGuid[6]);
+    data.WriteBit(sourceGuid[4]);
+    data.WriteBit(sourceGuid[7]);
+    data.WriteBit(targetGuid[6]);
+    data.WriteBit(sourceGuid[2]);
+    data.WriteBit(sourceGuid[0]);
+    data.WriteBit(targetGuid[2]);
+    data.WriteBit(hasDest);
+    data.WriteBit(targetGuid[7]);
+    data.WriteBit(sourceGuid[3]);
+    data.WriteBit(sourceGuid[1]);
+    data.WriteBit(targetGuid[0]);
+    data.WriteBit(targetGuid[1]);
+    data.WriteBit(sourceGuid[5]);
+    data.WriteBit(targetGuid[5]);
+    data.WriteBit(targetGuid[3]);
 
     data << float(z);
-    data.WriteByteSeq(SourceGuid[2]);
-    data.WriteByteSeq(SourceGuid[6]);
-    data.WriteByteSeq(SourceGuid[5]);
-    data.WriteByteSeq(TargetGuid[2]);
-    data.WriteByteSeq(SourceGuid[1]);
+    data.WriteByteSeq(targetGuid[2]);
+    data.WriteByteSeq(targetGuid[6]);
+    data.WriteByteSeq(targetGuid[5]);
+    data.WriteByteSeq(sourceGuid[2]);
+    data.WriteByteSeq(targetGuid[1]);
     data << float(x);
-    data.WriteByteSeq(SourceGuid[3]);
-    data << uint16(ReflectStatus);
-    data.WriteByteSeq(TargetGuid[4]);
-    data.WriteByteSeq(TargetGuid[7]);
-    data << float(orientation);
+    data.WriteByteSeq(targetGuid[3]);
+    data << uint16(reflectStatus);
+    data.WriteByteSeq(sourceGuid[4]);
+    data.WriteByteSeq(sourceGuid[7]);
+    data << float(speed);
     data << float(y);
-    data.WriteByteSeq(SourceGuid[4]);
-    data.WriteByteSeq(TargetGuid[5]);
-    data << uint32(SpellVisualId);
-    data.WriteByteSeq(TargetGuid[1]);
-    data.WriteByteSeq(SourceGuid[7]);
-    data << uint16(MissReason);
-    data.WriteByteSeq(TargetGuid[0]);
-    data.WriteByteSeq(TargetGuid[6]);
-    data.WriteByteSeq(SourceGuid[0]);
-    data.WriteByteSeq(TargetGuid[3]);
+    data.WriteByteSeq(targetGuid[4]);
+    data.WriteByteSeq(sourceGuid[5]);
+    data << uint32(spellVisualId);
+    data.WriteByteSeq(sourceGuid[1]);
+    data.WriteByteSeq(targetGuid[7]);
+    data << uint16(missReason);
+    data.WriteByteSeq(sourceGuid[0]);
+    data.WriteByteSeq(sourceGuid[6]);
+    data.WriteByteSeq(targetGuid[0]);
+    data.WriteByteSeq(sourceGuid[3]);
 
     SendMessageToSet(&data, true);
 }
@@ -7430,6 +7545,19 @@ void Unit::ApplyResilience(Unit const* victim, int32* damage, bool isCrit) const
     if (isCrit)
         *damage -= target->GetCritDamageReduction(*damage);
     *damage -= target->GetDamageReduction(*damage);
+}
+
+uint32 Unit::GetCritDamageReduction(uint32 damage) const
+{
+    return GetCombatRatingDamageReduction(CombatRating::CR_RESILIENCE_CRIT_TAKEN, 2.2f, 33.0f, damage);
+}
+
+uint32 Unit::GetDamageReduction(uint32 damage) const
+{
+    float percent = Skyfire::Combat::CalculatePvpResilienceReductionPercent(
+        getLevel(), GetCombatRatingValue(CombatRating::CR_RESILIENCE_PLAYER_DAMAGE_TAKEN));
+
+    return CalculatePct(damage, percent);
 }
 
 // Melee based spells can be miss, parry or dodge on this step
@@ -7645,6 +7773,18 @@ float Unit::GetCombatRatingReduction(CombatRating cr) const
     return 0.0f;
 }
 
+uint32 Unit::GetCombatRatingValue(CombatRating cr) const
+{
+    if (Player const* player = ToPlayer())
+        return player->GetUInt32Value(PLAYER_FIELD_COMBAT_RATINGS + uint8(cr));
+    // Player's pet get resilience from owner
+    else if (IsPet() && GetOwner())
+        if (Player* owner = GetOwner()->ToPlayer())
+            return owner->GetUInt32Value(PLAYER_FIELD_COMBAT_RATINGS + uint8(cr));
+
+    return 0;
+}
+
 uint32 Unit::GetCombatRatingDamageReduction(CombatRating cr, float rate, float cap, uint32 damage) const
 {
     float percent = std::min(GetCombatRatingReduction(cr) * rate, cap);
@@ -7658,6 +7798,8 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
         switch (form)
         {
             case FORM_CAT:
+            {
+                bool const kingOfTheJungle = HasAura(102543); // Incarnation: King of the Jungle
                 // Based on Hair color
                 if (getRace() == RACE_NIGHTELF)
                 {
@@ -7666,17 +7808,17 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                     {
                         case 7: // Violet
                         case 8:
-                            return 29405;
+                            return kingOfTheJungle ? 43764 : 29405;
                         case 3: // Light Blue
-                            return 29406;
+                            return kingOfTheJungle ? 43763 : 29406;
                         case 0: // Green
                         case 1: // Light Green
                         case 2: // Dark Green
-                            return 29407;
+                            return kingOfTheJungle ? 43762 : 29407;
                         case 4: // White
-                            return 29408;
+                            return kingOfTheJungle ? 43765 : 29408;
                         default: // original - Dark Blue
-                            return 892;
+                            return kingOfTheJungle ? 43761 : 892;
                     }
                 }
                 else if (getRace() == RACE_TROLL)
@@ -7686,19 +7828,19 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                     {
                         case 0: // Red
                         case 1:
-                            return 33668;
+                            return kingOfTheJungle ? 43776 : 33668;
                         case 2: // Yellow
                         case 3:
-                            return 33667;
+                            return kingOfTheJungle ? 43778 : 33667;
                         case 4: // Blue
                         case 5:
                         case 6:
-                            return 33666;
+                            return kingOfTheJungle ? 43773 : 33666;
                         case 7: // Purple
                         case 10:
-                            return 33665;
+                            return kingOfTheJungle ? 43775 : 33665;
                         default: // original - white
-                            return 33669;
+                            return kingOfTheJungle ? 43777 : 33669;
                     }
                 }
                 else if (getRace() == RACE_WORGEN)
@@ -7711,17 +7853,17 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                         switch (skinColor)
                         {
                             case 1: // Brown
-                                return 33662;
+                                return kingOfTheJungle ? 43781 : 33662;
                             case 2: // Black
                             case 7:
-                                return 33661;
+                                return kingOfTheJungle ? 43780 : 33661;
                             case 4: // yellow
-                                return 33664;
+                                return kingOfTheJungle ? 43784 : 33664;
                             case 3: // White
                             case 5:
-                                return 33663;
+                                return kingOfTheJungle ? 43785 : 33663;
                             default: // original - Gray
-                                return 33660;
+                                return kingOfTheJungle ? 43782 : 33660;
                         }
                     }
                     // Female
@@ -7731,17 +7873,17 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                         {
                             case 5: // Brown
                             case 6:
-                                return 33662;
+                                return kingOfTheJungle ? 43781 : 33662;
                             case 7: // Black
                             case 8:
-                                return 33661;
+                                return kingOfTheJungle ? 43780 : 33661;
                             case 3: // yellow
                             case 4:
-                                return 33664;
+                                return kingOfTheJungle ? 43784 : 33664;
                             case 2: // White
-                                return 33663;
+                                return kingOfTheJungle ? 43785 : 33663;
                             default: // original - Gray
-                                return 33660;
+                                return kingOfTheJungle ? 43782 : 33660;
                         }
                     }
                 }
@@ -7758,24 +7900,24 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                             case 13:
                             case 14:
                             case 18: // Completly White
-                                return 29409;
+                                return kingOfTheJungle ? 43769 : 29409;
                             case 9: // Light Brown
                             case 10:
                             case 11:
-                                return 29410;
+                                return kingOfTheJungle ? 43770 : 29410;
                             case 6: // Brown
                             case 7:
                             case 8:
-                                return 29411;
+                                return kingOfTheJungle ? 43768 : 29411;
                             case 0: // Dark
                             case 1:
                             case 2:
                             case 3: // Dark Grey
                             case 4:
                             case 5:
-                                return 29412;
+                                return kingOfTheJungle ? 43766 : 29412;
                             default: // original - Grey
-                                return 8571;
+                                return kingOfTheJungle ? 43767 : 8571;
                         }
                     }
                     // Female
@@ -7784,20 +7926,20 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                         switch (skinColor)
                         {
                             case 10: // White
-                                return 29409;
+                                return kingOfTheJungle ? 43769 : 29409;
                             case 6: // Light Brown
                             case 7:
-                                return 29410;
+                                return kingOfTheJungle ? 43770 : 29410;
                             case 4: // Brown
                             case 5:
-                                return 29411;
+                                return kingOfTheJungle ? 43768 : 29411;
                             case 0: // Dark
                             case 1:
                             case 2:
                             case 3:
-                                return 29412;
+                                return kingOfTheJungle ? 43766 : 29412;
                             default: // original - Grey
-                                return 8571;
+                                return kingOfTheJungle ? 43767 : 8571;
                         }
                     }
                 }
@@ -7805,7 +7947,10 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                     return 892;
                 else
                     return 8571;
+            }
             case FORM_BEAR:
+            {
+                bool const ursocsSon = HasAura(102558); // Incarnation: Son of Ursoc
                 // Based on Hair color
                 if (getRace() == RACE_NIGHTELF)
                 {
@@ -7815,15 +7960,15 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                         case 0: // Green
                         case 1: // Light Green
                         case 2: // Dark Green
-                            return 29413; // 29415?
+                            return ursocsSon ? 43759 : 29413;
                         case 6: // Dark Blue
-                            return 29414;
+                            return ursocsSon ? 43756 : 29414;
                         case 4: // White
-                            return 29416;
+                            return ursocsSon ? 43760 : 29416;
                         case 3: // Light Blue
-                            return 29417;
+                            return ursocsSon ? 43757 : 29417;
                         default: // original - Violet
-                            return 2281;
+                            return ursocsSon ? 43758 : 2281;
                     }
                 }
                 else if (getRace() == RACE_TROLL)
@@ -7833,20 +7978,20 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                     {
                         case 0: // Red
                         case 1:
-                            return 33657;
+                            return ursocsSon ? 43748 : 33657;
                         case 2: // Yellow
                         case 3:
-                            return 33659;
+                            return ursocsSon ? 43750 : 33659;
                         case 7: // Purple
                         case 10:
-                            return 33656;
+                            return ursocsSon ? 43747 : 33656;
                         case 8: // White
                         case 9:
                         case 11:
                         case 12:
-                            return 33658;
+                            return ursocsSon ? 43749 : 33658;
                         default: // original - Blue
-                            return 33655;
+                            return ursocsSon ? 43746 : 33655;
                     }
                 }
                 else if (getRace() == RACE_WORGEN)
@@ -7859,17 +8004,17 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                         switch (skinColor)
                         {
                             case 1: // Brown
-                                return 33652;
+                                return ursocsSon ? 43752 : 33652;
                             case 2: // Black
                             case 7:
-                                return 33651;
+                                return ursocsSon ? 43751 : 33651;
                             case 4: // Yellow
-                                return 33653;
+                                return ursocsSon ? 43755 : 33653;
                             case 3: // White
                             case 5:
-                                return 33654;
+                                return ursocsSon ? 43754 : 33654;
                             default: // original - Gray
-                                return 33650;
+                                return ursocsSon ? 43753 : 33650;
                         }
                     }
                     // Female
@@ -7879,17 +8024,17 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                         {
                             case 5: // Brown
                             case 6:
-                                return 33652;
+                                return ursocsSon ? 43752 : 33652;
                             case 7: // Black
                             case 8:
-                                return 33651;
+                                return ursocsSon ? 43751 : 33651;
                             case 3: // yellow
                             case 4:
-                                return 33654;
+                                return ursocsSon ? 43755 : 33654;
                             case 2: // White
-                                return 33653;
+                                return ursocsSon ? 43754 : 33653;
                             default: // original - Gray
-                                return 33650;
+                                return ursocsSon ? 43753 : 33650;
                         }
                     }
                 }
@@ -7905,25 +8050,25 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                             case 0: // Dark (Black)
                             case 1:
                             case 2:
-                                return 29418;
+                                return ursocsSon ? 43741 : 29418;
                             case 3: // White
                             case 4:
                             case 5:
                             case 12:
                             case 13:
                             case 14:
-                                return 29419;
+                                return ursocsSon ? 43743 : 29419;
                             case 9: // Light Brown/Grey
                             case 10:
                             case 11:
                             case 15:
                             case 16:
                             case 17:
-                                return 29420;
+                                return ursocsSon ? 43745 : 29420;
                             case 18: // Completly White
-                                return 29421;
+                                return ursocsSon ? 43744 : 29421;
                             default: // original - Brown
-                                return 2289;
+                                return ursocsSon ? 43742 : 2289;
                         }
                     }
                     // Female
@@ -7933,19 +8078,19 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                         {
                             case 0: // Dark (Black)
                             case 1:
-                                return 29418;
+                                return ursocsSon ? 43741 : 29418;
                             case 2: // White
                             case 3:
-                                return 29419;
+                                return ursocsSon ? 43743 : 29419;
                             case 6: // Light Brown/Grey
                             case 7:
                             case 8:
                             case 9:
-                                return 29420;
+                                return ursocsSon ? 43745 : 29420;
                             case 10: // Completly White
-                                return 29421;
+                                return ursocsSon ? 43744 : 29421;
                             default: // original - Brown
-                                return 2289;
+                                return ursocsSon ? 43742 : 2289;
                         }
                     }
                 }
@@ -7953,6 +8098,7 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                     return 2281;
                 else
                     return 2289;
+            }
             case FORM_FLIGHT:
                 if (Player::TeamForRace(getRace()) == ALLIANCE)
                     return 20857;
@@ -7964,9 +8110,39 @@ uint32 Unit::GetModelForForm(ShapeshiftForm form) const
                     return 37730;
                 return 21244;
             case FORM_MOONKIN:
-                if (Player::TeamForRace(getRace()) == ALLIANCE)
-                    return 37173;
-                return 37174;
+            {
+                bool const chosenOfElune = HasAura(102560); // Incarnation: Chosen of Elune
+                bool const glyphOfStars = HasAura(114301);  // Glyph of Stars
+                if (getRace() == RACE_TROLL)
+                {
+                    if (chosenOfElune)
+                        return 43789;
+                    if (!glyphOfStars)
+                        return 37174;
+                }
+                else if (getRace() == RACE_TAUREN)
+                {
+                    if (chosenOfElune)
+                        return 43786;
+                    if (!glyphOfStars)
+                        return 15375;
+                }
+                else if (getRace() == RACE_NIGHTELF)
+                {
+                    if (chosenOfElune)
+                        return 43790;
+                    if (!glyphOfStars)
+                        return 15374;
+                }
+                else if (getRace() == RACE_WORGEN)
+                {
+                    if (chosenOfElune)
+                        return 43787;
+                    if (!glyphOfStars)
+                        return 37173;
+                }
+                break; // Glyph of Stars / unknown race: SpellShapeshiftForm model
+            }
             case FORM_TRAVEL:
                 if (Player::TeamForRace(getRace()) == ALLIANCE)
                     return 40816;
@@ -8688,11 +8864,12 @@ void Unit::SendTeleportPacket(Position& pos)
     // SMSG_MOVE_UPDATE_TELEPORT is sent to nearby players to signal the teleport
     // SMSG_MOVE_TELEPORT is sent to self in order to trigger CMSG_MOVE_TELEPORT_ACK and update the position server side
 
-    // This oldPos actually contains the destination position if the Unit is a Player.
-    Position oldPos = { GetPositionX(), GetPositionY(), GetPositionZMinusOffset(), GetOrientation() };
+    // Players are already at the destination when TeleportTo calls this; creatures are still
+    // at the departure point and `pos` is the destination.
+    Position const preBroadcastPos = { GetPositionX(), GetPositionY(), GetPositionZMinusOffset(), GetOrientation() };
 
     if (GetTypeId() == TypeID::TYPEID_UNIT)
-        Relocate(&pos); // Relocate the unit to its new position in order to build the packets correctly.
+        Relocate(&pos); // Build packets at the destination for creatures.
 
     WorldPacket data(SMSG_MOVE_UPDATE_TELEPORT, 38);
     WriteMovementInfo(data);
@@ -8704,14 +8881,25 @@ void Unit::SendTeleportPacket(Position& pos)
         ToPlayer()->SendDirectMessage(&data2); // Send the SMSG_MOVE_TELEPORT packet to self.
     }
 
-    // Relocate the player/creature to its old position, so we can broadcast to nearby players correctly
+    // Broadcast from the departure cell so nearby observers still receive the packet,
+    // then put the unit back where packets claimed it is.
     if (GetTypeId() == TypeID::TYPEID_PLAYER)
+    {
+        // `pos` is the pre-teleport location; `preBroadcastPos` is the destination.
         Relocate(&pos);
+        SendMessageToSet(&data, false);
+        // Remaining at the old position until MOVE_TELEPORT_ACK desyncs observers:
+        // Shadowstep's speed aura (and other post-teleport updates) would apply at the
+        // departure point while clients already show the player at the destination,
+        // causing rubber-band / C2C lag until a later visibility refresh (~30-60s).
+        Relocate(&preBroadcastPos);
+    }
     else
-        Relocate(&oldPos);
-
-    // Broadcast the packet to everyone except self.
-    SendMessageToSet(&data, false);
+    {
+        Relocate(&preBroadcastPos);
+        SendMessageToSet(&data, false);
+        // Creature callers (NearTeleportTo) UpdatePosition to the destination next.
+    }
 }
 
 bool Unit::UpdatePosition(float x, float y, float z, float orientation, bool teleport)
@@ -8926,8 +9114,8 @@ void Unit::SendRemoveFromThreatListOpcode(HostileReference* pHostileReference)
     SendMessageToSet(&data, false);
 }
 
-// baseRage means damage taken when attacker = false
-void Unit::RewardRage(uint32 baseRage, bool attacker)
+// baseRage: weapon-speed rage for attacker=true, damage taken for attacker=false
+void Unit::RewardRage(float baseRage, bool attacker)
 {
     float addRage;
 
@@ -8939,17 +9127,22 @@ void Unit::RewardRage(uint32 baseRage, bool attacker)
     }
     else
     {
-        // Calculate rage from health and damage taken
-        //! ToDo: Check formula
-        addRage = floor(0.5f + (25.7f * baseRage / GetMaxHealth()));
-        // Berserker Rage effect
-        if (HasAura(18499))
-            addRage *= 2.0f;
+        // MoP warriors only generate rage from damage taken in Berserker Stance.
+        // (Bear form and other rage users keep damage-taken rage.)
+        if (GetTypeId() == TypeID::TYPEID_PLAYER && getClass() == CLASS_WARRIOR && !HasAura(2458))
+            return;
+
+        // MoP: 1 rage per 1% of maximum health lost
+        if (!GetMaxHealth())
+            return;
+
+        addRage = 100.0f * baseRage / float(GetMaxHealth());
+        // MoP: Berserker Rage applies Enrage (12880) instead of doubling damage-taken rage.
     }
 
     addRage *= sWorld->getRate(Rates::RATE_POWER_RAGE_INCOME);
 
-    ModifyPower(POWER_RAGE, uint32(addRage * 10));
+    ModifyPower(POWER_RAGE, int32(addRage * 10.0f));
 }
 
 void Unit::StopAttackFaction(uint32 faction_id)
@@ -9550,7 +9743,7 @@ void Unit::BuildValuesUpdate(uint8 updateType, ByteBuffer* data, Player* target)
     *data << uint8(updateMask.GetBlockCount());
     updateMask.AppendToPacket(data);
     data->append(fieldBuffer);
-    *data << uint8(0);
+    BuildDynamicValuesUpdate(updateType, data, target);
 }
 
 void Unit::SendSetVehicleRecId(uint32 vehicleId)

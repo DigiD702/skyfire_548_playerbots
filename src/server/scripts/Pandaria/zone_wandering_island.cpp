@@ -8,6 +8,7 @@
 #include "ScriptedGossip.h"
 #include "Player.h"
 #include "Spell.h"
+#include "SpellScript.h"
 
 const Position balloonPos1 = { 915.123, 4564.1523, 231.37447 };
 const Position balloonPos2 = { 922.3584, 4567.7495, 234.48523 };
@@ -1117,10 +1118,10 @@ public:
 };
 
 const Position aysaChamberMovePos1 = { 647.493f, 4224.63f, 202.90865f, 2.426f };
-class npc_aysa_battle_for_the_skies : public CreatureScript
+class npc_aysa_in_wind_temple : public CreatureScript
 {
 public:
-    npc_aysa_battle_for_the_skies() : CreatureScript("npc_aysa_battle_for_the_skies") { }
+    npc_aysa_in_wind_temple() : CreatureScript("npc_aysa_in_wind_temple") { }
 
     bool OnQuestAccept(Player* player, Creature* creature, Quest const* quest) OVERRIDE
     {
@@ -1133,13 +1134,13 @@ public:
         }
         return true;
     }
-    struct npc_aysa_battle_for_the_skiesAI : public CreatureAI
+    struct npc_aysa_in_wind_templeAI : public CreatureAI
     { 
-        npc_aysa_battle_for_the_skiesAI(Creature* creature) : CreatureAI(creature) {}
+        npc_aysa_in_wind_templeAI(Creature* creature) : CreatureAI(creature) {}
     };
     CreatureAI* GetAI(Creature* creature) const OVERRIDE
     {
-        return new npc_aysa_battle_for_the_skiesAI(creature);
+        return new npc_aysa_in_wind_templeAI(creature);
     }
 };
 
@@ -1938,6 +1939,45 @@ public:
     };
 };
 
+// 102522 - Huo's Offerings
+class spell_item_huo_offering : public SpellScriptLoader
+{
+public:
+    spell_item_huo_offering() : SpellScriptLoader("spell_item_huo_offering") { }
+
+    class spell_item_huo_offering_SpellScript : public SpellScript
+    {
+        PrepareSpellScript(spell_item_huo_offering_SpellScript);
+
+        enum HuoOffering
+        {
+            NPC_HUO = 54787
+        };
+
+        void HandleDummy(SpellEffIndex /*effIndex*/)
+        {
+            Unit* caster = GetCaster();
+            Unit* target = GetHitUnit();
+
+            if (!caster || !target || target->GetEntry() != NPC_HUO)
+                return;
+
+            if (Player* player = caster->ToPlayer())
+                player->KilledMonsterCredit(NPC_HUO, target->GetGUID());
+        }
+
+        void Register() OVERRIDE
+        {
+            OnEffectHitTarget += SpellEffectFn(spell_item_huo_offering_SpellScript::HandleDummy, EFFECT_1, SPELL_EFFECT_DUMMY);
+        }
+    };
+
+    SpellScript* GetSpellScript() const OVERRIDE
+    {
+        return new spell_item_huo_offering_SpellScript();
+    }
+};
+
 enum CaveOfMeditation
 {
     SPELL_SUMMON_LI_FEI = 102445, //
@@ -2484,7 +2524,7 @@ void AddSC_wandering_island()
     new npc_master_shang_xi_worthy_of_passing();
     new npc_firework_launcher();
     new boss_zhao_ren();
-    new npc_aysa_battle_for_the_skies();
+    new npc_aysa_in_wind_temple();
     new npc_aysa_chamber_of_whispers();
     new npc_uplift_draft();
     new npc_shu_dailo();
@@ -2492,6 +2532,7 @@ void AddSC_wandering_island()
     new npc_master_shang_xi_temple();
     new AreaTrigger_at_temple_of_five_dawns();
     new npc_huo();
+    new spell_item_huo_offering();
     new npc_li_fei();
     new npc_aysa_meditation();
     new npc_aysa_cloudsinger();

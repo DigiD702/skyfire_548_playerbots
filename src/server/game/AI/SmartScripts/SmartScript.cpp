@@ -1004,18 +1004,33 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
         }
         case SMART_ACTION_FORCE_DESPAWN:
         {
-            if (!IsSmart())
-                break;
-
-            // The AI is only updated if the creature is alive
-            if (me->IsAlive())
+            ObjectList* targets = GetTargets(e, unit);
+            if (targets)
             {
-                CAST_AI(SmartAI, me->AI())->SetDespawnTime(e.action.forceDespawn.delay + 1); // Next tick
-                CAST_AI(SmartAI, me->AI())->StartDespawn();
+                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+                {
+                    if (IsCreature(*itr))
+                        (*itr)->ToCreature()->DespawnOrUnsummon(e.action.forceDespawn.delay);
+                    else if (IsGameObject(*itr))
+                        (*itr)->ToGameObject()->ForcedDespawn(e.action.forceDespawn.delay);
+                }
+                delete targets;
+                break;
             }
-            // Otherwise we call the despawn directly
-            else
-                me->DespawnOrUnsummon(e.action.forceDespawn.delay);
+
+            // No targets (e.g. SMART_TARGET_NONE): despawn script owner
+            if (me)
+            {
+                if (me->IsAlive() && IsSmart())
+                {
+                    CAST_AI(SmartAI, me->AI())->SetDespawnTime(e.action.forceDespawn.delay + 1); // Next tick
+                    CAST_AI(SmartAI, me->AI())->StartDespawn();
+                }
+                else
+                    me->DespawnOrUnsummon(e.action.forceDespawn.delay);
+            }
+            else if (go)
+                go->ForcedDespawn(e.action.forceDespawn.delay);
 
             break;
         }
@@ -1804,33 +1819,45 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
         case SMART_ACTION_RANDOM_MOVE:
         {
             ObjectList* targets = GetTargets(e, unit);
-            if (!targets)
-                break;
+
+            auto applyRandomMove = [](Creature* creature, uint32 distance)
+            {
+                if (distance)
+                {
+                    // Persist so evade / Initialize restores wander.
+                    creature->SetRespawnRadius(float(distance));
+                    creature->SetDefaultMovementType(RANDOM_MOTION_TYPE);
+                    creature->StopMoving();
+                    creature->GetMotionMaster()->MoveRandom(float(distance));
+                }
+                else
+                {
+                    creature->SetRespawnRadius(0.0f);
+                    creature->SetDefaultMovementType(IDLE_MOTION_TYPE);
+                    creature->StopMoving();
+                    creature->GetMotionMaster()->MoveIdle();
+                }
+            };
 
             bool foundTarget = false;
 
-            for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
+            if (targets)
             {
-                if (IsCreature((*itr)))
+                for (ObjectList::const_iterator itr = targets->begin(); itr != targets->end(); ++itr)
                 {
-                    foundTarget = true;
-
-                    if (e.action.moveRandom.distance)
-                        (*itr)->ToCreature()->GetMotionMaster()->MoveRandom((float)e.action.moveRandom.distance);
-                    else
-                        (*itr)->ToCreature()->GetMotionMaster()->MoveIdle();
+                    if (IsCreature((*itr)))
+                    {
+                        foundTarget = true;
+                        applyRandomMove((*itr)->ToCreature(), e.action.moveRandom.distance);
+                    }
                 }
+                delete targets;
             }
 
+            // target_type NONE/empty still means the script owner (common in DB scripts).
             if (!foundTarget && me && IsCreature(me))
-            {
-                if (e.action.moveRandom.distance)
-                    me->GetMotionMaster()->MoveRandom((float)e.action.moveRandom.distance);
-                else
-                    me->GetMotionMaster()->MoveIdle();
-            }
+                applyRandomMove(me, e.action.moveRandom.distance);
 
-            delete targets;
             break;
         }
         case SMART_ACTION_SET_UNIT_FIELD_ANIM_TIER:
@@ -3214,6 +3241,39 @@ void SmartScript::ProcessEvent(SmartScriptHolder& e, Unit* unit, uint32 var0, ui
             ProcessTimedAction(e, e.event.friendlyHealthPct.repeatMin, e.event.friendlyHealthPct.repeatMax, target);
             break;
         }
+        case SMART_EVENT_DISTANCE_CREATURE:
+        {
+            if (!me)
+                return;
+
+            WorldObject* creature = NULL;
+
+            if (e.event.distance.guid != 0)
+            {
+                creature = FindCreatureNear(me, e.event.distance.guid);
+
+                if (!creature || !me->IsInRange(creature, 0, (float)e.event.distance.dist))
+                {
+                    RecalcTimer(e, e.event.distance.repeat, e.event.distance.repeat);
+                    return;
+                }
+            }
+            else if (e.event.distance.entry != 0)
+            {
+                std::list<Creature*> list;
+                me->GetCreatureListWithEntryInGrid(list, e.event.distance.entry, (float)e.event.distance.dist);
+
+                if (!list.empty())
+                    creature = list.front();
+            }
+
+            if (creature)
+                ProcessTimedAction(e, e.event.distance.repeat, e.event.distance.repeat);
+            else
+                RecalcTimer(e, e.event.distance.repeat, e.event.distance.repeat);
+
+            break;
+        }
         default:
             SF_LOG_ERROR("sql.sql", "SmartScript::ProcessEvent: Unhandled Event type %u", e.GetEventType());
             break;
@@ -3233,6 +3293,9 @@ void SmartScript::InitTimer(SmartScriptHolder& e)
         case SMART_EVENT_IC_LOS:
         case SMART_EVENT_OOC_LOS:
             RecalcTimer(e, e.event.los.cooldownMin, e.event.los.cooldownMax);
+            break;
+        case SMART_EVENT_DISTANCE_CREATURE:
+            RecalcTimer(e, e.event.distance.repeat, e.event.distance.repeat);
             break;
         default:
             e.active = true;
@@ -3302,6 +3365,7 @@ void SmartScript::UpdateTimer(SmartScriptHolder& e, uint32 const diff)
             case SMART_EVENT_TARGET_BUFFED:
             case SMART_EVENT_IS_BEHIND_TARGET:
             case SMART_EVENT_FRIENDLY_HEALTH_PCT:
+            case SMART_EVENT_DISTANCE_CREATURE:
             {
                 ProcessEvent(e);
                 if (e.GetScriptType() == SMART_SCRIPT_TYPE_TIMED_ACTIONLIST)

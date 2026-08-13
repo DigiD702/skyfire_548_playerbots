@@ -432,7 +432,7 @@ pAuraEffectHandler AuraEffectHandler[TOTAL_AURAS] =
     &AuraEffect::HandleUnused,                                    //380 unused (5.4.2)
     &AuraEffect::HandleNULL,                                      //381 SPELL_AURA_381 (used in spell 21741) (5.4.2)
     &AuraEffect::HandleNULL,                                      //382 SPELL_AURA_382
-    &AuraEffect::HandleNULL,                                      //383 SPELL_AURA_383
+    &AuraEffect::HandleNoImmediateEffect,                         //383 SPELL_AURA_IGNORE_SPELL_COOLDOWN implemented in Player::HasSpellCooldown / AddSpellAndCategoryCooldowns
     &AuraEffect::HandleUnused,                                    //384 unused (5.4.2)
     &AuraEffect::HandleNULL,                                      //385 SPELL_AURA_385
     &AuraEffect::HandleNULL,                                      //386 SPELL_AURA_386 (used in spell 117915) (5.4.2)
@@ -460,7 +460,7 @@ pAuraEffectHandler AuraEffectHandler[TOTAL_AURAS] =
     &AuraEffect::HandleNULL,                                      //408 SPELL_AURA_408
     &AuraEffect::HandleNULL,                                      //409 SPELL_AURA_409
     &AuraEffect::HandleNULL,                                      //410 SPELL_AURA_410 (used in spell 57902) (5.4.2)
-    &AuraEffect::HandleNULL,                                      //411 SPELL_AURA_411
+    &AuraEffect::HandleNoImmediateEffect,                         //411 SPELL_AURA_MOD_CHARGES implemented in Player spell charges
     &AuraEffect::HandleNULL,                                      //412 SPELL_AURA_412 (used in spell 111546 & 117957) (5.4.2)
     &AuraEffect::HandleNULL,                                      //413 SPELL_AURA_413
     &AuraEffect::HandleNULL,                                      //414 SPELL_AURA_414
@@ -618,6 +618,17 @@ int32 AuraEffect::CalculateAmount(Unit* caster)
                 amount = mountCapability->Id;
                 m_canBeRecalculated = false;
             }
+            break;
+        // Passive weapon spellmods (e.g. Seasoned Soldier cost reduction) and Assassin's
+        // Resolve energy/damage only while the required weapon is equipped.
+        case SPELL_AURA_ADD_FLAT_MODIFIER:
+        case SPELL_AURA_ADD_PCT_MODIFIER:
+        case SPELL_AURA_MOD_INCREASE_MAX_POWER_FLAT:
+        case SPELL_AURA_MOD_DAMAGE_PERCENT_DONE:
+            if (caster && m_spellInfo->IsPassive() && m_spellInfo->EquippedItemClass == ITEM_CLASS_WEAPON)
+                if (Player* player = caster->ToPlayer())
+                    if (!player->HasItemFitToSpellRequirements(m_spellInfo))
+                        amount = 0;
             break;
         default:
             break;

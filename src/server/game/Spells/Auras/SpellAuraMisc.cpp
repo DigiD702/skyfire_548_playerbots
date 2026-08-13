@@ -110,28 +110,6 @@ void AuraEffect::HandleAuraDummy(AuraApplication const* aurApp, uint8 mode, bool
                     if (caster)
                         caster->CastSpell(caster, Skyfire::Spells::GetNetOMaticRootSelfSpellId(), true, NULL, this);
                     break;
-                case 34026:   // kill command
-                {
-                    Unit* pet = target->GetGuardianPet();
-                    if (!pet)
-                        break;
-
-                    target->CastSpell(target, Skyfire::Spells::GetKillCommandOwnerAuraSpellId(), true, NULL, this);
-
-                    // set 3 stacks and 3 charges (to make all auras not disappear at once)
-                    Aura* owner_aura = target->GetAura(Skyfire::Spells::GetKillCommandOwnerAuraSpellId(), GetCasterGUID());
-                    Aura* pet_aura = pet->GetAura(Skyfire::Spells::GetKillCommandPetAuraSpellId(), GetCasterGUID());
-                    if (owner_aura)
-                    {
-                        owner_aura->SetStackAmount(owner_aura->GetSpellInfo()->StackAmount);
-                        if (pet_aura)
-                        {
-                            pet_aura->SetCharges(0);
-                            pet_aura->SetStackAmount(owner_aura->GetSpellInfo()->StackAmount);
-                        }
-                    }
-                    break;
-                }
                 case 37096:                                     // Blood Elf Illusion
                 {
                     if (caster)
@@ -162,11 +140,6 @@ void AuraEffect::HandleAuraDummy(AuraApplication const* aurApp, uint8 mode, bool
                 case 46361:                                     // Reinforced Net
                     if (caster)
                         target->GetMotionMaster()->MoveFall();
-                    break;
-                case 51701: // Honor Among Thieves
-                    if (target->GetTypeId() == TypeID::TYPEID_PLAYER)
-                        if (Unit* spellTarget = ObjectAccessor::GetUnit(*target, target->ToPlayer()->GetComboTarget()))
-                            target->CastSpell(spellTarget, Skyfire::Spells::GetAuraDummyTriggeredSpellId(GetId()), true);
                     break;
                 case 71563:
                     if (Aura* newAura = target->AddAura(Skyfire::Spells::GetAuraDummyTriggeredSpellId(GetId()), target))
@@ -649,7 +622,7 @@ void AuraEffect::HandleAuraOverrideSpells(AuraApplication const* aurApp, uint8 m
 
     if (apply)
     {
-        //target->SetUInt16Value(PLAYER_FIELD_LIFETIME_MAX_RANK2, 0, overrideId);
+        target->SetUInt16Value(PLAYER_FIELD_OVERRIDE_SPELLS_ID, 1, overrideId);
         if (OverrideSpellDataEntry const* overrideSpells = sOverrideSpellDataStore.LookupEntry(overrideId))
             for (uint8 i = 0; i < MAX_OVERRIDE_SPELL; ++i)
                 if (uint32 spellId = overrideSpells->spellId[i])
@@ -657,7 +630,9 @@ void AuraEffect::HandleAuraOverrideSpells(AuraApplication const* aurApp, uint8 m
     }
     else
     {
-        //target->SetUInt16Value(PLAYER_FIELD_LIFETIME_MAX_RANK2, 0, 0);
+        if (target->GetUInt16Value(PLAYER_FIELD_OVERRIDE_SPELLS_ID, 1) == overrideId)
+            target->SetUInt16Value(PLAYER_FIELD_OVERRIDE_SPELLS_ID, 1, 0);
+
         if (OverrideSpellDataEntry const* overrideSpells = sOverrideSpellDataStore.LookupEntry(overrideId))
             for (uint8 i = 0; i < MAX_OVERRIDE_SPELL; ++i)
                 if (uint32 spellId = overrideSpells->spellId[i])

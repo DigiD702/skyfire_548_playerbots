@@ -406,7 +406,7 @@ void WorldSession::HandleNpcTextQueryOpcode(WorldPacket& recvData)
     recvData.ReadGuidMask(guid, 4, 5, 1, 7, 0, 2, 6, 3);
     recvData.ReadGuidBytes(guid, 4, 0, 2, 5, 1, 7, 3, 7);
 
-    SF_LOG_ERROR("network", "WORLD: CMSG_NPC_TEXT_QUERY ID '%u', %lu", textID, uint64(guid));
+    SF_LOG_DEBUG("network", "WORLD: CMSG_NPC_TEXT_QUERY ID '%u', %lu", textID, uint64(guid));
     //SendBroadcastText(textID);
 
     GossipText const* pGossip = sObjectMgr->GetGossipText(textID);
@@ -530,8 +530,11 @@ void WorldSession::HandleQuestNPCQuery(WorldPacket& recvData)
         uint32 questId;
         recvData >> questId;
 
-        /// @todo verify if we should only send completed quests questgivers
-        if (sObjectMgr->GetQuestTemplate(questId) && _player->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE)
+        // Include incomplete quests too: autocomplete / area-trigger quests need
+        // completion NPC data before the client can show the right-side complete popup.
+        QuestStatus status = _player->GetQuestStatus(questId);
+        if (sObjectMgr->GetQuestTemplate(questId) &&
+            (status == QUEST_STATUS_COMPLETE || status == QUEST_STATUS_INCOMPLETE))
         {
             auto creatures = sObjectMgr->GetCreatureQuestInvolvedRelationReverseBounds(questId);
             for (auto it = creatures.first; it != creatures.second; ++it)

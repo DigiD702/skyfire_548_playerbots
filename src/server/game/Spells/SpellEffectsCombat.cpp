@@ -189,11 +189,10 @@ void Spell::EffectSchoolDMG(SpellEffIndex effIndex)
             }
             case SPELLFAMILY_WARRIOR:
             {
-                // Victory Rush
-                if (Skyfire::Spells::IsVictoryRushDamageSpell(m_spellInfo->Id))
-                    ApplyPct(damage, m_caster->GetTotalAttackPowerValue(WeaponAttackType::BASE_ATTACK));
+                // Victory Rush AP (0.56) is applied via spell_bonus_data — do not ApplyPct(damage, AP).
+                // That WotLK hack treated BP as a percent; MoP school damage BP is 1 with AP coeff 0.56.
                 // Shockwave
-                else if (Skyfire::Spells::IsShockwaveDamageSpell(m_spellInfo->Id))
+                if (Skyfire::Spells::IsShockwaveDamageSpell(m_spellInfo->Id))
                 {
                     int32 pct = m_caster->CalculateSpellDamage(unitTarget, m_spellInfo, 2);
                     if (pct > 0)
@@ -204,14 +203,7 @@ void Spell::EffectSchoolDMG(SpellEffIndex effIndex)
             }
             case SPELLFAMILY_DRUID:
             {
-                // Ferocious Bite
-                if (m_caster->GetTypeId() == TypeID::TYPEID_PLAYER && (m_spellInfo->SpellFamilyFlags[0] & 0x000800000) && m_spellInfo->SpellVisual[0] == 6587)
-                {
-                    // converts each extra point of energy ( up to 25 energy ) into additional damage
-                    int32 energy = -(m_caster->ModifyPower(POWER_ENERGY, -25));
-                    // 25 energy = 100% more damage
-                    AddPct(damage, energy * 4);
-                }
+                // Ferocious Bite energy-to-damage conversion is handled by spell_dru_ferocious_bite.
                 break;
             }
             case SPELLFAMILY_ROGUE:
@@ -1041,38 +1033,6 @@ void Spell::EffectWeaponDmg(SpellEffIndex effIndex)
 
     switch (m_spellInfo->SpellFamilyName)
     {
-        case SPELLFAMILY_WARRIOR:
-        {
-            // Devastate (player ones)
-            if (m_spellInfo->SpellFamilyFlags[1] & 0x40)
-            {
-                // Player can apply only 58567 Sunder Armor effect.
-                bool needCast = !unitTarget->HasAura(58567, m_caster->GetGUID());
-                if (needCast)
-                    m_caster->CastSpell(unitTarget, 58567, true);
-
-                if (Aura* aur = unitTarget->GetAura(58567, m_caster->GetGUID()))
-                {
-                    if (int32 num = (needCast ? 0 : 1))
-                        aur->ModStackAmount(num);
-                    fixed_bonus += (aur->GetStackAmount() - 1) * CalculateDamage(2, unitTarget);
-                }
-            }
-            break;
-        }
-        case SPELLFAMILY_ROGUE:
-        {
-            // Hemorrhage
-            if (m_spellInfo->SpellFamilyFlags[0] & 0x2000000)
-            {
-                // 72% more damage with daggers
-                if (m_caster->GetTypeId() == TypeID::TYPEID_PLAYER)
-                    if (Item* item = m_caster->ToPlayer()->GetWeaponForAttack(m_attackType, true))
-                        if (item->GetTemplate()->SubClass == ITEM_SUBCLASS_WEAPON_DAGGER)
-                            totalDamagePercentMod *= 1.45f;
-            }
-            break;
-        }
         case SPELLFAMILY_SHAMAN:
         {
             // Skyshatter Harness item set bonus

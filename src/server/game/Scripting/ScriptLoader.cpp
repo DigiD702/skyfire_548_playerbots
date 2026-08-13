@@ -9,6 +9,7 @@
 void AddSC_deathknight_spell_scripts();
 void AddSC_druid_spell_scripts();
 void AddSC_generic_spell_scripts();
+void AddSC_archaeology_spell_scripts();
 void AddSC_hunter_spell_scripts();
 void AddSC_mage_spell_scripts();
 void AddSC_masteries_spell_scripts();
@@ -239,6 +240,7 @@ void AddSC_eastern_plaguelands();
 void AddSC_elwynn_forest();
 void AddSC_eversong_woods();
 void AddSC_ghostlands();
+void AddSC_gilneas();
 void AddSC_hinterlands();
 void AddSC_isle_of_queldanas();
 void AddSC_silverpine_forest();
@@ -618,6 +620,7 @@ void AddSC_kezan();
 
 // Events
 void AddSC_event_childrens_week();
+void AddSC_event_darkmoon_faire();
 
 // Pandaria
 void AddSC_wandering_island();
@@ -682,6 +685,7 @@ void AddSpellScripts()
     AddSC_deathknight_spell_scripts();
     AddSC_druid_spell_scripts();
     AddSC_generic_spell_scripts();
+    AddSC_archaeology_spell_scripts();
     AddSC_hunter_spell_scripts();
     AddSC_mage_spell_scripts();
     AddSC_masteries_spell_scripts();
@@ -915,6 +919,7 @@ void AddEasternKingdomsScripts()
     AddSC_eastern_plaguelands();
     AddSC_eversong_woods();
     AddSC_ghostlands();
+    AddSC_gilneas();
     AddSC_hinterlands();
     AddSC_isle_of_queldanas();
     AddSC_silverpine_forest();
@@ -1320,6 +1325,7 @@ void AddEventScripts()
 {
 #ifdef SCRIPTS
     AddSC_event_childrens_week();
+    AddSC_event_darkmoon_faire();
 #endif
 }
 

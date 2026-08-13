@@ -4,14 +4,18 @@
 */
 
 #include "Cell.h"
+#include "CombatPackets.h"
 #include "CurrencyFormulas.h"
 #include "AreaTableUtils.h"
+#include "AchievementCriteriaPackets.h"
 #include "DBCEnums.h"
 #include "GridDefines.h"
 #include "LegacyTransportSupport.h"
 #include "MapLifecycle.h"
 #include "ObjectAccessorLifecycle.h"
 #include "PlayerRestState.h"
+#include "PointMovementGenerator.h"
+#include "PlayerPackets.h"
 #include "RuntimeMetrics.h"
 #include "SpellCalculations.h"
 #include "SpellAuraMetadata.h"
@@ -20,6 +24,7 @@
 #include "SpellEffectMetadata.h"
 #include "SpellItemMetadata.h"
 #include "SpellMovementMetadata.h"
+#include "ShamanWeaponImbue.h"
 #include "SpellSummonMetadata.h"
 #include "SpellTargeting.h"
 #include "SpellValidation.h"
@@ -109,6 +114,55 @@ namespace
         return passed;
     }
 
+    bool TestPreResurrectPacketUsesPlayerGuid()
+    {
+        bool passed = true;
+
+        ObjectGuid playerGuid(UI64LIT(0x04000000053CC8E8));
+        WorldPacket packet = Skyfire::PlayerPackets::BuildPreResurrectPacket(playerGuid);
+
+        passed &= Expect(packet.GetOpcode() == SMSG_PRE_RESURRECT,
+            "Pre-resurrect builder should create SMSG_PRE_RESURRECT packets");
+        passed &= Expect(packet.size() == 6,
+            "Pre-resurrect packet should serialize the non-empty player guid");
+
+        uint8 const expected[] = { 0xD6, 0xC9, 0x05, 0xE9, 0x3D, 0x04 };
+        if (packet.size() == sizeof(expected))
+            for (size_t i = 0; i < sizeof(expected); ++i)
+                passed &= Expect(packet.contents()[i] == expected[i],
+                    "Pre-resurrect packet should keep the 5.4.8 guid byte order");
+
+        return passed;
+    }
+
+    bool TestCancelCombatPacketIsEmpty()
+    {
+        bool passed = true;
+
+        WorldPacket packet = Skyfire::PlayerPackets::BuildCancelCombatPacket();
+
+        passed &= Expect(packet.GetOpcode() == SMSG_CANCEL_COMBAT,
+            "Cancel combat builder should create SMSG_CANCEL_COMBAT packets");
+        passed &= Expect(packet.size() == 0,
+            "Cancel combat packet should not serialize trailing zero fields");
+
+        return passed;
+    }
+
+    bool TestAttackStopVictimDeadBitRules()
+    {
+        bool passed = true;
+
+        passed &= Expect(!Skyfire::CombatPackets::GetAttackStopVictimDeadBit(false, false),
+            "Attack-stop packets without a victim should not mark the victim dead");
+        passed &= Expect(!Skyfire::CombatPackets::GetAttackStopVictimDeadBit(true, false),
+            "Attack-stop packets for a live victim should not mark the victim dead");
+        passed &= Expect(Skyfire::CombatPackets::GetAttackStopVictimDeadBit(true, true),
+            "Attack-stop packets for a dead victim should mark the victim dead");
+
+        return passed;
+    }
+
     bool TestClientOpcodeTableAcceptsGuildAchievementTracking()
     {
         bool passed = true;
@@ -142,6 +196,54 @@ namespace
             "SMSG_DISPLAY_GAME_ERROR should use the 5.4.8 opcode number");
         passed &= Expect(handler && handler->Status == STATUS_NEVER,
             "SMSG_DISPLAY_GAME_ERROR should be enabled as a server-only opcode");
+
+        return passed;
+    }
+
+    bool TestServerOpcodeTableUsesCancelCombatOpcode()
+    {
+        bool passed = true;
+
+        serverOpcodeTable.InitializeServerTable();
+        OpcodeHandler const* handler = serverOpcodeTable[SMSG_CANCEL_COMBAT];
+        OpcodeHandler const* readFailed = serverOpcodeTable[SMSG_READ_ITEM_RESULT_FAILED];
+
+        passed &= Expect(handler != NULL,
+            "SMSG_CANCEL_COMBAT should have an opcode table entry");
+        passed &= Expect(handler && handler->OpcodeNumber == 0x0E8B,
+            "SMSG_CANCEL_COMBAT should use the verified 5.4.8 opcode number");
+        passed &= Expect(handler && handler->Status == STATUS_NEVER,
+            "SMSG_CANCEL_COMBAT should be enabled as a server-only opcode");
+        passed &= Expect(readFailed && readFailed->OpcodeNumber == 0x0000,
+            "SMSG_READ_ITEM_RESULT_FAILED should stay unhandled until its opcode is verified");
+        passed &= Expect(serverOpcodeTable.GetOpcodeByNumber(0x0534) != SMSG_CANCEL_COMBAT,
+            "0x0534 should not map to SMSG_CANCEL_COMBAT");
+
+        return passed;
+    }
+
+    bool TestAchievementCriteriaLiveUpdatePolicy()
+    {
+        bool passed = true;
+
+        passed &= Expect(!Skyfire::Achievements::IsLiveCriteriaProgressEligible(ACHIEVEMENT_FLAG_COUNTER),
+            "Counter/stat achievement criteria should not send live progress packets");
+        passed &= Expect(!Skyfire::Achievements::IsLiveCriteriaProgressEligible(ACHIEVEMENT_FLAG_HIDDEN),
+            "Hidden achievement criteria should not send live progress packets");
+        passed &= Expect(Skyfire::Achievements::IsLiveCriteriaProgressEligible(0),
+            "Visible non-counter achievement criteria should send live progress packets");
+        passed &= Expect(!Skyfire::Achievements::IsLiveCriteriaTypeEligible(ACHIEVEMENT_CRITERIA_TYPE_DEATH),
+            "Generic death criteria should not send live progress packets");
+        passed &= Expect(!Skyfire::Achievements::IsLiveCriteriaTypeEligible(ACHIEVEMENT_CRITERIA_TYPE_FLIGHT_PATHS_TAKEN),
+            "Flight path counter criteria should not send live progress packets");
+        passed &= Expect(Skyfire::Achievements::IsLiveCriteriaTypeEligible(ACHIEVEMENT_CRITERIA_TYPE_COMPLETE_QUEST),
+            "Normal visible achievement criteria types should send live progress packets");
+        passed &= Expect(!Skyfire::Achievements::ShouldSendLiveCriteriaProgress(false, false),
+            "Criteria without a linked achievement should not send live progress packets");
+        passed &= Expect(!Skyfire::Achievements::ShouldSendLiveCriteriaProgress(true, false),
+            "Criteria linked only to counter/stat achievements should not send live progress packets");
+        passed &= Expect(Skyfire::Achievements::ShouldSendLiveCriteriaProgress(true, true),
+            "Criteria linked to a visible non-counter achievement should send live progress packets");
 
         return passed;
     }
@@ -514,6 +616,15 @@ namespace
         passed &= Expect(powerCostResult.PowerCost == 0,
             "Unknown percentage power type should zero the base cost");
 
+        passed &= Expect(Skyfire::Spells::ScaleNpcSpellPowerCost(90, 3.0f, 2.0f) == 135,
+            "NPC spell power cost scaling should apply valid caster and spell ratios");
+        passed &= Expect(Skyfire::Spells::ScaleNpcSpellPowerCost(90, 0.0f, 2.0f) == 90,
+            "NPC spell power cost scaling should ignore zero caster ratios");
+        passed &= Expect(Skyfire::Spells::ScaleNpcSpellPowerCost(90, 3.0f, 0.0f) == 90,
+            "NPC spell power cost scaling should ignore zero spell ratios");
+        passed &= Expect(Skyfire::Spells::ScaleNpcSpellPowerCost(90, std::numeric_limits<float>::infinity(), 2.0f) == 90,
+            "NPC spell power cost scaling should ignore non-finite caster ratios");
+
         return passed;
     }
 
@@ -844,6 +955,11 @@ namespace
     {
         bool passed = true;
 
+        passed &= Expect(Skyfire::Spells::GetJumpArrivalSpellId(6544) == 52174,
+            "Heroic Leap should resolve landing damage spell 52174");
+        passed &= Expect(Skyfire::Spells::GetJumpArrivalSpellId(999999) == 0,
+            "Unknown jump spells should not resolve an arrival spell");
+
         Skyfire::Spells::JumpDestOverride const* shadowstepOverride =
             Skyfire::Spells::GetJumpDestOverride(108938);
         passed &= Expect(shadowstepOverride && shadowstepOverride->SpellId == 108938,
@@ -949,6 +1065,21 @@ namespace
             "Temporary enchant spell 37360 should last 5 minutes");
         passed &= Expect(Skyfire::Spells::GetTemporaryItemEnchantDurationSeconds(12345, SPELLFAMILY_GENERIC, 999) == 3600,
             "Default temporary enchants should last one hour");
+
+        passed &= Expect(Skyfire::Spells::IsSelfCastShamanWeaponImbue(8017),
+            "Rockbiter Weapon should be treated as a self-cast shaman weapon imbue");
+        passed &= Expect(Skyfire::Spells::IsSelfCastShamanWeaponImbue(8024),
+            "Flametongue Weapon should be treated as a self-cast shaman weapon imbue");
+        passed &= Expect(Skyfire::Spells::IsSelfCastShamanWeaponImbue(8033),
+            "Frostbrand Weapon should be treated as a self-cast shaman weapon imbue");
+        passed &= Expect(Skyfire::Spells::IsSelfCastShamanWeaponImbue(8232),
+            "Windfury Weapon should be treated as a self-cast shaman weapon imbue");
+        passed &= Expect(Skyfire::Spells::IsSelfCastShamanWeaponImbue(51730),
+            "Earthliving Weapon should be treated as a self-cast shaman weapon imbue");
+        passed &= Expect(!Skyfire::Spells::IsSelfCastShamanWeaponImbue(25122),
+            "Generic wizard oil should still require an explicit item target");
+        passed &= Expect(Skyfire::Spells::GetSelfCastShamanWeaponImbueEquipmentSlot() == 15,
+            "Self-cast shaman weapon imbues should target the main-hand equipment slot");
 
         return passed;
     }
@@ -1683,6 +1814,18 @@ namespace
     {
         bool passed = true;
 
+        LegacyTransport::ClearLegacyTransportEntries();
+
+        LegacyTransport::LegacyTransportEntry firstDeeprunTransport =
+            { 176080, 218203, 369, 1, LegacyTransport::LEGACY_TRANSPORT_FLAG_PRESERVE_PASSENGER_GAMEOBJECT_VISIBILITY };
+        LegacyTransport::LegacyTransportEntry lastDeeprunTransport =
+            { 176085, 218208, 369, 1, LegacyTransport::LEGACY_TRANSPORT_FLAG_PRESERVE_PASSENGER_GAMEOBJECT_VISIBILITY };
+
+        passed &= Expect(LegacyTransport::AddLegacyTransportEntry(firstDeeprunTransport),
+            "Deeprun Tram visibility-preservation test data should load");
+        passed &= Expect(LegacyTransport::AddLegacyTransportEntry(lastDeeprunTransport),
+            "Deeprun Tram visibility-preservation test data should load");
+
         passed &= Expect(LegacyTransport::ShouldPreservePassengerGameObjectVisibility(218203),
             "Deeprun Tram client entry 218203 should preserve station gameobjects while riding");
         passed &= Expect(LegacyTransport::ShouldPreservePassengerGameObjectVisibility(218208),
@@ -1691,6 +1834,8 @@ namespace
             "Database-only Deeprun Tram entry should not be used for passenger visibility preservation");
         passed &= Expect(!LegacyTransport::ShouldPreservePassengerGameObjectVisibility(1),
             "Unrelated transports should not preserve passenger gameobject visibility");
+
+        LegacyTransport::ClearLegacyTransportEntries();
 
         return passed;
     }
@@ -1720,6 +1865,29 @@ namespace
         return passed;
     }
 
+    bool TestEffectMovementArrivalSpellRules()
+    {
+        bool passed = true;
+
+        passed &= Expect(Skyfire::Movement::ShouldMarkEffectMovementArrived(true, true, true),
+            "Effect movement should mark arrival after the spline completes at its destination");
+        passed &= Expect(!Skyfire::Movement::ShouldMarkEffectMovementArrived(true, true, false),
+            "Effect movement cleanup should not mark arrival when the unit did not reach the destination");
+        passed &= Expect(!Skyfire::Movement::ShouldMarkEffectMovementArrived(true, false, true),
+            "Effect movement cleanup should not mark arrival for stop splines without a real path");
+        passed &= Expect(!Skyfire::Movement::ShouldMarkEffectMovementArrived(false, true, true),
+            "Effect movement should not mark arrival while the spline is still running");
+
+        passed &= Expect(Skyfire::Movement::ShouldCastEffectMovementArrivalSpell(52174, true),
+            "Effect movement should cast an arrival spell after a completed arrival");
+        passed &= Expect(!Skyfire::Movement::ShouldCastEffectMovementArrivalSpell(52174, false),
+            "Effect movement should not cast an arrival spell during cleanup");
+        passed &= Expect(!Skyfire::Movement::ShouldCastEffectMovementArrivalSpell(0, true),
+            "Effect movement should not cast when no arrival spell is configured");
+
+        return passed;
+    }
+
 }
 
 int main()
@@ -1728,8 +1896,13 @@ int main()
 
     passed &= TestCurrencyFormulaBoundaries();
     passed &= TestWorldPacketContainerBehavior();
+    passed &= TestPreResurrectPacketUsesPlayerGuid();
+    passed &= TestCancelCombatPacketIsEmpty();
+    passed &= TestAttackStopVictimDeadBitRules();
     passed &= TestClientOpcodeTableAcceptsGuildAchievementTracking();
     passed &= TestServerOpcodeTableEnablesDisplayGameError();
+    passed &= TestServerOpcodeTableUsesCancelCombatOpcode();
+    passed &= TestAchievementCriteriaLiveUpdatePolicy();
     passed &= TestWorldStateBuilderPacketLayout();
     passed &= TestThreatSpellModifierRules();
     passed &= TestSpellValidationMasks();
@@ -1737,6 +1910,7 @@ int main()
     passed &= TestSpellCalculationRules();
     passed &= TestSpellAuraMetadataRules();
     passed &= TestSpellMovementMetadataRules();
+    passed &= TestEffectMovementArrivalSpellRules();
     passed &= TestSpellItemMetadataRules();
     passed &= TestSpellCombatMetadataRules();
     passed &= TestSpellEffectMetadataRules();

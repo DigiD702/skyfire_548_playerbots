@@ -428,7 +428,7 @@ enum AuraType
     // 380 unused
     SPELL_AURA_381 = 381,
     SPELL_AURA_382 = 382,
-    SPELL_AURA_383 = 383,
+    SPELL_AURA_IGNORE_SPELL_COOLDOWN = 383,
     // 384 unused
     SPELL_AURA_385 = 385,
     SPELL_AURA_386 = 386,
@@ -456,7 +456,7 @@ enum AuraType
     SPELL_AURA_408 = 408,
     SPELL_AURA_409 = 409,
     SPELL_AURA_410 = 410,
-    SPELL_AURA_411 = 411,
+    SPELL_AURA_MOD_CHARGES = 411,                           // implemented in Player spell charge tracking
     SPELL_AURA_412 = 412,
     SPELL_AURA_413 = 413,
     SPELL_AURA_414 = 414,

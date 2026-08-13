@@ -46,6 +46,7 @@ namespace Spells
         float ChannelCostPercentage;
         int32 PowerType;
         uint32 CreatedHealth;
+        // For POWER_MANA % costs: create/base mana. For other powers: max power.
         uint32 MaxPower;
     };
 
@@ -65,6 +66,7 @@ namespace Spells
     float CalculateRadius(SpellRadiusCalculationData const& data);
     float SelectSpellRange(bool hasRangeEntry, float friendRange, float hostileRange, bool positive);
     uint32 CalculateRecoveryTime(uint32 recoveryTime, uint32 categoryRecoveryTime);
+    uint32 ScaleNpcSpellPowerCost(uint32 powerCost, float casterScalerRatio, float spellScalerRatio);
     SpellPowerCostCalculationResult CalculateSpellPowerCosts(SpellPowerCostCalculationData const& data);
 }
 }

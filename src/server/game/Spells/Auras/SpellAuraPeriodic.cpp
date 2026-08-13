@@ -88,32 +88,6 @@ void AuraEffect::HandlePeriodicDummyAuraTick(Unit* target, Unit* caster) const
                 target->CastSpell((Unit*)NULL, m_spellInfo->Effects[m_effIndex].TriggerSpell, true);
             break;
         }
-        case SPELLFAMILY_DRUID:
-        {
-            switch (GetSpellInfo()->Id)
-            {
-                // Frenzied Regeneration
-                case 22842:
-                {
-                    // Converts up to 10 rage per second into health for $d.  Each point of rage is converted into ${$m2/10}.1% of max health.
-                    // Should be manauser
-                    if (target->getPowerType() != POWER_RAGE)
-                        break;
-                    uint32 rage = target->GetPower(POWER_RAGE);
-                    // Nothing todo
-                    if (rage == 0)
-                        break;
-                    int32 mod = (rage < 100) ? rage : 100;
-                    int32 points = target->CalculateSpellDamage(target, GetSpellInfo(), 1);
-                    int32 regen = target->GetMaxHealth() * (mod * points / 10) / 1000;
-                    target->CastCustomSpell(target, Skyfire::Spells::GetPeriodicFrenziedRegenerationSpellId(),
-                        &regen, 0, 0, true, 0, this);
-                    target->SetPower(POWER_RAGE, rage - mod);
-                    break;
-                }
-            }
-            break;
-        }
         case SPELLFAMILY_ROGUE:
         {
             switch (GetSpellInfo()->Id)
@@ -149,18 +123,6 @@ void AuraEffect::HandlePeriodicDummyAuraTick(Unit* target, Unit* caster) const
                     target->CastSpell(spellTarget, Skyfire::Spells::GetKillingSpreePeriodicSpellId(1), true);
                     break;
                 }
-            }
-            break;
-        }
-        case SPELLFAMILY_HUNTER:
-        {
-            // Explosive Shot
-            if (GetSpellInfo()->SpellFamilyFlags[1] & 0x80000000)
-            {
-                if (caster)
-                    caster->CastCustomSpell(Skyfire::Spells::GetPeriodicExplosiveShotTriggerSpellId(),
-                        SPELLVALUE_BASE_POINT0, m_amount, target, true, NULL, this);
-                break;
             }
             break;
         }
@@ -855,7 +817,10 @@ void AuraEffect::HandlePeriodicHealAurasTick(Unit* target, Unit* caster) const
     uint32 procEx = (crit ? PROC_EX_CRITICAL_HIT : PROC_EX_NORMAL_HIT) | PROC_EX_INTERNAL_HOT;
     // ignore item heals
     if (!haveCastItem)
-        caster->ProcDamageAndSpell(target, procAttacker, procVictim, procEx, damage, WeaponAttackType::BASE_ATTACK, GetSpellInfo());
+    {
+        uint32 overheal = (heal > uint32(gain)) ? (heal - uint32(gain)) : 0;
+        caster->ProcDamageAndSpell(target, procAttacker, procVictim, procEx, damage, WeaponAttackType::BASE_ATTACK, GetSpellInfo(), NULL, overheal);
+    }
 }
 
 void AuraEffect::HandlePeriodicManaLeechAuraTick(Unit* target, Unit* caster) const
@@ -894,21 +859,6 @@ void AuraEffect::HandlePeriodicManaLeechAuraTick(Unit* target, Unit* caster) con
     {
         gainedAmount = caster->ModifyPower(powerType, gainAmount);
         target->AddThreat(caster, float(gainedAmount) * 0.5f, GetSpellInfo()->GetSchoolMask(), GetSpellInfo());
-    }
-
-    // Drain Mana
-    if (m_spellInfo->SpellFamilyName == SPELLFAMILY_WARLOCK
-        && m_spellInfo->SpellFamilyFlags[0] & 0x00000010)
-    {
-        int32 manaFeedVal = 0;
-        if (AuraEffect const* aurEff = GetBase()->GetEffect(1))
-            manaFeedVal = aurEff->GetAmount();
-        // Mana Feed - Drain Mana
-        if (manaFeedVal > 0)
-        {
-            int32 feedAmount = CalculatePct(gainedAmount, manaFeedVal);
-            caster->CastCustomSpell(caster, Skyfire::Spells::GetManaFeedTriggerSpellId(), &feedAmount, NULL, NULL, true, NULL, this);
-        }
     }
 }
 

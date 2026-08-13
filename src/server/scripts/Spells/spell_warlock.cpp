@@ -329,6 +329,8 @@ public:
 
         void HandleDummy(SpellEffIndex /*effIndex*/)
         {
+            PreventHitDefaultEffect(EFFECT_0);
+
             Player* caster = GetCaster()->ToPlayer();
             if (Unit* target = GetHitUnit())
             {
@@ -355,7 +357,8 @@ public:
 
         void Register() OVERRIDE
         {
-            OnEffectHitTarget += SpellEffectFn(spell_warl_life_tap_SpellScript::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+            // MoP EFFECT_0 is SPELL_EFFECT_ENERGIZE (not DUMMY)
+            OnEffectHitTarget += SpellEffectFn(spell_warl_life_tap_SpellScript::HandleDummy, EFFECT_0, SPELL_EFFECT_ENERGIZE);
             OnCheckCast += SpellCheckCastFn(spell_warl_life_tap_SpellScript::CheckCast);
         }
     };
@@ -447,8 +450,8 @@ public:
 
         bool Validate(SpellInfo const* /*spellInfo*/) OVERRIDE
         {
-            if (!sSpellMgr->GetSpellInfo(SPELL_WARLOCK_SOUL_SWAP_CD_MARKER) ||
-                !sSpellMgr->GetSpellInfo(SPELL_WARLOCK_SOUL_SWAP_OVERRIDE))
+            // 94229 (CD marker) is absent in 5.4.8 DBC; override aura is enough to validate.
+            if (!sSpellMgr->GetSpellInfo(SPELL_WARLOCK_SOUL_SWAP_OVERRIDE))
                 return false;
             return true;
         }
@@ -461,7 +464,7 @@ public:
 
         void Register() OVERRIDE
         {
-            OnEffectHitTarget += SpellEffectFn(spell_warl_soul_swap_SpellScript::HandleHit, EFFECT_0, SPELL_EFFECT_SCHOOL_DAMAGE);
+            OnEffectHitTarget += SpellEffectFn(spell_warl_soul_swap_SpellScript::HandleHit, EFFECT_0, SPELL_EFFECT_DUMMY);
         }
     };
 
@@ -624,7 +627,7 @@ public:
         void Register() OVERRIDE
         {
             OnCheckCast += SpellCheckCastFn(spell_warl_soul_swap_exhale_SpellScript::CheckCast);
-            OnEffectHitTarget += SpellEffectFn(spell_warl_soul_swap_exhale_SpellScript::OnEffectHit, EFFECT_0, SPELL_EFFECT_SCHOOL_DAMAGE);
+            OnEffectHitTarget += SpellEffectFn(spell_warl_soul_swap_exhale_SpellScript::OnEffectHit, EFFECT_0, SPELL_EFFECT_DUMMY);
         }
     };
 

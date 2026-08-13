@@ -1329,12 +1329,12 @@ struct CriteriaEntry
     uint32 timedCriteriaStartType;                          // 3
     uint32 timedCriteriaMiscId;                             // 4
     uint32 timeLimit;                                       // 5
-    //uint32 unk;                                           // 6
-    //uint32 unk;                                           // 7
+    uint32 failEvent;                                       // 6
+    uint32 failAsset;                                       // 7
     uint32 modifierTreeId;                                  // 8
-    //uint32 completionFlag;                                // 9
-    //uint32 worldStateId;                                  // 10
-    //uint32 worldStateValue;                               // 11
+    uint32 completionFlag;                                  // 9
+    uint32 worldStateId;                                    // 10
+    uint32 worldStateValue;                                 // 11
 };
 
 struct CriteriaTreeEntry
@@ -2115,9 +2115,9 @@ struct QuestFactionRewEntry
 struct QuestPOIPointEntry
 {
     uint32 Id;                                              // 0
-    //int32 X;                                              // 1
-    //int32 Y;                                              // 2
-    //uint32 BlobId;                                        // 3
+    int32 X;                                                // 1
+    int32 Y;                                                // 2
+    uint32 BlobId;                                          // 3
 };
 
 struct QuestSortEntry
@@ -2139,15 +2139,14 @@ struct RandomPropertiesPointsEntry
     uint32    RarePropertiesPoints[5];                      // 6-10
     uint32    UncommonPropertiesPoints[5];                  // 11-15
 };
-/*
 struct ResearchBranchEntry
 {
-    uint32 Id;                                            // 0
-    //char* BranchName;                                   // 1
-    //uint32 ResearchFieldId;                             // 2 research field (from ResearchField.dbc)
-    //uint32 FragmentCurrencyId;                          // 3
-    //char* Icon;                                         // 4
-    //uint32 KeystoneItemId;                              // 5
+    uint32 Id;                                              // 0
+    //char* BranchName;                                     // 1
+    //uint32 ResearchFieldId;                               // 2 research field (from ResearchField.dbc)
+    uint32 FragmentCurrencyId;                              // 3
+    //char* Icon;                                           // 4
+    uint32 KeystoneItemId;                                  // 5
 };
 
 //struct ResearchFieldEntry
@@ -2178,7 +2177,7 @@ struct ResearchSiteEntry
     //char* SiteName;                                       // 3
     //uint32 IconId;                                        // 4
 };
-*/
+
 struct ScalingStatDistributionEntry
 {
     //uint32  Id;                                           // 0
@@ -2350,7 +2349,7 @@ struct SpellCategoriesEntry
     uint32    Mechanic;                                     // 6        m_mechanic
     uint32    PreventionType;                               // 7        m_preventionType
     uint32    StartRecoveryCategory;                        // 8        m_startRecoveryCategory
-    //uint32 unk1;                                          // 9  - Pandaria
+    uint32    ChargesCategory;                              // 9        charge category (SpellCategory.dbc)
 };
 
 typedef std::set<uint32> SpellCategorySet;
@@ -2362,8 +2361,8 @@ struct SpellCategoryEntry
     uint32 Flags;
     // uint32 unk;
     // char* Name;
-    // uint32 unk  - Pandaria
-    // uint32 unk2 - Pandaria - could be shared CD
+    uint32 MaxCharges;                                      // 4
+    uint32 ChargeRegenTime;                                 // 5
 };
 
 // SpellClassOptions.dbc
@@ -2418,7 +2417,7 @@ struct SpellEntry
     uint32 SpellShapeshiftId;                               // 20       SpellShapeshift.dbc
     uint32 SpellTargetRestrictionsId;                       // 21       SpellTargetRestrictions.dbc
     uint32 SpellTotemsId;                                   // 22       SpellTotems.dbc
-    //uint32 ResearchProject;                               // 23       ResearchProject.dbc
+    uint32 ResearchProject;                                 // 23       ResearchProject.dbc
     uint32 SpellMiscId;                                     // 24       SpellMisc.dbc
 };
 
@@ -2509,8 +2508,8 @@ struct SpellScalingEntry
     int32     ScalingClass;                                 // 4        (index * 100) + charLevel - 1 => gtSpellScaling.dbc
     float     CoefBase;                                     // 5        some coefficient, mostly 1.0f
     int32     CoefLevelBase;                                // 6        some level
-    //int32   unk1                                          // 7  - Pandaria
-    //int32   unk2                                          // 8  - Pandaria
+    uint32    MaxLevel;                                     // 7  - Pandaria (cap for gtSpellScaling lookup)
+    int32     ItemLevel;                                    // 8  - Pandaria
 };
 
 // SpellShapeshift.dbc

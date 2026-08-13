@@ -87,7 +87,7 @@ void OpcodeTable::InitializeClientTable()
     DEFINE_OPCODE_HANDLER(CMSG_BATTLEFIELD_STATUS,                           0x1F9E, STATUS_LOGGEDIN,  PROCESS_THREADUNSAFE, &WorldSession::HandleBattlefieldStatusOpcode             ); // 5.4.8 18414
     DEFINE_OPCODE_HANDLER(CMSG_BATTLEMASTER_JOIN,                            0x0769, STATUS_LOGGEDIN,  PROCESS_THREADUNSAFE, &WorldSession::HandleBattlemasterJoinOpcode              ); // 5.4.8 18414
     DEFINE_OPCODE_HANDLER(CMSG_BATTLEMASTER_JOIN_ARENA,                      0x02D2, STATUS_LOGGEDIN,  PROCESS_THREADUNSAFE, &WorldSession::HandleBattlemasterJoinArena               ); // 5.4.8 18414
-    DEFINE_OPCODE_HANDLER(CMSG_BATTLE_CHAR_BOOST,                            0x08E3, STATUS_AUTHED,    PROCESS_THREADUNSAFE, &WorldSession::HandleBattleCharBoost                     ); // 5.4.8 18414
+    DEFINE_OPCODE_HANDLER(CMSG_BATTLE_PAY_CHAR_BOOST,                            0x08E3, STATUS_AUTHED,    PROCESS_THREADUNSAFE, &WorldSession::HandleBattleCharBoost                     ); // 5.4.8 18414
     DEFINE_OPCODE_HANDLER(CMSG_BATTLE_PET_CAGE,                              0x1561, STATUS_UNHANDLED, PROCESS_THREADUNSAFE, &WorldSession::HandleBattlePetCage                       ); // 5.4.8 18414
     DEFINE_OPCODE_HANDLER(CMSG_BATTLE_PET_DELETE_PET,                        0x18B6, STATUS_LOGGEDIN,  PROCESS_THREADUNSAFE, &WorldSession::HandleBattlePetDelete                     ); // 5.4.8 18414
     DEFINE_OPCODE_HANDLER(CMSG_BATTLE_PET_LEARN,                             0x1540, STATUS_LOGGEDIN,  PROCESS_THREADUNSAFE, &WorldSession::HandleBattlePetLearn                      ); // 5.4.8 18414
@@ -747,6 +747,11 @@ void OpcodeTable::InitializeServerTable()
     DEFINE_OPCODE_HANDLER(SMSG_CHAT_PLAYER_AMBIGUOUS,              0x061A, STATUS_NEVER    ); // 5.4.8 18414
     DEFINE_OPCODE_HANDLER(SMSG_CHAT_PLAYER_NOT_FOUND,              0x1082, STATUS_NEVER    ); // 5.4.8 18414
     DEFINE_OPCODE_HANDLER(SMSG_CHAT_RESTRICTED,                    0x1A3B, STATUS_NEVER    ); // 5.4.8 18414
+        DEFINE_OPCODE_HANDLER(SMSG_CLEAR_ALL_SPELL_CHARGES,                        0x0C5B, STATUS_NEVER    ); // 5.4.8 18414
+        DEFINE_OPCODE_HANDLER(SMSG_CLEAR_SPELL_CHARGES,                            0x00F2, STATUS_NEVER    ); // 5.4.8 18414
+        DEFINE_OPCODE_HANDLER(SMSG_SEND_SPELL_CHARGES,                             0x10F1, STATUS_NEVER    ); // 5.4.8 18414
+        DEFINE_OPCODE_HANDLER(SMSG_SEND_SPELL_HISTORY,                             0x0050, STATUS_NEVER    ); // 5.4.8 18414
+        DEFINE_OPCODE_HANDLER(SMSG_BUY_BANK_SLOT_RESULT,                           0x0000, STATUS_UNHANDLED); // 5.4.8 18414
     DEFINE_OPCODE_HANDLER(SMSG_CLEAR_COOLDOWN,                     0x162A, STATUS_NEVER    ); // 5.4.8 18414
     DEFINE_OPCODE_HANDLER(SMSG_CLEAR_COOLDOWNS,                    0x1458, STATUS_NEVER    ); // 5.4.8 18414
     DEFINE_OPCODE_HANDLER(SMSG_CLEAR_TARGET,                       0x1061, STATUS_NEVER    ); // 5.4.8 18414

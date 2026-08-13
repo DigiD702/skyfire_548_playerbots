@@ -2877,6 +2877,7 @@ void SpellMgr::LoadSpellInfoCustomAttributes()
             case 63010: // Charge (Argent Tournament, NPC)
             case 68321: // Charge (Argent Tournament, NPC)
             case 72255: // Mark of the Fallen Champion (Deathbringer Saurfang)
+            case 1822: // Rake (bleed initial hit ignores armor)
                 spellInfo->AttributesCu |= SPELL_ATTR0_CU_IGNORE_ARMOR;
                 break;
             case 64422: // Sonic Screech (Auriaya)
@@ -3094,7 +3095,11 @@ void SpellMgr::LoadSpellInfoCorrections()
             case 54741: // Firestarter
             case 57761: // Fireball!
             case 64823: // Item - Druid T8 Balance 4P Bonus
+            case 69369: // Predatory Swiftness
             case 88819: // Daybreak
+            case 93400: // Shooting Stars
+            case 122510: // Ultimatum
+            case 132158: // Nature's Swiftness
                 spellInfo->ProcCharges = 1;
                 break;
             case 44544: // Fingers of Frost
@@ -3448,6 +3453,12 @@ void SpellMgr::LoadSpellInfoCorrections()
                 spellInfo->Effects[EFFECT_0].RadiusEntry = sSpellRadiusStore.LookupEntry(EFFECT_RADIUS_200_YARDS); // 200yd
                 spellInfo->MaxAffectedTargets = 3;
                 break;
+            case 44457: // Living Bomb - MoP LIMIT_N allows 3 simultaneous DoTs
+                spellInfo->MaxAffectedTargets = 3;
+                break;
+            case 44461: // Living Bomb (explosion) - bomb target + up to 3 nearby
+                spellInfo->MaxAffectedTargets = 4;
+                break;
             case 73579: // Summon Spirit Bomb
                 spellInfo->Effects[EFFECT_0].RadiusEntry = sSpellRadiusStore.LookupEntry(EFFECT_RADIUS_25_YARDS); // 25yd
                 break;
@@ -3539,6 +3550,11 @@ void SpellMgr::LoadSpellInfoCorrections()
             case 5420: // Tree of Life (Passive)
                 spellInfo->Stances = 1 << (FORM_TREE - 1);
                 break;
+            // Ursol's Vortex: CREATE_AREATRIGGER has no radius; EFFECT_0 holds the 8yd area.
+            case 102793:
+                spellInfo->Effects[EFFECT_1].RadiusEntry = spellInfo->Effects[EFFECT_0].RadiusEntry;
+                spellInfo->Effects[EFFECT_1].MaxRadiusEntry = spellInfo->Effects[EFFECT_0].MaxRadiusEntry;
+                break;
             case 49376: // Feral Charge (Cat Form)
                 spellInfo->AttributesEx3 &= ~SPELL_ATTR3_CANT_TRIGGER_PROC;
                 break;
@@ -3561,6 +3577,35 @@ void SpellMgr::LoadSpellInfoCorrections()
                 //
             case 108055: // Remove Weapon
                 spellInfo->Effects[EFFECT_1].TargetA = SpellImplicitTargetInfo(TARGET_UNIT_CASTER);
+                break;
+            // Revealing Strike: EFFECT_2 is Dummy in DBC; convert to taken-damage mod so
+            // Eviscerate / Rupture / Crimson Tempest gain the 35% finisher efficiency.
+            case 84617:
+                spellInfo->Effects[EFFECT_2].ApplyAuraName = SPELL_AURA_MOD_DAMAGE_FROM_CASTER;
+                spellInfo->Effects[EFFECT_2].SpellClassMask = flag128(0x920000, 0, 0x2000, 0);
+                break;
+            // Sanguinary Vein: EFFECT_1 is a broken PROC_TRIGGER_SPELL; bleed scripts apply 124271.
+            case 79147:
+                spellInfo->Effects[EFFECT_1].Effect = 0;
+                break;
+            // Burst of Speed: usable in stealth; DBC only has DISPEL_AURAS_ON_IMMUNITY.
+            case 108212:
+                spellInfo->AttributesEx |= SPELL_ATTR1_NOT_BREAK_STEALTH;
+                break;
+            // Smoke Bomb cloud (88611): apply interfere to units in cloud regardless of LOS /
+            // immunities. EFFECT_0 is targeting interference (debuff); EFFECT_1 is ally DR.
+            case 88611:
+                spellInfo->Attributes |= SPELL_ATTR0_UNAFFECTED_BY_INVULNERABILITY;
+                spellInfo->AttributesEx2 |= SPELL_ATTR2_CAN_TARGET_NOT_IN_LOS;
+                spellInfo->AttributesCu |= SPELL_ATTR0_CU_NEGATIVE_EFF0;
+                break;
+            // Shattering Throw / Shattering Blow damage spells: pierce invulnerability so
+            // spell_warr_shattering_throw can strip Ice Block/Divine Shield then deal damage.
+            // Linked missiles 64380/65941 already have these attrs in DBC.
+            case 64382:
+            case 112997:
+                spellInfo->Attributes |= SPELL_ATTR0_UNAFFECTED_BY_INVULNERABILITY;
+                spellInfo->AttributesEx2 |= 0x04000000; // SPELL_ATTR2_NO_SCHOOL_IMMUNITY
                 break;
             default:
                 break;

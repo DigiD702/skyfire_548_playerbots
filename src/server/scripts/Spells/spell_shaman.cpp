@@ -574,6 +574,42 @@ public:
     }
 };
 
+// 324 - Lightning Shield
+class spell_sha_lightning_shield : public SpellScriptLoader
+{
+public:
+    spell_sha_lightning_shield() : SpellScriptLoader("spell_sha_lightning_shield") { }
+
+    class spell_sha_lightning_shield_AuraScript : public AuraScript
+    {
+        PrepareAuraScript(spell_sha_lightning_shield_AuraScript);
+
+        void HandleProc(ProcEventInfo& eventInfo)
+        {
+            if (Unit* actor = eventInfo.GetActor())
+            {
+                if (actor->IsTotem())
+                {
+                    PreventDefaultAction();
+                    return;
+                }
+            }
+
+            GetAura()->SetUsingCharges(false);
+        }
+
+        void Register() OVERRIDE
+        {
+            OnProc += AuraProcFn(spell_sha_lightning_shield_AuraScript::HandleProc);
+        }
+    };
+
+    AuraScript* GetAuraScript() const OVERRIDE
+    {
+        return new spell_sha_lightning_shield_AuraScript();
+    }
+};
+
 // 60103 - Lava Lash
 /// Updated 4.3.4
 class spell_sha_lava_lash : public SpellScriptLoader
@@ -680,7 +716,7 @@ public:
 
         void Register() OVERRIDE
         {
-            OnEffectHitTarget += SpellEffectFn(spell_sha_lava_surge_proc_SpellScript::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+            OnEffectHitTarget += SpellEffectFn(spell_sha_lava_surge_proc_SpellScript::HandleDummy, EFFECT_0, SPELL_EFFECT_APPLY_AURA);
         }
     };
 
@@ -869,7 +905,7 @@ public:
 
         void Register() OVERRIDE
         {
-            OnEffectHitTarget += SpellEffectFn(spell_sha_thunderstorm_SpellScript::HandleKnockBack, EFFECT_2, SPELL_EFFECT_KNOCK_BACK);
+            OnEffectHitTarget += SpellEffectFn(spell_sha_thunderstorm_SpellScript::HandleKnockBack, EFFECT_1, SPELL_EFFECT_KNOCK_BACK);
         }
     };
 
@@ -989,11 +1025,11 @@ void AddSC_shaman_spell_scripts()
     new spell_sha_earth_shield();
     new spell_sha_fire_nova();
     new spell_sha_glyph_of_healing_wave();
-    new spell_sha_healing_stream_totem();
     new spell_sha_heroism();
     new spell_sha_item_lightning_shield();
     new spell_sha_item_lightning_shield_trigger();
     new spell_sha_item_mana_surge();
+    new spell_sha_lightning_shield();
     new spell_sha_lava_lash();
     new spell_sha_lava_surge();
     new spell_sha_lava_surge_proc();

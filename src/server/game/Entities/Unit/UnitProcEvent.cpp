@@ -208,7 +208,7 @@ uint32 createProcExtendMask(SpellNonMeleeDamage* damageInfo, SpellMissInfo missC
     return procEx;
 }
 
-void Unit::ProcDamageAndSpellFor(bool isVictim, Unit* target, uint32 procFlag, uint32 procExtra, WeaponAttackType attType, SpellInfo const* procSpell, uint32 damage, SpellInfo const* procAura)
+void Unit::ProcDamageAndSpellFor(bool isVictim, Unit* target, uint32 procFlag, uint32 procExtra, WeaponAttackType attType, SpellInfo const* procSpell, uint32 damage, SpellInfo const* procAura, uint32 overheal)
 {
     // Player is loaded now - do not allow passive spell casts to proc
     if (GetTypeId() == TypeID::TYPEID_PLAYER && ToPlayer()->GetSession()->PlayerLoading())
@@ -309,7 +309,7 @@ void Unit::ProcDamageAndSpellFor(bool isVictim, Unit* target, uint32 procFlag, u
     Unit* actionTarget = !isVictim ? target : this;
 
     DamageInfo damageInfo = DamageInfo(actor, actionTarget, damage, procSpell, procSpell ? SpellSchoolMask(procSpell->SchoolMask) : SPELL_SCHOOL_MASK_NORMAL, SPELL_DIRECT_DAMAGE);
-    HealInfo healInfo = HealInfo(damage);
+    HealInfo healInfo = HealInfo(damage, overheal);
     ProcEventInfo eventInfo = ProcEventInfo(actor, actionTarget, target, procFlag, 0, 0, procExtra, NULL, &damageInfo, &healInfo);
 
     ProcTriggeredList procTriggered;
@@ -557,6 +557,15 @@ void Unit::ProcDamageAndSpellFor(bool isVictim, Unit* target, uint32 procFlag, u
                     case SPELL_AURA_MOD_ROOT:
                     case SPELL_AURA_TRANSFORM:
                     {
+                        // Dirty Tricks: Blind / Gouge ignore the caster's Poison and Bleed damage
+                        // (CC break for these auras is amount-based here, not only AuraInterruptFlags)
+                        if (isVictim && procSpell && target &&
+                            (Id == 2094 || Id == 1776) &&
+                            (triggeredByAura->GetAuraType() == SPELL_AURA_MOD_CONFUSE ||
+                             triggeredByAura->GetAuraType() == SPELL_AURA_MOD_STUN) &&
+                            ShouldDirtyTricksIgnoreCrowdControlBreak(Id, i->aura->GetCasterGUID(), target, procSpell))
+                            break;
+
                         // chargeable mods are breaking on hit
                         if (useCharges)
                             takeCharges = true;

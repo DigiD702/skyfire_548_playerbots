@@ -943,11 +943,11 @@ class HealInfo
 private:
     uint32 m_heal;
     uint32 m_absorb;
+    uint32 m_overheal;
 public:
-    explicit HealInfo(uint32 heal)
-        : m_heal(heal)
+    explicit HealInfo(uint32 heal, uint32 overheal = 0)
+        : m_heal(heal), m_absorb(0), m_overheal(overheal)
     {
-        m_absorb = 0;
     }
     void AbsorbHeal(uint32 amount)
     {
@@ -959,6 +959,11 @@ public:
     uint32 GetHeal() const
     {
         return m_heal;
+    }
+
+    uint32 GetOverheal() const
+    {
+        return m_overheal;
     }
 };
 
@@ -979,9 +984,10 @@ public:
     uint32 GetHitMask() const { return _hitMask; }
 
 
-    SpellInfo const* GetSpellInfo() const { return NULL; }
-    SpellSchoolMask GetSchoolMask() const { return SPELL_SCHOOL_MASK_NONE; }
+    SpellInfo const* GetSpellInfo() const;
+    SpellSchoolMask GetSchoolMask() const;
 
+    Spell* GetSpell() const { return _spell; }
     DamageInfo* GetDamageInfo() const { return _damageInfo; }
     HealInfo* GetHealInfo() const { return _healInfo; }
 
@@ -1763,8 +1769,8 @@ public:
     void Kill(Unit* victim, bool durabilityLoss = true);
     int32 DealHeal(Unit* victim, uint32 addhealth);
 
-    void ProcDamageAndSpell(Unit* victim, uint32 procAttacker, uint32 procVictim, uint32 procEx, uint32 amount, WeaponAttackType attType = WeaponAttackType::BASE_ATTACK, SpellInfo const* procSpell = NULL, SpellInfo const* procAura = NULL);
-    void ProcDamageAndSpellFor(bool isVictim, Unit* target, uint32 procFlag, uint32 procExtra, WeaponAttackType attType, SpellInfo const* procSpell, uint32 damage, SpellInfo const* procAura = NULL);
+    void ProcDamageAndSpell(Unit* victim, uint32 procAttacker, uint32 procVictim, uint32 procEx, uint32 amount, WeaponAttackType attType = WeaponAttackType::BASE_ATTACK, SpellInfo const* procSpell = NULL, SpellInfo const* procAura = NULL, uint32 overheal = 0);
+    void ProcDamageAndSpellFor(bool isVictim, Unit* target, uint32 procFlag, uint32 procExtra, WeaponAttackType attType, SpellInfo const* procSpell, uint32 damage, SpellInfo const* procAura = NULL, uint32 overheal = 0);
 
     void GetProcAurasTriggeredOnEvent(AuraApplicationList& aurasTriggeringProc, AuraApplicationList* procAuras, ProcEventInfo eventInfo);
     void TriggerAurasProcOnEvent(CalcDamageInfo& damageInfo);
@@ -1784,15 +1790,9 @@ public:
     void CalculateSpellDamageTaken(SpellNonMeleeDamage* damageInfo, int32 damage, SpellInfo const* spellInfo, WeaponAttackType attackType = WeaponAttackType::BASE_ATTACK, bool crit = false);
     void DealSpellDamage(SpellNonMeleeDamage* damageInfo, bool durabilityLoss);
 
-    // player or player's pet resilience (-1%)
-    uint32 GetCritDamageReduction(uint32 damage) const
-    {
-        return GetCombatRatingDamageReduction(CombatRating::CR_RESILIENCE_CRIT_TAKEN, 2.2f, 33.0f, damage);
-    }
-    uint32 GetDamageReduction(uint32 damage) const
-    {
-        return GetCombatRatingDamageReduction(CombatRating::CR_RESILIENCE_PLAYER_DAMAGE_TAKEN, 2.0f, 100.0f, damage);
-    }
+    // player or player's pet resilience
+    uint32 GetCritDamageReduction(uint32 damage) const;
+    uint32 GetDamageReduction(uint32 damage) const;
 
     void ApplyResilience(Unit const* victim, int32* damage, bool isCrit) const;
 
@@ -1968,7 +1968,15 @@ public:
     Aura* AddAura(SpellInfo const* spellInfo, uint32 effMask, Unit* target);
     void SetAuraStack(uint32 spellId, Unit* target, uint32 stack);
     void SendPlaySpellVisualKit(uint32 SpellVisualId, uint32 Duration, int32 Type);
-    void SendPlaySpellVisual(uint32 SpellVisualId, float x, float y, float z, float orientation, uint8 SpeedTime, uint16 MissReason, uint16 ReflectStatus);
+    void SendPlaySpellVisual(uint32 spellVisualId, uint64 targetGuid, float speed, uint16 missReason = 0, uint16 reflectStatus = 0)
+    {
+        SendPlaySpellVisual(spellVisualId, targetGuid, 0.0f, 0.0f, 0.0f, speed, false, missReason, reflectStatus);
+    }
+    void SendPlaySpellVisual(uint32 spellVisualId, float x, float y, float z, float speed, uint16 missReason = 0, uint16 reflectStatus = 0)
+    {
+        SendPlaySpellVisual(spellVisualId, 0, x, y, z, speed, true, missReason, reflectStatus);
+    }
+    void SendPlaySpellVisual(uint32 spellVisualId, uint64 targetGuid, float x, float y, float z, float speed, bool hasDest, uint16 missReason, uint16 reflectStatus);
 
     void DeMorph();
 
@@ -2222,7 +2230,10 @@ public:
     void RemoveAurasDueToItemSpell(uint32 spellId, uint64 castItemGuid);
     void RemoveAurasByType(AuraType auraType, uint64 casterGUID = 0, Aura* except = NULL, bool negative = true, bool positive = true);
     void RemoveNotOwnSingleTargetAuras(uint32 newPhase = 0, bool phaseid = false);
-    void RemoveAurasWithInterruptFlags(uint32 flag, uint32 except = 0);
+    void RemoveAurasWithInterruptFlags(uint32 flag, uint32 except = 0, Unit const* attacker = nullptr);
+    bool HasDirtyTricks() const;
+    static bool IsPoisonOrBleedSpell(SpellInfo const* spell);
+    bool ShouldDirtyTricksIgnoreCrowdControlBreak(uint32 ccAuraId, uint64 ccCasterGUID, Unit const* attacker, SpellInfo const* damageSpell) const;
     void RemoveAurasWithAttribute(uint32 flags);
     void RemoveAurasWithFamily(SpellFamilyNames family, uint32 familyFlag1, uint32 familyFlag2, uint32 familyFlag3, uint64 casterGUID);
     void RemoveAurasWithMechanic(uint32 mechanic_mask, AuraRemoveMode removemode = AURA_REMOVE_BY_DEFAULT, uint32 except = 0);
@@ -2783,7 +2794,7 @@ public:
     }
     bool IsFalling() const;
 
-    void RewardRage(uint32 baseRage, bool attacker);
+    void RewardRage(float baseRage, bool attacker);
 
     virtual float GetFollowAngle() const
     {
@@ -2955,6 +2966,7 @@ private:
 
     // player or player's pet
     float GetCombatRatingReduction(CombatRating cr) const;
+    uint32 GetCombatRatingValue(CombatRating cr) const;
     uint32 GetCombatRatingDamageReduction(CombatRating cr, float rate, float cap, uint32 damage) const;
 
 protected:

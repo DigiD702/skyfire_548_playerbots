@@ -16,6 +16,8 @@ enum class AccountOpResult
     AOR_NAME_TOO_LONG,
     AOR_PASS_TOO_LONG,
     AOR_EMAIL_TOO_LONG,
+    AOR_EMAIL_INVALID,
+    AOR_EMAIL_ALREADY_EXIST,
     AOR_NAME_ALREADY_EXIST,
     AOR_NAME_NOT_EXIST,
     AOR_DB_INTERNAL_ERROR
@@ -26,6 +28,14 @@ enum PasswordChangeSecurity
     PW_NONE,
     PW_EMAIL,
     PW_RBAC
+};
+
+struct AccountTwoFactorInfo
+{
+    bool Exists = false;
+    bool Enabled = false;
+    std::string Secret;
+    uint64 LastUsedStep = 0;
 };
 
 #define MAX_ACCOUNT_STR 16
@@ -52,8 +62,13 @@ public:
     static AccountOpResult ChangePassword(uint32 accountId, std::string newPassword);
     static AccountOpResult ChangeEmail(uint32 accountId, std::string newEmail);
     static AccountOpResult ChangeRegEmail(uint32 accountId, std::string newEmail);
+    static AccountOpResult ConvertToEmailLogin(uint32 accountId, std::string email, std::string newPassword);
     static bool CheckPassword(uint32 accountId, std::string password);
     static bool CheckEmail(uint32 accountId, std::string newEmail);
+    static bool GetTwoFactorInfo(uint32 accountId, AccountTwoFactorInfo& info);
+    static std::string StartTwoFactorSetup(uint32 accountId);
+    static bool ConfirmTwoFactorSetup(uint32 accountId, std::string const& token, uint32 window = 1);
+    static bool DisableTwoFactor(uint32 accountId);
 
     static uint32 GetId(std::string const& username);
     static AccountTypes GetSecurity(uint32 accountId);

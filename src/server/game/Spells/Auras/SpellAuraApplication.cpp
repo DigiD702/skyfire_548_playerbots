@@ -89,7 +89,12 @@ void AuraApplication::_InitFlags(Unit* caster, uint32 effMask)
         _flags |= positiveFound ? AFLAG_POSITIVE : AFLAG_NEGATIVE;
     }
 
-    if (GetBase()->GetSpellInfo()->AttributesEx8 & SPELL_ATTR8_AURA_SEND_AMOUNT)
+    // OVERRIDE_ACTIONBAR amount is the replacement spell id. Without it the client keeps
+    // the old action-bar button (e.g. Faerie Fire) while the server remaps casts correctly.
+    // Bear Form Passive3 has SPELL_ATTR8_AURA_SEND_AMOUNT in DBC; Faerie Swarm (106707) does not.
+    if ((GetBase()->GetSpellInfo()->AttributesEx8 & SPELL_ATTR8_AURA_SEND_AMOUNT)
+        || GetBase()->HasEffectType(SPELL_AURA_OVERRIDE_ACTIONBAR_SPELLS)
+        || GetBase()->HasEffectType(SPELL_AURA_OVERRIDE_ACTIONBAR_SPELLS_2))
         _flags |= AFLAG_ANY_EFFECT_AMOUNT_SENT;
 }
 
@@ -143,14 +148,16 @@ void AuraApplication::ClientUpdate(bool remove)
     data.WriteBit(targetGuid[5]);
     data.WriteBit(!remove);                             // Not remove
 
+    // Client indexes $wN by effect index. Count must be (highest effect index + 1) with
+    // zero padding for gaps — not the number of active effects (e.g. ER $w2 with only EFFECT_1).
+    uint8 effCount = 0;
     if (!remove)
     {
         if (flags & AFLAG_ANY_EFFECT_AMOUNT_SENT)
         {
-            uint8 effCount = 0;
             for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
                 if (HasEffect(i))
-                    effCount++;
+                    effCount = i + 1;
 
             data.WriteBits(effCount, 22);               // Effect Count
         }
@@ -211,15 +218,13 @@ void AuraApplication::ClientUpdate(bool remove)
 
         if (flags & AFLAG_ANY_EFFECT_AMOUNT_SENT)
         {
-            for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            for (uint32 i = 0; i < effCount; ++i)
             {
+                float amount = 0.0f;
                 if (HasEffect(i))
-                {
                     if (AuraEffect const* eff = aura->GetEffect(i))
-                        data << float(eff->GetAmount());
-                    else
-                        data << float(0.f);
-                }
+                        amount = float(eff->GetAmount());
+                data << float(amount);
             }
         }
     }

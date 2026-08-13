@@ -145,6 +145,10 @@ bool LoginQueryHolder::Initialize()
     stmt->setUInt32(0, lowGuid);
     res &= SetPreparedQuery(PLAYER_LOGIN_QUERY_LOAD_SPELL_COOLDOWNS, stmt);
 
+    stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHARACTER_SPELL_CHARGES);
+    stmt->setUInt32(0, lowGuid);
+    res &= SetPreparedQuery(PLAYER_LOGIN_QUERY_LOAD_SPELL_CHARGES, stmt);
+
     if (sWorld->GetBoolConfig(WorldBoolConfigs::CONFIG_DECLINED_NAMES_USED))
     {
         stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHARACTER_DECLINEDNAMES);
@@ -219,6 +223,18 @@ bool LoginQueryHolder::Initialize()
     stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_ACCOUNT_BATTLE_PET_SLOTS);
     stmt->setUInt32(0, m_accountId);
     res &= SetPreparedQuery(PLAYER_LOGIN_QUERY_LOAD_BATTLE_PET_SLOTS, stmt);
+
+    stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHAR_RESEARCH_DIGSITES);
+    stmt->setUInt32(0, lowGuid);
+    res &= SetPreparedQuery(PLAYER_LOGIN_QUERY_LOAD_RESEARCH_DIGSITES, stmt);
+
+    stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHAR_RESEARCH_HISTORY);
+    stmt->setUInt32(0, lowGuid);
+    res &= SetPreparedQuery(PLAYER_LOGIN_QUERY_LOAD_RESEARCH_HISTORY, stmt);
+
+    stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHAR_RESEARCH_PROJECTS);
+    stmt->setUInt32(0, lowGuid);
+    res &= SetPreparedQuery(PLAYER_LOGIN_QUERY_LOAD_RESEARCH_PROJECTS, stmt);
 
     return res;
 }
@@ -1751,6 +1767,9 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder* holder)
 
     if (pCurrChar->IsGameMaster())
         SendNotification(LANG_GM_ON);
+
+    if (!UsedEmailLogin())
+        chH.SendSysMessage("This session used legacy username login. Convert your login with .account convert email <email> <oldPassword> <newPassword> <newPasswordConfirm>.");
 
     std::string IP_str = GetRemoteAddress();
     SF_LOG_INFO("entities.player.character", "Account: %d (IP: %s) Login Character:[%s] (GUID: %u) Level: %d",
