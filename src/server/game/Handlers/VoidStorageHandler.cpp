@@ -96,9 +96,9 @@ void WorldSession::HandleVoidStorageQuery(WorldPacket& recvData)
         data.WriteGuidMask(itemId, 1);
         data.WriteGuidMask(creatorGuid, 2);
         data.WriteGuidMask(itemId, 2);
-        data.WriteGuidMask(creatorGuid, 2, 0);
+        data.WriteGuidMask(creatorGuid, 5, 0);
         data.WriteGuidMask(itemId, 6, 5);
-        data.WriteGuidMask(creatorGuid, 2);
+        data.WriteGuidMask(creatorGuid, 4);
         data.WriteGuidMask(itemId, 7, 3, 4, 0);
         data.WriteGuidMask(creatorGuid, 6, 7);
 
@@ -398,7 +398,7 @@ void WorldSession::HandleVoidSwapItem(WorldPacket& recvData)
     }
 
     uint8 oldSlot;
-    if (!player->GetVoidStorageItem(itemId, oldSlot))
+    if (newSlot >= VOID_STORAGE_MAX_SLOT || !player->GetVoidStorageItem(itemId, oldSlot))
     {
         SF_LOG_DEBUG("network", "WORLD: HandleVoidSwapItem - Player (GUID: %u, name: %s) requested swapping an invalid item (slot: %u, itemid: " UI64FMTD ").", player->GetGUIDLow(), player->GetName().c_str(), newSlot, uint64(itemId));
         return;
@@ -420,26 +420,20 @@ void WorldSession::HandleVoidSwapItem(WorldPacket& recvData)
     WorldPacket data(SMSG_VOID_ITEM_SWAP_RESPONSE, 1 + (usedSrcSlot + usedDestSlot) * (1 + 7 + 4));
 
     data.WriteBit(!usedSrcSlot);
-
     data.WriteGuidMask(itemId, 4, 1, 6, 0, 3, 7, 2, 5);
-
     data.WriteBit(!usedDestSlot);
-
     data.WriteGuidMask(itemIdDest, 6, 0, 3, 2, 1, 5, 7, 4);
-
-    data.WriteBit(!false); //VoidItemSlotA
+    data.WriteBit(!usedSrcSlot);
     data.WriteBit(!usedDestSlot);
-
     data.FlushBits();
 
     data.WriteGuidBytes(itemIdDest, 3, 7, 2, 5, 0, 1, 4, 6);
     data.WriteGuidBytes(itemId, 0, 2, 7, 5, 6, 4, 3, 1);
 
-    //if (VoidItemSlotA)
-    //    data << uint32(VoidItemSlotA);
-
-    if (usedDestSlot)
+    if (usedSrcSlot)
         data << uint32(newSlot);
+    if (usedDestSlot)
+        data << uint32(oldSlot);
 
     SendPacket(&data);
 }
