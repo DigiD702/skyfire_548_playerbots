@@ -20,22 +20,26 @@
 
 namespace
 {
-    // Reforge UI reads the item's current modifiers when SMSG_REFORGE_RESULT
-    // arrives. Bag/equipped items only flush through the delayed update list,
-    // so send a VALUES block now or the window stays on Reforge/Restore.
+    // Reforge UI reads modifiers when SMSG_REFORGE_RESULT arrives. Inventory
+    // items only flush on the next tick, so push the item now.
+    // VALUES carries restore-to-zero dynamic fields (CREATE omits 0 unless the
+    // change flag is set). CREATE then refreshes a newly slotted piece the same
+    // way a bag swap does, so an open window does not keep the old snapshot.
     void SendReforgeItemUpdate(Player* player, Item* item)
     {
         if (!player || !item || !player->GetSession())
             return;
 
-        UpdateData upd(player->GetMapId());
-        item->BuildValuesUpdateBlockForPlayer(&upd, player);
-        if (!upd.HasData())
-            return;
+        UpdateData valuesUpd(player->GetMapId());
+        item->BuildValuesUpdateBlockForPlayer(&valuesUpd, player);
+        if (valuesUpd.HasData())
+        {
+            WorldPacket packet;
+            valuesUpd.BuildPacket(&packet);
+            player->GetSession()->SendPacket(&packet);
+        }
 
-        WorldPacket packet;
-        upd.BuildPacket(&packet);
-        player->GetSession()->SendPacket(&packet);
+        item->SendUpdateToPlayer(player);
         item->ClearUpdateMask(true);
     }
 }
