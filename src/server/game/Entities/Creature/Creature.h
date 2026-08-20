@@ -129,6 +129,7 @@ struct CreatureTemplate
     uint32  flags_extra;
     uint32  ScriptID;
     bool    ModLevel;
+    float   DetectionRange;                                 // aggro radius against a target of the same level
     uint32  GetRandomValidModelId() const;
     uint32  GetFirstValidModelId() const;
 
@@ -193,16 +194,24 @@ typedef UNORDERED_MAP<uint32, CreatureTemplate> CreatureTemplateContainer;
 #pragma pack(push, 1)
 #endif
 
-// Defines base stats for creatures (used to calculate HP/mana/armor).
+// Defines base stats for creatures (used to calculate HP/mana/armor/damage).
 struct CreatureBaseStats
 {
     uint32 BaseHealth[MAX_CREATURE_BASE_HP];
+    float BaseDamage[MAX_CREATURE_BASE_DAMAGE];
     uint32 BaseMana;
     uint32 BaseArmor;
+    uint32 AttackPower;
+    uint32 RangedAttackPower;
 
     // Helpers
 
     uint32 GenerateHealth(CreatureTemplate const* info) const;
+
+    float GenerateBaseDamage(CreatureTemplate const* info) const
+    {
+        return BaseDamage[CURRENT_CONTENT_EXP];
+    }
 
     uint32 GenerateMana(CreatureTemplate const* info) const
     {
@@ -420,6 +429,9 @@ typedef std::map<uint32, time_t> CreatureSpellCooldowns;
 
 // max different by z coordinate for creature aggro reaction
 #define CREATURE_Z_ATTACK_RANGE 3
+
+// aggro radius against a target of the same level, used when `detection_range` holds no usable value
+#define DEFAULT_DETECTION_RANGE 20.0f
 
 #define MAX_VENDOR_ITEMS 150                                // Limitation in 4.x.x item count in SMSG_LIST_INVENTORY
 

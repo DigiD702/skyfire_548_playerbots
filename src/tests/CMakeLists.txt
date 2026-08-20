@@ -166,6 +166,14 @@ target_compile_definitions(world_auth_identity_tests PRIVATE SKYFIRE_SOURCE_DIR=
 
 add_test(NAME world_auth_identity_tests COMMAND world_auth_identity_tests)
 
+add_executable(character_creation_realm_limit_tests
+  CharacterCreationRealmLimitTests.cpp
+)
+
+target_compile_definitions(character_creation_realm_limit_tests PRIVATE SKYFIRE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\")
+
+add_test(NAME character_creation_realm_limit_tests COMMAND character_creation_realm_limit_tests)
+
 add_executable(account_email_conversion_tests
   AccountEmailConversionTests.cpp
 )
@@ -686,6 +694,32 @@ target_include_directories(loot_count_tests PRIVATE
 )
 
 add_test(NAME loot_count_tests COMMAND loot_count_tests)
+
+add_executable(loot_packet_encoding_tests
+  LootPacketEncodingTests.cpp
+)
+
+target_include_directories(loot_packet_encoding_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Debugging
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Packets
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Utilities
+  ${CMAKE_SOURCE_DIR}/src/server/game/Loot
+)
+
+add_test(NAME loot_packet_encoding_tests COMMAND loot_packet_encoding_tests)
+
+add_executable(loot_object_guid_tests
+  LootObjectGuidTests.cpp
+)
+
+target_include_directories(loot_object_guid_tests PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/server/shared
+  ${CMAKE_SOURCE_DIR}/src/server/shared/Platform
+  ${CMAKE_SOURCE_DIR}/src/server/game/Entities/Object
+)
+
+add_test(NAME loot_object_guid_tests COMMAND loot_object_guid_tests)
 
 add_executable(darkmoon_shooting_gallery_tests
   DarkmoonShootingGalleryTests.cpp

@@ -9478,7 +9478,9 @@ void Player::RemovedInsignia(Player* looterPlr)
 
 void Player::SendLootRelease(ObjectGuid guid)
 {
-    ObjectGuid lootGuid = guid;
+    uint64 objectGuid = uint64(guid);
+    uint64 lootObjectGuid = GetLootObjectGUID(objectGuid);
+    ObjectGuid lootGuid = lootObjectGuid ? lootObjectGuid : objectGuid;
 
     WorldPacket data(SMSG_LOOT_RELEASE_RESPONSE, 20);
     data.WriteGuidMask(lootGuid, 0, 7, 5);
@@ -9509,6 +9511,38 @@ void Player::SendLootRelease(ObjectGuid guid)
 void Player::RemoveLootedObject(uint64 guid)
 {
     m_lootView.erase(guid);
+
+    for (std::map<uint64, uint64>::iterator itr = m_lootObjects.begin(); itr != m_lootObjects.end();)
+    {
+        if (itr->second == guid)
+            m_lootObjects.erase(itr++);
+        else
+            ++itr;
+    }
+}
+
+void Player::RegisterLootObject(uint64 lootObjectGuid, uint64 objectGuid)
+{
+    if (lootObjectGuid)
+        m_lootObjects[lootObjectGuid] = objectGuid;
+}
+
+uint64 Player::ResolveLootObject(uint64 guid) const
+{
+    if (!IS_LOOT_GUID(guid))
+        return guid;
+
+    std::map<uint64, uint64>::const_iterator itr = m_lootObjects.find(guid);
+    return itr != m_lootObjects.end() ? itr->second : 0;
+}
+
+uint64 Player::GetLootObjectGUID(uint64 objectGuid) const
+{
+    for (std::map<uint64, uint64>::const_iterator itr = m_lootObjects.begin(); itr != m_lootObjects.end(); ++itr)
+        if (itr->second == objectGuid)
+            return itr->first;
+
+    return 0;
 }
 
 void Player::SendLoot(uint64 guid, LootType loot_type, bool isAoE)
@@ -9524,6 +9558,7 @@ void Player::SendLoot(uint64 guid, LootType loot_type, bool isAoE)
             m_session->DoLootRelease(*itr);
 
         m_lootView.clear();
+        m_lootObjects.clear();
     }
 
     Loot* loot = 0;
@@ -9834,6 +9869,8 @@ void Player::SendLoot(uint64 guid, LootType loot_type, bool isAoE)
     WorldPacket data(SMSG_LOOT_RESPONSE, 8 + 1 + 50 + 1 + 1);           // we guess size
     LootView(*loot, this, permission).WriteData(guid, loot_type, &data, isAoE);
     SendDirectMessage(&data);
+
+    RegisterLootObject(loot->GetGUID(), guid);
 
     // add 'this' player as one of the players that are looting 'loot'
     if (permission != PermissionTypes::NONE_PERMISSION)
@@ -16809,11 +16846,7 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
     // check node starting pos data set case if provided
     if (node->x != 0.0f || node->y != 0.0f || node->z != 0.0f)
     {
-        if (node->map_id != GetMapId() ||
-            (node->x - GetPositionX()) * (node->x - GetPositionX()) +
-            (node->y - GetPositionY()) * (node->y - GetPositionY()) +
-            (node->z - GetPositionZ()) * (node->z - GetPositionZ()) >
-            (2 * INTERACTION_DISTANCE) * (2 * INTERACTION_DISTANCE) * (2 * INTERACTION_DISTANCE))
+        if (node->map_id != GetMapId())
         {
             GetSession()->SendActivateTaxiReply(ActivateTaxiReply::ERR_TAXI_TOO_FAR_AWAY);
             return false;
@@ -21173,7 +21206,7 @@ void Player::StoreLootItem(uint8 lootSlot, Loot* loot, uint64 lootGuid)
             qitem->is_looted = true;
             //freeforall is 1 if everyone's supposed to get the quest item.
             if (item->freeforall || loot->GetPlayerQuestItems().size() == 1)
-                SendNotifyLootItemRemoved(lootSlot, lootGuid);
+                SendNotifyLootItemRemoved(lootSlot, loot->GetNotifyGUID(lootGuid, this));
             else
                 loot->NotifyQuestItemRemoved(qitem->index, lootGuid);
         }
@@ -21183,7 +21216,7 @@ void Player::StoreLootItem(uint8 lootSlot, Loot* loot, uint64 lootGuid)
             {
                 //freeforall case, notify only one player of the removal
                 ffaitem->is_looted = true;
-                SendNotifyLootItemRemoved(lootSlot, lootGuid);
+                SendNotifyLootItemRemoved(lootSlot, loot->GetNotifyGUID(lootGuid, this));
             }
             else
             {
